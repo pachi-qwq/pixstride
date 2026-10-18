@@ -1,14 +1,21 @@
-# Generated artifacts and private material belong outside the repository.
+# Private data and generated artifacts belong outside the repository.
 /target/
 /artifacts/
 /.cache/
 /cache/
+/caches/
 /logs/
 /internal/
 /private/
 /.local/
 /test-data/
 /samples/
+/stress-data/
+/generated/
+/tests/local/
+/tests/stress-data/
+/tests/generated/
+/tests/output/
 /tools/bin/
 /.idea/
 /.vscode/
@@ -23,18 +30,6 @@ __pycache__/
 *.log
 *.zip
 *.7z
-*.png
-*.jpg
-*.jpeg
-*.gif
-*.tif
-*.tiff
-*.webp
-*.avif
-*.heic
-*.heif
-*.jxl
-*.raw
-*.dng
-*.psd
-*.psb
+
+# Do not ignore image extensions: assets/ and tests/fixtures/ may contain
+# small, licensed, reviewed images. Never place private or stress images there.
