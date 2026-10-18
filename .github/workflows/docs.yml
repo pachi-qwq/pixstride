@@ -1,0 +1,41 @@
+name: Documentation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      check_external_links:
+        description: Check external links / 检查外部链接
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: docs
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Check public files / 检查公开文件
+        run: python -B scripts/check_docs.py
+      - name: Test documentation tooling / 测试文档工具
+        run: python -B -m unittest discover -s scripts/tests
+      - name: Check external links / 检查外部链接
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.check_external_links }}
+        run: python -B scripts/check_docs.py --external-links

@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 2; status: design-review -->
+<!-- doc-id: readme; revision: 3; status: design-review -->
 
 # Pixstride
 
@@ -19,14 +19,25 @@ The proposed architecture keeps GPU resource ownership on a render thread and de
 bounded background work. Large images have a separate path. Threading, cache budgets, and Tile sizes
 remain subject to experiments; format names in the test plan are not a support claim.
 
-## Documentation and contributions
+## Read and contribute
 
-Architecture summaries, contributor guidelines, and documentation checks are being prepared on a
-separate documentation branch for review. Viewer implementation requires a separately approved task.
+- [Architecture scope and review actions](docs/en/architecture.md)
+- [Development status and documentation checks](docs/en/development.md)
+- [Cross-format stress test plan](docs/en/stress-testing.md)
+- [Writing style](docs/STYLE_GUIDE.md) and [terminology](docs/TERMINOLOGY.md)
+- [Contributing](CONTRIBUTING.md)
+- [GitHub workflow, licensing, and release plan](docs/en/maintenance.md)
 
-Keep private images, internal drafts, machine reports, large test data, and generated caches out of
-Git. Small licensed project assets and reviewed fixtures may be committed in `assets/` and
-`tests/fixtures/`.
+Documentation tooling uses Python 3.11 or later and the standard library:
+
+```sh
+python -B scripts/check_docs.py
+python -B -m unittest discover -s scripts/tests
+```
+
+Keep private samples, draft designs, machine reports, and generated caches outside the repository.
+Use local configuration or environment variables for test paths. Do not attach private images or
+unredacted diagnostics to issues.
 
 ## License
 
