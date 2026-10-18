@@ -1,6 +1,6 @@
 [English](development.md) | [简体中文](../zh-CN/development.md)
 
-<!-- doc-id: development; revision: 6; status: stage-a-development -->
+<!-- doc-id: development; revision: 7; status: stage-a-development -->
 
 # Development status and checks
 
@@ -91,10 +91,10 @@ Use [Rust's Windows MSVC guidance](https://doc.rust-lang.org/rustc/platform-supp
 
 ## CI and performance validation
 
-The local `Rust` workflow uses a Windows runner and a `rust` job. It runs formatting, Clippy, tests,
-Release build, and Rustdoc with the checked-in lockfile. It has read-only repository permissions and
-does not publish releases. The workflow has not run on GitHub yet; the `docs` check remains the only
-required Ruleset status check until a Rust CI run succeeds and the owner reviews a settings change.
+The `Rust` workflow uses a Windows runner and a `rust` job. It runs formatting, Clippy, tests, Release
+build, and Rustdoc with the checked-in lockfile. Its docs and Rust jobs passed on the current Draft PR
+commit. The workflow has read-only repository permissions and does not publish releases. The `docs`
+check remains the only required Ruleset status check; this task did not change repository protection.
 
 Application timings use `std::time::Instant` and retain at most 4096 recent samples per category.
 Percentiles use nearest rank. Startup ends at `CreateWindowExW` return, not first display. `Present`

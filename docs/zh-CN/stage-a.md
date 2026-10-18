@@ -1,6 +1,6 @@
 [English](../en/stage-a.md) | [简体中文](stage-a.md)
 
-<!-- doc-id: stage-a; revision: 6; status: implementation-review -->
+<!-- doc-id: stage-a; revision: 7; status: implementation-review -->
 
 # 阶段 A：Win32 窗口与 D3D11 渲染
 
@@ -111,7 +111,8 @@ GitHub Ruleset 的必需检查。
 
 本机启动测试创建了 Win32 窗口，`IsWindowVisible` 返回可见，并输出 D3D11 Device 创建成功，Feature Level 为 11.1（`0xB100`）。
 当前自动化环境没有暴露原生窗口供视觉检查，所以纹理是否实际显示、方向键切换、交互式 Resize/最小化/恢复、正常关闭、
-连续启动关闭和输入延迟分布都尚未验证。Rust CI 已在本地加入，但分支尚未推送，因此 GitHub 上还没有运行记录。
+连续启动关闭和输入延迟分布都尚未验证。Draft PR 的 docs 和 Rust CI 均已通过。Windows Rust Job 完成格式、Clippy、测试、
+Release 构建和 Rustdoc 检查；CI 不会验证交互式 GUI 行为。
 
 因此，独立渲染线程目前只是待评审的实现，尚未通过延迟实测。阶段 A 仍需在可交互的 Windows 桌面采集唤醒到渲染
 和 `Present` 样本，并与 50 ms 启动、5 ms 缓存切换处理和 1 ms 输入处理的工程目标比较。这些数值仍是目标，不是成绩。

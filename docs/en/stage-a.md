@@ -1,6 +1,6 @@
 [English](stage-a.md) | [简体中文](../zh-CN/stage-a.md)
 
-<!-- doc-id: stage-a; revision: 6; status: implementation-review -->
+<!-- doc-id: stage-a; revision: 7; status: implementation-review -->
 
 # Stage A: Win32 window and D3D11 rendering
 
@@ -128,8 +128,9 @@ A local executable launch created a Win32 window that `IsWindowVisible` reported
 D3D11 device creation at Feature Level 11.1 (`0xB100`). The current automation environment did not
 expose the native window for visual inspection, so visible texture content,
 keyboard switching, interactive resize/minimize/restore, normal close, repeated launch/close, and input
-timing distributions remain unverified. The Rust CI
-workflow has been added locally but has not run on GitHub because this branch has not been pushed.
+timing distributions remain unverified. The docs and Rust CI jobs passed on the pushed Draft PR. The
+Windows Rust job completed formatting, Clippy, tests, Release build, and Rustdoc checks; CI does not
+exercise interactive GUI behavior.
 
 The thread model is therefore an implementation under review, not a measured latency decision. Stage A
 must still collect wake-to-render and Present samples on an interactive Windows desktop and compare

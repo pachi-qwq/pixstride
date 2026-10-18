@@ -1,6 +1,6 @@
 [English](../en/development.md) | [简体中文](development.md)
 
-<!-- doc-id: development; revision: 6; status: stage-a-development -->
+<!-- doc-id: development; revision: 7; status: stage-a-development -->
 
 # 开发状态与检查
 
@@ -82,9 +82,9 @@ python -B scripts/check_docs.py --external-links
 
 ## CI 与性能验证
 
-本地新增的 `Rust` 工作流使用 Windows Runner，Job 名为 `rust`。它通过锁文件运行格式检查、Clippy、测试、
-Release 构建和 Rustdoc，权限为只读，不发布 Release。该工作流尚未在 GitHub 运行成功；Ruleset 仍只要求
-`docs` 检查。等 Rust CI 首次成功并经负责人评审后，再决定是否调整必需检查。
+`Rust` 工作流使用 Windows Runner，Job 名为 `rust`。它通过锁文件运行格式检查、Clippy、测试、Release 构建和 Rustdoc。
+当前 Draft PR 提交上的 docs 和 Rust Job 均已通过。工作流权限为只读，不发布 Release。Ruleset 仍只要求 `docs` 检查；
+本轮没有修改仓库保护设置。
 
 程序使用 `std::time::Instant` 计时，每类最多保留最近 4096 个样本，分位数采用最近秩法。启动范围结束于
 `CreateWindowExW` 返回，不代表首帧已显示；`Present` 耗时也不代表屏显延迟。可用 PresentMon/ETW 观察已显示帧，

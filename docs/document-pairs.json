@@ -92,7 +92,7 @@
       "id": "development",
       "en": "docs/en/development.md",
       "zh-CN": "docs/zh-CN/development.md",
-      "revision": 6,
+      "revision": 7,
       "shared_literals": [
         "3.11",
         "1.96.0",
@@ -165,7 +165,7 @@
       "id": "stage-a",
       "en": "docs/en/stage-a.md",
       "zh-CN": "docs/zh-CN/stage-a.md",
-      "revision": 6,
+      "revision": 7,
       "shared_literals": [
         "Feature Level 11.1",
         "Present(1, 0)",
