@@ -1,19 +1,19 @@
 [English](architecture.md) | [简体中文](../zh-CN/architecture.md)
 
-<!-- doc-id: architecture; revision: 1; status: proposal -->
+<!-- doc-id: architecture; revision: 4; status: implementation-review -->
 
-# Architecture scope and review actions
+# Architecture scope and Stage A review
 
-Pixstride's selected stack is Rust Stable, Win32/windows-rs, D3D11, and DXGI Flip Model presentation
-on Windows 10/11 x64. This page records the next experiments and their boundaries. It is a proposal,
-not an implementation or a complete translation of the early internal designs.
+Pixstride targets Windows 10/11 x64 with Rust Stable, Win32/windows-rs, D3D11, and DXGI Flip Model
+presentation. Stage A now has a local implementation. The later image-decoding, navigation, and cache
+designs remain proposals; this page does not reproduce the early internal design drafts.
 
-## Stage A: validate ownership and latency
+## Stage A implementation
 
-The recommended model gives the UI thread the window and input state, and gives a render thread
-the D3D11 Immediate Context, DXGI Swap Chain, and GPU resources. Driver stalls and `Present` can then
-be isolated from input handling, at the cost of a wakeup and explicit lifecycle coordination.
-The model remains subject to stage A measurements.
+The UI thread owns the `HWND`, message loop, input, and current view state. A dedicated render thread
+creates and owns the D3D11 Device, Immediate Context, DXGI Swap Chain, shaders, and textures. This keeps
+D3D11 COM interfaces on one thread and moves device work and `Present` out of the message procedure.
+The thread model is not a performance conclusion until interactive latency measurements are available.
 
 ```mermaid
 flowchart LR
@@ -25,19 +25,41 @@ flowchart LR
   Ack --> UI
 ```
 
-The UI publishes an immutable [Render Snapshot](../TERMINOLOGY.md) and signals work. The render
-thread reads the latest state after a frame slot becomes available. The UI keeps pumping messages
-while resize and shutdown acknowledgements are pending; it must not synchronously join a thread
-that may be inside `Present`. This diagram does not include later decoding or caching services.
+`Arc<Shared>` holds one `Mutex<PendingState>` containing the latest Render Snapshot, a redraw flag, and
+a shutdown flag. The UI overwrites this state and signals an auto-reset event; it does not enqueue each
+input as a render job. The renderer waits for work and, while a frame is pending, the DXGI frame-latency
+handle. When no redraw is pending it waits only for work, so idle rendering does not poll. No COM
+interface crosses the thread boundary. The UI keeps pumping messages during resize and shutdown and
+does not join the render thread from a window procedure.
 
-| Required stage A experiment | Evidence and completion condition |
+The window procedure stores a stable `Box<WindowContext>` pointer in `GWLP_USERDATA` during
+`WM_NCCREATE` and clears it during `WM_NCDESTROY`. The UI retains the `HWND` until the render thread
+releases its D3D11 resources and signals a UI-owned completion event. The UI waits for messages and
+completion with `MsgWaitForMultipleObjects`, joins the worker, and then destroys the window. A panic
+is caught at the worker boundary; a completion guard signals the event and falls back to `WM_QUIT` if
+signaling fails. Resize
+and `ResizeBuffers` run on the render thread; before `ResizeBuffers`, it clears the Immediate Context
+and releases the old Back Buffer view. Zero-sized minimized surfaces suspend drawing.
+
+The renderer tries a hardware device at Feature Level 11.1 or 11.0, then tries WARP if device creation
+fails. It uses a two-buffer Flip Discard Swap Chain, a frame-latency waitable object with maximum
+latency 1, and `Present(1, 0)`. The program creates two 256 × 256 RGBA8 test textures at startup and
+uses Left/Right to select their existing Shader Resource Views. `build.rs` compiles HLSL with the
+Windows SDK `fxc.exe` and embeds DXBC into the executable.
+
+On a failed `Present`, the renderer reads `GetDeviceRemovedReason`, reports the failure, releases its
+resources, and exits. Stage A does not recreate a removed device. Rust COM wrappers provide reference
+count management; they do not guarantee apartment, buffer, or lifetime preconditions. No COM object
+is shared with the UI thread, and this code does not justify arbitrary `unsafe impl Send`.
+
+| Stage A validation | Current evidence and remaining work |
 |---|---|
-| Input latency | Timestamp input receipt, state publication, render start, `Present`, and the corresponding Displayed event separately. |
-| Thread wakeup cost | Measure the publish-to-render interval and its P50/P95/P99 where sample counts support them; compare a limited UI-rendering experiment if needed. |
-| Resize | Coalesce sizes, ignore zero-sized surfaces, release all back-buffer references before `ResizeBuffers`, and survive repeated resize/DPI changes. |
-| Shutdown | Continue pumping UI messages, stop submissions, receive asynchronous completion, and release resources without a wait cycle. |
-| Device Lost | Inject a recoverable failure, invalidate old Device Epoch resources, recreate the device path, and report repeated failure instead of retrying forever. |
-| Resource synchronization | Keep Immediate Context/DXGI calls on one owner, bound pending work, and verify that submitted resources are not reused early. |
+| Input latency | Owner diagnostics recorded input publication at 3 µs P50 and publication-to-render handling at 168 µs P50, 2,352 µs P99, and 156,976 µs maximum. Samples were not fully classified or controlled; actual display timing remains unmeasured. |
+| Thread wakeup cost | Latest-state coalescing is measured by request-origin buckets in the current build. The owner-run aggregate has a 156,976 µs maximum; attribution needs WPR CPU Usage (Precise). There is no UI-thread-rendering comparison. |
+| Resize | The owner manually verified repeated resize, minimize, and restore. Zero sizes skip rendering, and the old Render Target is released before `ResizeBuffers`. DPI migration remains untested. |
+| Shutdown | `WM_CLOSE` requests asynchronous shutdown; the UI joins the worker after completion before destroying the window. Manual close passed; automated race and Device Lost stress tests remain outstanding. |
+| Device Removed | A failed `Present` queries `GetDeviceRemovedReason` and exits safely. Device recreation and injected removal tests are deferred. |
+| Resource synchronization | The Immediate Context and Swap Chain stay on the render thread. No image cache or resource reuse pool exists in Stage A. |
 
 The [D3D11 thread rules](https://learn.microsoft.com/en-us/windows/win32/direct3d11/overviews-direct3d-11-render-multi-thread-intro)
 and [Present contract](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-present)
@@ -45,12 +67,12 @@ constrain the implementation. Rust COM wrappers manage reference counts; they do
 buffer, or lifetime preconditions. UI COM services use STA; decoder COM objects later stay with their
 MTA workers unless explicitly marshalled. No arbitrary `unsafe impl Send` is justified by this design.
 
-Start with a two-buffer Flip Discard Swap Chain, maximum frame latency 1, and on-demand rendering.
-Wait for frame readiness before drawing, including the first frame. Idle rendering waits for work
-rather than polling an already-signalled frame handle. These settings follow the
+The implementation uses a two-buffer Flip Discard Swap Chain, maximum frame latency 1, and on-demand
+rendering. It waits for frame readiness before drawing, including the first frame. Idle rendering
+waits for work rather than polling an already-signalled frame handle. These settings follow the
 [Flip Model guidance](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/for-best-performance--use-dxgi-flip-model)
 and [waitable-object contract](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-getframelatencywaitableobject);
-their latency benefit must be measured on the target system.
+their latency benefit must be measured on an interactive target system.
 
 ## Keep the first implementation small
 

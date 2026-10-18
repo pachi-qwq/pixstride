@@ -1,19 +1,20 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 3; status: design-review -->
+<!-- doc-id: readme; revision: 4; status: stage-a-development -->
 
 # Pixstride
 
 A native Windows image viewer project focused on fast startup, responsive input, and bounded resource use.
 
-Inspired by MassiGra's lightweight interface and fast interaction, Pixstride is in
-Design Review / Repository Foundation. This repository contains documentation and repository tooling.
-There is no viewer application, Cargo project, downloadable build, or measured product performance yet.
+Inspired by MassiGra's lightweight interface and fast interaction, Pixstride has started Stage A.
+The `feat/stage-a-win32-d3d11` branch contains a native Win32/D3D11 test application. It is not a
+general-purpose image viewer and there is no public release or reviewed product performance report.
 
-## Planned foundation
+## Current foundation
 
 The selected stack is Rust Stable, Win32 through windows-rs, Direct3D 11, and a DXGI Flip Model
-Swap Chain. The target is Windows 10/11 x64. WIC is the first decoder to evaluate for ordinary images.
+Swap Chain. The target is Windows 10/11 x64. Stage A validates window and rendering foundations;
+image decoding and navigation have not been implemented.
 
 The proposed architecture keeps GPU resource ownership on a render thread and decodes images in
 bounded background work. Large images have a separate path. Threading, cache budgets, and Tile sizes
@@ -21,6 +22,7 @@ remain subject to experiments; format names in the test plan are not a support c
 
 ## Read and contribute
 
+- [Stage A implementation and verification](docs/en/stage-a.md)
 - [Architecture scope and review actions](docs/en/architecture.md)
 - [Development status and documentation checks](docs/en/development.md)
 - [Cross-format stress test plan](docs/en/stress-testing.md)

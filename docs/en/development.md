@@ -1,12 +1,31 @@
 [English](development.md) | [简体中文](../zh-CN/development.md)
 
-<!-- doc-id: development; revision: 2; status: design-review -->
+<!-- doc-id: development; revision: 8; status: stage-a-development -->
 
 # Development status and checks
 
-The repository currently contains public documentation, templates, and Python documentation tools.
-It has no Cargo workspace or viewer binary. Start with the document checks; Rust build commands become
-applicable when stage A implementation is separately approved.
+The repository now contains a single Cargo package for the Stage A Win32/D3D11 test application,
+alongside its public documents and Python documentation tools. It does not yet contain image decoding,
+file navigation, or a public release.
+
+## Build and run Stage A
+
+Use Windows 10/11 x64, Rust Stable with `x86_64-pc-windows-msvc`, MSVC C++ Build Tools, the Windows SDK,
+and `fxc.exe`. The build script compiles HLSL into DXBC in Cargo's `OUT_DIR`; set `PIXSTRIDE_FXC` to
+the compiler's full path if SDK discovery fails. No shader compiler runs during normal application use.
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo build --release --locked
+cargo doc --no-deps --locked
+cargo run --release
+```
+
+The program displays generated test textures rather than opening an image. Left and Right select the
+checkerboard or gradient. On exit, stdout prints the timing summary. The Release executable is
+`target/release/pixstride.exe`.
 
 ## Run the current checks
 
@@ -44,20 +63,25 @@ Tests use temporary files only. Set `PIXSTRIDE_DOC_TEST_ROOT` to an existing rep
 if the platform's default temporary directory is unsuitable. Keep reports outside the repository.
 The `-B` option avoids Python bytecode output in the working tree.
 
-## Prepare Windows development later
+## Verified local toolchain and limits
 
-Stage A will need Rust Stable with `x86_64-pc-windows-msvc`, Cargo, rustfmt, Clippy, MSVC C++ build tools,
-and a compatible Windows SDK. Check existing versions before installing or changing anything.
-Use a project-local toolchain selection after review; do not change another project's default toolchain.
+The current validation environment has Rust/Cargo 1.96.0, target `x86_64-pc-windows-msvc`, Visual Studio
+Build Tools 2022 with MSVC 14.44, and Windows SDK 10.0.26100.0. The project pins `windows` 0.62.2 and
+uses `anyhow` 1.0.104. `Cargo.lock` records the resolved dependency graph. The Release build compiled
+both HLSL entries with the SDK's FXC.
 
-A prior local probe used Rust/Cargo 1.96.0 and windows-rs `windows` 0.62.2, compiled through MSVC,
-and created a WIC Factory and D3D11 hardware device. This demonstrates that combination on one machine,
-not a project-wide pin, clean-machine reproduction, or performance result.
+A project-owner manual Release run on an NVIDIA GeForce RTX 4080 SUPER using the Hardware Driver at
+Feature Level 11.1 confirmed the checkerboard, Left/Right texture switching, maximize/minimize/restore,
+repeated resize, and Alt+F4 shutdown. The owner recorded D3D11 initialization at 183.236 ms and device
+creation at 177.742 ms. See [Stage A verification](stage-a.md) for the full timings and their limits.
+Controlled cold/warm startup, Input-to-Photon, Device Lost stress, and long-duration stability remain
+unverified. Compilation alone does not establish GUI behavior.
 
-The probe's debug-device creation returned `0x887A002D` (missing SDK debug component). Graphics Tools
-installation may require administrator permission and must be approved. PresentMon 2.6.0 CLI help,
-official digest and signature were verified locally; live capture was not. WPR profile discovery worked;
-WPA/trace analysis and Swap Chain/Shader/WARP behavior still need validation. Raw logs remain private.
+The earlier environment probe's debug-device creation returned `0x887A002D` (missing SDK debug
+component). The current application does not request the D3D11 debug layer. Installing Graphics Tools
+may require administrator permission and needs separate approval. PresentMon 2.6.0's CLI help, official
+digest, and signature were previously verified locally; live capture and WPA trace analysis remain
+unverified. Raw probe logs stay outside the repository.
 
 Use [Rust's Windows MSVC guidance](https://doc.rust-lang.org/rustc/platform-support/windows-msvc.html),
 [windows-rs](https://github.com/microsoft/windows-rs),
@@ -65,10 +89,15 @@ Use [Rust's Windows MSVC guidance](https://doc.rust-lang.org/rustc/platform-supp
 [WPA](https://learn.microsoft.com/en-us/windows-hardware/test/wpt/windows-performance-analyzer), and
 [PresentMon](https://github.com/GameTechDev/PresentMon) as installation/research sources.
 
-## When a Cargo project is approved
+## CI and performance validation
 
-Add a Windows Runner job for `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-`cargo test --locked`, and `cargo build --release --locked`. Resolve/pin dependencies first and check the
-actual selected features. Do not add a placeholder viewer just to make CI run.
-Shared CI verifies correctness/builds; dedicated hardware measures latency and resource peaks.
-See [stage A scope](architecture.md) and [maintenance](maintenance.md) before publishing changes.
+The `Rust` workflow uses a Windows runner and a `rust` job. It runs formatting, Clippy, tests, Release
+build, and Rustdoc with the checked-in lockfile. Its docs and Rust jobs passed on the current Draft PR
+commit. The workflow has read-only repository permissions and does not publish releases. The `docs`
+check remains the only required Ruleset status check; this task did not change repository protection.
+
+Application timings use `std::time::Instant` and retain at most 4096 recent samples per category.
+Percentiles use nearest rank. Startup ends at `CreateWindowExW` return, not first display. `Present`
+duration is not display latency. Use PresentMon/ETW for displayed-frame events and an external method
+for Input-to-Photon measurement. See [Stage A verification](stage-a.md), [architecture](architecture.md),
+and [maintenance](maintenance.md) for the current implementation and limits.
