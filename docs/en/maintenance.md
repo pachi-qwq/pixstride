@@ -1,36 +1,37 @@
 [English](maintenance.md) | [简体中文](../zh-CN/maintenance.md)
 
-<!-- doc-id: maintenance; revision: 2; status: proposal -->
+<!-- doc-id: maintenance; revision: 3; status: active -->
 
 # Repository maintenance and publication
 
-This page defines the intended workflow and decisions requiring the owner's approval. Configuration
-files in this checkout do not activate remote GitHub settings or publish anything.
+This page records the completed repository initialization and current workflow, verified on 2026-10-18.
+Future release work remains planned. Local configuration changes do not automatically change GitHub.
 
 ## Empty-repository bootstrap
 
-The 2026-10-18 read-only audit found a public remote with no branches and no commits; the commits API
+Before the first push, the 2026-10-18 read-only audit found no remote branches or commits; the commits API
 returned HTTP 409. Repository metadata named `master` as the default, and the rulesets list was empty.
 Recheck the remote before publication: a past empty result is not permission to overwrite new work.
 
 The owner selected `MIT OR Apache-2.0` and `main`. Local `main` preserves the root commit `95f0d4f`
 containing `.gitignore`, `.editorconfig`, and `.gitattributes`, then adds bilingual READMEs, both license
-texts, and narrower ignore rules. An independent Worktree protects the existing untracked documents.
-`docs/repository-foundation` fast-forwards to that baseline and adds the reviewed documentation/tools
+texts, and narrower ignore rules. An independent Worktree protected the existing untracked documents.
+`docs/repository-foundation` fast-forwarded to that baseline and added the reviewed documentation/tools
 as a separate commit. Original drafts and private samples remain outside Git history.
 
 New commits use the account's GitHub noreply identity through repository-local configuration. The root
 commit retains its original author metadata; global Git settings and existing history are unchanged.
 Review both the tree and commit metadata before publication.
 
-Remote publication still requires explicit approval after local checks and commits. Recheck refs and
-stop if the remote has changed. Push `main` first, verify its README and licenses, and check whether
-GitHub already selected it as the default. Change the default only if needed; inspect any real `master`
-branch before acting. Then push the documentation branch and open its PR against `main`, without
-merging it. The first PR includes the documentation workflow: verify that GitHub actually runs it
-successfully before requiring its observed check name. If it is not scheduled, report the bootstrap
-limitation and keep the check optional until resolved. Later changes use normal PRs.
-This plan does not itself authorize a push, settings change, history rewrite, or branch deletion.
+After explicit owner approval, both branches were pushed normally. GitHub automatically selected `main`
+as the default; its bilingual READMEs and both license texts were verified remotely.
+[PR #1](https://github.com/pachi-qwq/pixstride/pull/1) was opened from `docs/repository-foundation` against
+`main` and remains unmerged. The first documentation CI runs succeeded for both
+[push](https://github.com/pachi-qwq/pixstride/actions/runs/39137217067) and
+[pull request](https://github.com/pachi-qwq/pixstride/actions/runs/39137226043).
+The observed `docs` check was then made required, and `main` protection is active.
+No history was rewritten, no force push was used, and automatic merging remains disabled.
+Later changes use normal PRs; agents still need explicit authorization for remote actions.
 
 ## Branches and pull requests
 
@@ -49,33 +50,35 @@ correctness and performance impact, squash merge, then delete the merged feature
 Do not create a long-lived `develop`. Conventional Commits are recommended without extra hooks.
 Require a PR but allow zero required approvals so a solo maintainer can review and merge their own work.
 
-## Remote settings awaiting approval
+## Current remote settings
 
-| Setting | Recommendation | When to apply |
+| Setting | Verified state | Scope |
 |---|---|---|
-| Default branch | Use `main`; change it only if GitHub has not already selected it. | After the first approved `main` push and a fresh branch check. |
-| PR requirement | Require PRs for `main`; required approvals 0; do not require a different reviewer or code-owner approval. | After bootstrap. |
-| Status checks | Require the successful documentation job `docs`; verify the actual context after its first run. | After CI has reported it; no path filters that leave required checks pending. |
-| History | Block force pushes and deletion of `main`; consider linear history with squash merging enabled. | After bootstrap, with a reviewed bypass policy. |
-| Merge methods | Prefer squash; the initial remote allowed squash, merge and rebase. | Owner decides whether to disable other methods. |
-| Feature branches | Enable automatic deletion after merge; initial value was false. | Owner-approved setting; branch deletion remains a remote action. |
-| Visibility | Keep the existing public visibility. | No change is proposed. |
+| Default branch | `main`, selected automatically after its first push. | Repository default. |
+| PR requirement | PR required; required approvals 0; code-owner and last-push approvals disabled. | `main`. |
+| Status checks | `docs` required, bound to GitHub Actions integration 15368; strict up-to-date policy enabled. | `main`; selected after actual successful CI runs. |
+| History | Force pushes and branch deletion blocked; bypass list empty. | `main`. |
+| Merge methods | Squash enabled and recommended; merge and rebase remain allowed. | Repository merge settings. |
+| Feature branches | Automatic deletion after merge enabled. | Merged feature branches; PR #1 is still open. |
+| Visibility and auto-merge | Repository public; automatic merging disabled. | No visibility change or automatic merge was performed. |
 
-Rulesets can require PRs without approvals, block force pushes/deletions, and require status checks.
-Feature/plan availability and bypass settings must be verified when applying them.
+[The active `main-protection` ruleset](https://github.com/pachi-qwq/pixstride/rules/25346431)
+applies to `refs/heads/main` with no bypass actors. Required approvals are zero so a solo maintainer can
+review and merge through a PR. CI must pass before merging; the agent does not merge automatically.
 [GitHub rules documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
-is the reference. Do not enable a required check before it exists or impose an approval rule the solo
-maintainer cannot satisfy. Agents must obtain explicit authorization for each remote action in scope.
+describes the available rules. Future remote changes still require the owner's explicit authorization.
 Automatic deletion does not guarantee deletion of a contributor's fork branch: the fork's setting and
 the merger's write access also matter. See
 [GitHub's branch-deletion rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-the-automatic-deletion-of-branches).
 
 ## Documentation CI
 
-The local workflow is named `Documentation`, with a Windows job named `docs`. It uses Python's standard
+The workflow is named `Documentation`, with a Windows job named `docs`. It uses Python's standard
 library, read-only repository permissions, commit-pinned official checkout/setup actions, and no secrets.
 Push and PR events run local checks and checker tests without path filters. A manual dispatch can
-add external-link checks; no workflow has been pushed or run remotely in this task.
+add external-link checks. The first successful Windows runs checked 33 public files and passed all
+41 checker tests. The workflow is on `docs/repository-foundation` and in PR #1; it reaches `main` when
+that PR is merged. Subsequent PR updates must pass the required `docs` check again.
 
 Hard failures cover Markdown structure/local links, language entries/revisions/shared literals, known
 private-path/credential patterns, and oversized/publicly disallowed artifacts. Language-quality findings
@@ -150,6 +153,5 @@ checksums/SBOM/notices, and upload a draft release for owner review. Installatio
 update policy and release publishing require separate decisions. No application-release workflow is
 implemented in this documentation task.
 
-Owner decisions still pending: first `main` push/default switch, protection/bypass policy, required
-checks, merge options, branch deletion, and later release/signing policy. Local review can finish
-before any of those remote actions occur.
+Repository initialization and protection are complete. PR #1 still awaits the maintainer's merge
+decision; release and signing policies require separate approval.

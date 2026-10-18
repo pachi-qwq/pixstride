@@ -1,15 +1,15 @@
 [English](../en/maintenance.md) | [简体中文](maintenance.md)
 
-<!-- doc-id: maintenance; revision: 2; status: proposal -->
+<!-- doc-id: maintenance; revision: 3; status: active -->
 
 # 仓库维护与发布
 
-本页规定计划采用的工作流和需要负责人批准的事项。
-本地配置文件不会自动启用 GitHub 设置，也不会发布内容。
+本页记录已完成的仓库初始化和当前工作流，状态核查日期为 2026-10-18。
+后续发布工作仍属计划，本地配置改动不会自动改变 GitHub 设置。
 
 ## 空仓库初始化
 
-2026-10-18 的只读审计发现远程为公开仓库，尚无分支和提交，提交 API 返回 HTTP 409。
+首次推送前，2026-10-18 的只读审计发现远程尚无分支和提交，提交 API 返回 HTTP 409。
 仓库元数据中的默认分支名为 `master`，rulesets 列表为空。
 发布前必须重新检查远程，不能根据曾经为空的结果覆盖后续内容。
 
@@ -22,13 +22,13 @@
 新提交通过仓库局部配置使用该账号的 GitHub noreply 身份。根提交保留原有作者元数据，
 没有更改全局 Git 设置或既有历史。发布前同时核对文件树和提交元数据。
 
-本地检查和提交完成后，远程发布仍需明确授权。执行前重新检查 refs，远程已变化时停止。
-先推送 `main`，核实 README 和许可证，再检查 GitHub 是否已经选它作为默认分支。
-仅在需要时修改默认值；操作前核实是否存在真实的 `master` 分支。
-随后推送文档分支并向 `main` 建立 PR，不自动合并。首个 PR 包含文档工作流，
-需确认 GitHub 实际执行成功后，再把观察到的检查名设为必需。
-如果工作流未被调度，报告初始化限制，解决前不强制该检查。后续使用普通 PR 流程。
-本计划本身不授权推送、设置修改、历史改写或分支删除。
+取得负责人明确授权后，两条分支均已正常推送。GitHub 自动将 `main` 设为默认分支，
+双语 README 和两份许可证的远程内容已核对。
+[PR #1](https://github.com/pachi-qwq/pixstride/pull/1) 已从 `docs/repository-foundation` 向 `main`
+建立，保持未合并。首次文档 CI 的 [push](https://github.com/pachi-qwq/pixstride/actions/runs/39137217067)
+和 [pull request](https://github.com/pachi-qwq/pixstride/actions/runs/39137226043) 运行均成功。
+随后将实际产生的 `docs` 检查设为必需，并启用 `main` 保护规则。
+没有改写历史或强推，自动合并保持关闭。后续使用普通 PR 流程；Agent 执行远程操作仍须明确授权。
 
 ## 分支和 Pull Request
 
@@ -47,32 +47,34 @@ Squash Merge 后删除已合并功能分支。不建立长期 `develop`。
 推荐 Conventional Commits，不增加额外钩子。要求经过 PR，但 required approvals 为 0，
 让个人维护者能够自审并合并自己的改动。
 
-## 待批准的远程设置
+## 当前远程设置
 
-| 设置 | 建议 | 执行时机 |
+| 设置 | 已核实状态 | 范围 |
 |---|---|---|
-| 默认分支 | 采用 `main`，仅在 GitHub 尚未自动选择时修改。 | 首次 `main` 推送获准并完成，且重新检查分支后。 |
-| PR | `main` 要求经过 PR，required approvals 为 0，不强制其他人或 code owner 批准。 | 初始化后。 |
-| Status checks | 要求文档作业 `docs` 成功，第一次运行后核实实际 context。 | CI 已报告检查后；不设置会让必需检查一直 pending 的路径过滤。 |
-| 历史 | 禁止强推和删除 `main`，启用 squash 后可考虑线性历史。 | 初始化后，先评审 bypass 策略。 |
-| 合并方式 | 优先 squash；初始远程允许 squash、merge 和 rebase。 | 由负责人决定是否关闭其他方式。 |
-| 功能分支 | 启用合并后自动删除，初始值为 false。 | 负责人批准后；删除分支仍属远程操作。 |
-| 可见性 | 保持现有公开状态。 | 不建议修改。 |
+| 默认分支 | `main`，由 GitHub 在首次推送后自动选定。 | 仓库默认值。 |
+| PR | 必须经过 PR；required approvals 为 0，不强制 code owner 或最后推送者之外的人批准。 | `main`。 |
+| Status checks | 必须通过 `docs`，绑定 GitHub Actions integration 15368，启用严格的分支最新状态要求。 | `main`；实际 CI 成功后配置。 |
+| 历史 | 禁止强推和删除分支，bypass 名单为空。 | `main`。 |
+| 合并方式 | squash 已启用且为推荐方式，仍允许 merge 和 rebase。 | 仓库合并设置。 |
+| 功能分支 | 已启用合并后自动删除。 | 已合并功能分支；PR #1 仍未合并。 |
+| 可见性与自动合并 | 仓库公开，自动合并关闭。 | 没有修改可见性或执行自动合并。 |
 
-Ruleset 可以要求 PR 而不要求批准人数，也可以禁止强推、删除和要求状态检查。
-执行时需核对账户计划支持范围和 bypass 设置，依据为
-[GitHub rules 文档](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)。
-不要在检查尚不存在时设为必需，也不要设置个人维护者无法满足的批准规则。
-Agent 在执行范围内的每项远程操作都必须有明确授权。
+[已启用的 `main-protection` Ruleset](https://github.com/pachi-qwq/pixstride/rules/25346431)
+作用于 `refs/heads/main`，没有 bypass actor。批准人数为 0，个人维护者可以自审后通过 PR 合并。
+合并前必须通过 CI，Agent 不自动合并。
+[GitHub rules 文档](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
+说明了可用规则。后续远程设置变更仍须负责人明确授权。
 自动删除不保证能移除贡献者 fork 中的分支，还取决于 fork 的设置和合并者的写入权限，
 详见 [GitHub 分支删除规则](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-the-automatic-deletion-of-branches)。
 
 ## 文档 CI
 
-本地工作流名为 `Documentation`，Windows 作业名为 `docs`，只使用 Python 标准库、
+工作流名为 `Documentation`，Windows 作业名为 `docs`，只使用 Python 标准库、
 只读仓库权限和按 commit 固定的官方 checkout/setup action，不使用秘密。
 Push 和 PR 事件不按路径过滤，运行本地检查与检查器测试。
-手动 dispatch 可增加外部链接检查，本轮没有推送或在远程执行任何工作流。
+手动 dispatch 可增加外部链接检查。首次成功的 Windows 运行检查了 33 个公开文件，
+41 项检查器测试全部通过。工作流目前位于 `docs/repository-foundation` 和 PR #1 中，
+该 PR 合并后才进入 `main`。后续 PR 更新必须重新通过必需的 `docs` 检查。
 
 硬检查覆盖 Markdown 结构/相对链接、语言入口/修订/共享字面值、已知私人路径/凭据模式，
 以及过大或禁止公开的产物。语言质量只作提示，检查器测试覆盖代码、API 名称和链接的误报场景。
@@ -140,5 +142,4 @@ Apache [官方完整文本](https://www.apache.org/licenses/LICENSE-2.0)保持�
 上传草稿 Release 供负责人检查。安装、签名、文件关联、更新策略和正式发布需要另行决定。
 本轮不实现应用发布流水线。
 
-仍待负责人批准：首次 `main` 推送和默认分支切换、保护/bypass、必需检查、
-合并选项、分支删除，以及后续 Release/签名策略。本地评审可以在这些远程操作之前完成。
+仓库初始化和保护配置已经完成。PR #1 仍等待维护者决定合并；Release 和签名策略需要另行批准。

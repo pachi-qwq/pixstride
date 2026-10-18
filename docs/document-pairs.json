@@ -9,7 +9,7 @@
     {"id": "architecture", "en": "docs/en/architecture.md", "zh-CN": "docs/zh-CN/architecture.md", "revision": 1, "shared_literals": ["16384", "1024", "512 MiB", "640 MiB", "0x887A002D", "A-01", "D-01"]},
     {"id": "development", "en": "docs/en/development.md", "zh-CN": "docs/zh-CN/development.md", "revision": 2, "shared_literals": ["3.11", "1.96.0", "0.62.2", "2.6.0", "0x887A002D", "PIXSTRIDE_DOC_TEST_ROOT", "1 MiB", "assets/", "tests/fixtures/"]},
     {"id": "stress", "en": "docs/en/stress-testing.md", "zh-CN": "docs/zh-CN/stress-testing.md", "revision": 1, "shared_literals": ["48000", "32000", "2,071,102,933", "6,144,000,000", "65500", "16384", "30000", "300000", "512 MiB", "10,000", "1000", "L1", "L4"]},
-    {"id": "maintenance", "en": "docs/en/maintenance.md", "zh-CN": "docs/zh-CN/maintenance.md", "revision": 2, "shared_literals": ["2026-10-18", "master", "main", "docs/repository-foundation", "409", "MIT OR Apache-2.0", "0.x.y", "95f0d4f", "Copyright (c) 2026 pachi-qwq", "1 MiB"]},
+    {"id": "maintenance", "en": "docs/en/maintenance.md", "zh-CN": "docs/zh-CN/maintenance.md", "revision": 3, "shared_literals": ["2026-10-18", "master", "main", "docs/repository-foundation", "409", "MIT OR Apache-2.0", "0.x.y", "95f0d4f", "Copyright (c) 2026 pachi-qwq", "1 MiB", "25346431", "15368", "39137217067", "39137226043", "41"]},
     {"id": "writing-sources", "en": "docs/en/writing-sources.md", "zh-CN": "docs/zh-CN/writing-sources.md", "revision": 1, "shared_literals": ["8da1f030185bdfe8471220585162991eaeb970e9", "bdbd9cceaec791f2bd280b4a387a69be09b742d6", "571951731efb4b83b1939af1d3dd830441ebef45", "2c2d89c8c7cf8c2b96509e58626e73f6bc223347"]}
   ],
   "bilingual_templates": [
