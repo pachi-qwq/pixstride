@@ -1,6 +1,6 @@
 [English](../en/architecture.md) | [简体中文](architecture.md)
 
-<!-- doc-id: architecture; revision: 2; status: implementation-review -->
+<!-- doc-id: architecture; revision: 4; status: implementation-review -->
 
 # 架构范围与阶段 A 评审
 
@@ -29,7 +29,9 @@ auto-reset event，不会将每次输入都排成渲染任务。渲染线程等�
 不在窗口过程中 join 渲染线程。
 
 窗口过程在 `WM_NCCREATE` 时把稳定的 `Box<WindowContext>` 指针存入 `GWLP_USERDATA`，并在 `WM_NCDESTROY`
-时清除。渲染线程释放 D3D11 资源并发送 `WM_RENDER_STOPPED` 前，UI 保持 `HWND` 有效；收到通知后再销毁窗口。
+时清除。渲染线程释放 D3D11 资源后触发 UI 持有的 completion event。UI 使用 `MsgWaitForMultipleObjects`
+等待窗口消息或线程完成，join 渲染线程后再销毁窗口。线程入口捕获 panic；完成 guard 负责触发事件，若触发失败则
+发送 `WM_QUIT` 作为后备。
 Resize 和 `ResizeBuffers` 都在渲染线程执行；调用 `ResizeBuffers` 前清空 Immediate Context 并释放旧 Back Buffer
 View。最小化形成零尺寸客户区时暂停绘制。
 
@@ -44,10 +46,10 @@ Rust COM 包装器管理引用计数，但不保证 apartment、缓冲区和生�
 
 | 阶段 A 验证项 | 当前证据与未完成工作 |
 |---|---|
-| 输入延迟 | 已记录输入处理、状态发布到渲染线程读取、命令准备和 `Present` 的计时点；仍需交互样本和已显示帧观察。 |
-| 线程唤醒成本 | 最新快照加事件可合并排队状态；尚未取得 P50/P95/P99，也未与 UI 线程渲染进行对照。 |
-| Resize | 尺寸变化会合并，零尺寸跳过绘制，调用 `ResizeBuffers` 前释放旧 Render Target；反复拖动和跨 DPI 屏幕移动尚未验证。 |
-| Shutdown | `WM_CLOSE` 发起异步关闭；UI 收到 `WM_RENDER_STOPPED` 后才销毁窗口。仍需交互式关闭和竞争场景测试。 |
+| 输入延迟 | 项目负责人测得输入状态发布 P50 为 3 µs，发布到渲染线程处理为 P50 168 µs、P99 2,352 µs、最大值 156,976 µs。样本未完全分类或受控；实际屏显时间仍未测量。 |
+| 线程唤醒成本 | 当前版本按请求来源记录最新状态合并后的延迟。人工运行的汇总最大值为 156,976 µs；归因需要 WPR CPU Usage (Precise)。尚无与 UI 线程渲染方案的对照。 |
+| Resize | 项目负责人已人工验证连续 Resize、最小化和恢复。零尺寸会跳过绘制，调用 `ResizeBuffers` 前释放旧 Render Target；跨 DPI 屏幕移动仍未测试。 |
+| Shutdown | `WM_CLOSE` 发起异步关闭；UI 等待渲染线程完成并 join 后再销毁窗口。人工关闭测试已通过；自动竞争和 Device Lost 压力测试仍未完成。 |
 | Device Removed | `Present` 失败后会查询 `GetDeviceRemovedReason` 并安全退出；尚未实现重建，也未注入设备移除故障。 |
 | 资源同步 | Immediate Context 和 Swap Chain 由渲染线程维护；阶段 A 不含图片缓存或资源复用池。 |
 

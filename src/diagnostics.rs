@@ -16,6 +16,12 @@ pub(crate) enum Metric {
     FirstPresent,
     InputHandling,
     RequestToRender,
+    RequestToRenderInitial,
+    RequestToRenderInput,
+    RequestToRenderResize,
+    RequestToRenderMinimize,
+    RequestToRenderRestore,
+    RequestToRenderPaint,
     RenderCommands,
     Present,
     Resize,
@@ -23,7 +29,7 @@ pub(crate) enum Metric {
 }
 
 impl Metric {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 19] = [
         Self::Startup,
         Self::D3dInitialization,
         Self::DeviceCreation,
@@ -33,6 +39,12 @@ impl Metric {
         Self::FirstPresent,
         Self::InputHandling,
         Self::RequestToRender,
+        Self::RequestToRenderInitial,
+        Self::RequestToRenderInput,
+        Self::RequestToRenderResize,
+        Self::RequestToRenderMinimize,
+        Self::RequestToRenderRestore,
+        Self::RequestToRenderPaint,
         Self::RenderCommands,
         Self::Present,
         Self::Resize,
@@ -50,10 +62,16 @@ impl Metric {
             Self::FirstPresent => 6,
             Self::InputHandling => 7,
             Self::RequestToRender => 8,
-            Self::RenderCommands => 9,
-            Self::Present => 10,
-            Self::Resize => 11,
-            Self::Shutdown => 12,
+            Self::RequestToRenderInitial => 9,
+            Self::RequestToRenderInput => 10,
+            Self::RequestToRenderResize => 11,
+            Self::RequestToRenderMinimize => 12,
+            Self::RequestToRenderRestore => 13,
+            Self::RequestToRenderPaint => 14,
+            Self::RenderCommands => 15,
+            Self::Present => 16,
+            Self::Resize => 17,
+            Self::Shutdown => 18,
         }
     }
 
@@ -67,7 +85,13 @@ impl Metric {
             Self::TextureUpload => "测试纹理 CPU 准备与 GPU 资源创建",
             Self::FirstPresent => "渲染线程启动到首次 Present 成功返回",
             Self::InputHandling => "Win32 输入处理到状态发布",
-            Self::RequestToRender => "状态发布到渲染线程开始处理",
+            Self::RequestToRender => "最新状态发布到渲染线程开始处理（全部来源）",
+            Self::RequestToRenderInitial => "首次窗口尺寸请求到渲染线程处理",
+            Self::RequestToRenderInput => "方向键请求到渲染线程处理",
+            Self::RequestToRenderResize => "窗口 Resize 请求到渲染线程处理",
+            Self::RequestToRenderMinimize => "最小化请求到渲染线程处理",
+            Self::RequestToRenderRestore => "恢复请求到渲染线程处理",
+            Self::RequestToRenderPaint => "WM_PAINT 请求到渲染线程处理",
             Self::RenderCommands => "渲染命令准备",
             Self::Present => "Present 调用耗时",
             Self::Resize => "Swap Chain Resize 处理",
@@ -125,7 +149,7 @@ struct Summary {
 /// 记录渲染与窗口生命周期中的计时样本。
 #[derive(Default)]
 pub(crate) struct Metrics {
-    samples: [Samples; 13],
+    samples: [Samples; 19],
 }
 
 impl Metrics {

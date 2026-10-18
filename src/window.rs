@@ -12,21 +12,17 @@ use windows::{
             Input::KeyboardAndMouse::{VK_LEFT, VK_RIGHT},
             WindowsAndMessaging::{
                 CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
-                DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, IDC_ARROW,
-                LoadCursorW, RegisterClassW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW,
-                SetWindowPos, ShowWindow, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
-                WM_KEYDOWN, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSW,
-                WS_OVERLAPPEDWINDOW,
+                DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, IDC_ARROW, LoadCursorW,
+                RegisterClassW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
+                ShowWindow, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN,
+                WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
     core::{Error, w},
 };
 
-use crate::{
-    app::{WM_RENDER_STOPPED, WindowContext},
-    diagnostics::Metric,
-};
+use crate::{app::WindowContext, diagnostics::Metric};
 
 const WINDOW_WIDTH: i32 = 1100;
 const WINDOW_HEIGHT: i32 = 760;
@@ -166,12 +162,6 @@ unsafe extern "system" fn window_proc(
                 context.close_started = true;
                 context.shared.request_shutdown();
             }
-            LRESULT(0)
-        }
-        WM_RENDER_STOPPED => {
-            context.render_stopped = true;
-            // SAFETY: Render Thread 释放所有引用 HWND 的资源后才发送此消息，因此 DestroyWindow 不会与 Swap Chain 使用并发。
-            let _ = unsafe { DestroyWindow(hwnd) };
             LRESULT(0)
         }
         WM_DESTROY => {

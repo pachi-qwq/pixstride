@@ -38,7 +38,7 @@ use windows::{
 };
 
 use crate::{
-    app::{RenderSnapshot, Shared},
+    app::{RenderSnapshot, RequestOrigin, Shared},
     diagnostics::Metric,
 };
 
@@ -188,7 +188,17 @@ impl Renderer {
                     break;
                 }
                 if redraw {
-                    shared.record(Metric::RequestToRender, latest.requested_at.elapsed());
+                    let delay = latest.requested_at.elapsed();
+                    shared.record(Metric::RequestToRender, delay);
+                    let metric = match latest.request_origin {
+                        RequestOrigin::InitialWindowSize => Metric::RequestToRenderInitial,
+                        RequestOrigin::KeyInput => Metric::RequestToRenderInput,
+                        RequestOrigin::Resize => Metric::RequestToRenderResize,
+                        RequestOrigin::Minimize => Metric::RequestToRenderMinimize,
+                        RequestOrigin::Restore => Metric::RequestToRenderRestore,
+                        RequestOrigin::Paint => Metric::RequestToRenderPaint,
+                    };
+                    shared.record(metric, delay);
                 }
                 snapshot = latest;
 

@@ -1,6 +1,6 @@
 [English](development.md) | [简体中文](../zh-CN/development.md)
 
-<!-- doc-id: development; revision: 7; status: stage-a-development -->
+<!-- doc-id: development; revision: 8; status: stage-a-development -->
 
 # Development status and checks
 
@@ -70,12 +70,12 @@ Build Tools 2022 with MSVC 14.44, and Windows SDK 10.0.26100.0. The project pins
 uses `anyhow` 1.0.104. `Cargo.lock` records the resolved dependency graph. The Release build compiled
 both HLSL entries with the SDK's FXC.
 
-A previous local executable launch logged D3D11 device creation at Feature Level 11.1 (`0xB100`), and
-the first `Present` call returned successfully. The updated diagnostics now log driver type and adapter
-name and record Device, Swap Chain, Shader, test-texture, and first-Present intervals; those new metrics
-have not yet been collected in a normal run. The native window was not exposed to the current UI
-automation surface. Visible pixels, keyboard switching, resize/minimize/restore, and normal shutdown
-remain unverified. Do not treat compilation or device creation as proof that the full render path works.
+A project-owner manual Release run on an NVIDIA GeForce RTX 4080 SUPER using the Hardware Driver at
+Feature Level 11.1 confirmed the checkerboard, Left/Right texture switching, maximize/minimize/restore,
+repeated resize, and Alt+F4 shutdown. The owner recorded D3D11 initialization at 183.236 ms and device
+creation at 177.742 ms. See [Stage A verification](stage-a.md) for the full timings and their limits.
+Controlled cold/warm startup, Input-to-Photon, Device Lost stress, and long-duration stability remain
+unverified. Compilation alone does not establish GUI behavior.
 
 The earlier environment probe's debug-device creation returned `0x887A002D` (missing SDK debug
 component). The current application does not request the D3D11 debug layer. Installing Graphics Tools

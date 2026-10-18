@@ -1,6 +1,6 @@
 [English](../en/development.md) | [简体中文](development.md)
 
-<!-- doc-id: development; revision: 7; status: stage-a-development -->
+<!-- doc-id: development; revision: 8; status: stage-a-development -->
 
 # 开发状态与检查
 
@@ -65,10 +65,10 @@ python -B scripts/check_docs.py --external-links
 （MSVC 14.44）和 Windows SDK 10.0.26100.0。项目依赖 `windows` 0.62.2 和 `anyhow` 1.0.104；
 `Cargo.lock` 记录了完整解析结果。Release 构建调用 SDK 中的 FXC 编译了两个 HLSL 入口。
 
-此前一次本机启动日志记录 D3D11 Device 创建成功，Feature Level 为 11.1（`0xB100`），首个 `Present` 调用成功返回。
-更新后的诊断会记录 Driver Type、Adapter 名称，以及 Device、Swap Chain、Shader、测试纹理和首次 Present 的计时；
-这些新指标还没有在正常运行中采集。当前 UI 自动化接口没有暴露原生窗口，实际显示像素、键盘切换、调整尺寸/最小化/恢复和正常关闭仍未验证。
-编译或成功创建设备不能证明整条渲染链路正常。
+项目负责人在 NVIDIA GeForce RTX 4080 SUPER、Hardware Driver、Feature Level 11.1 的机器上运行 Release 程序，
+人工确认棋盘格、Left/Right 纹理切换、最大化/最小化/恢复、连续 Resize 和 Alt+F4 关闭正常。测得 D3D11 初始化
+183.236 ms，Device 创建 177.742 ms。完整计时及其限制见[阶段 A 验证](stage-a.md)。受控冷/热启动、Input-to-Photon、
+Device Lost 压力测试和长期稳定性仍未验证。仅通过编译不能证明 GUI 行为正常。
 
 早期环境探针的 Debug Device 创建返回 `0x887A002D`，原因是缺少 SDK 调试组件。当前程序未启用 D3D11 Debug Layer。
 安装 Graphics Tools 可能需要管理员权限，须另行批准。此前已核实 PresentMon 2.6.0 CLI 帮助、官方校验值和签名；

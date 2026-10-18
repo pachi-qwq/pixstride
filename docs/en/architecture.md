@@ -1,6 +1,6 @@
 [English](architecture.md) | [简体中文](../zh-CN/architecture.md)
 
-<!-- doc-id: architecture; revision: 2; status: implementation-review -->
+<!-- doc-id: architecture; revision: 4; status: implementation-review -->
 
 # Architecture scope and Stage A review
 
@@ -34,7 +34,10 @@ does not join the render thread from a window procedure.
 
 The window procedure stores a stable `Box<WindowContext>` pointer in `GWLP_USERDATA` during
 `WM_NCCREATE` and clears it during `WM_NCDESTROY`. The UI retains the `HWND` until the render thread
-releases its D3D11 resources and posts `WM_RENDER_STOPPED`. The UI then destroys the window. Resize
+releases its D3D11 resources and signals a UI-owned completion event. The UI waits for messages and
+completion with `MsgWaitForMultipleObjects`, joins the worker, and then destroys the window. A panic
+is caught at the worker boundary; a completion guard signals the event and falls back to `WM_QUIT` if
+signaling fails. Resize
 and `ResizeBuffers` run on the render thread; before `ResizeBuffers`, it clears the Immediate Context
 and releases the old Back Buffer view. Zero-sized minimized surfaces suspend drawing.
 
@@ -51,10 +54,10 @@ is shared with the UI thread, and this code does not justify arbitrary `unsafe i
 
 | Stage A validation | Current evidence and remaining work |
 |---|---|
-| Input latency | Timing points exist for input handling, publication-to-render-thread consumption, command preparation, and `Present`. Interactive samples and a displayed-frame observation are still needed. |
-| Thread wakeup cost | The latest snapshot and event coalesce queued state. P50/P95/P99 and a comparison with rendering on the UI thread have not been collected. |
-| Resize | Resize is coalesced, zero sizes skip rendering, and the old Render Target is released before `ResizeBuffers`. Repeated interactive resize and DPI movement remain unverified. |
-| Shutdown | `WM_CLOSE` requests asynchronous shutdown; the UI waits for `WM_RENDER_STOPPED` before destroying the window. Interactive close/race testing remains outstanding. |
+| Input latency | Owner diagnostics recorded input publication at 3 µs P50 and publication-to-render handling at 168 µs P50, 2,352 µs P99, and 156,976 µs maximum. Samples were not fully classified or controlled; actual display timing remains unmeasured. |
+| Thread wakeup cost | Latest-state coalescing is measured by request-origin buckets in the current build. The owner-run aggregate has a 156,976 µs maximum; attribution needs WPR CPU Usage (Precise). There is no UI-thread-rendering comparison. |
+| Resize | The owner manually verified repeated resize, minimize, and restore. Zero sizes skip rendering, and the old Render Target is released before `ResizeBuffers`. DPI migration remains untested. |
+| Shutdown | `WM_CLOSE` requests asynchronous shutdown; the UI joins the worker after completion before destroying the window. Manual close passed; automated race and Device Lost stress tests remain outstanding. |
 | Device Removed | A failed `Present` queries `GetDeviceRemovedReason` and exits safely. Device recreation and injected removal tests are deferred. |
 | Resource synchronization | The Immediate Context and Swap Chain stay on the render thread. No image cache or resource reuse pool exists in Stage A. |
 

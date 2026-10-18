@@ -1,6 +1,6 @@
 [English](../en/stage-a.md) | [简体中文](stage-a.md)
 
-<!-- doc-id: stage-a; revision: 7; status: implementation-review -->
+<!-- doc-id: stage-a; revision: 8; status: implementation-review -->
 
 # 阶段 A：Win32 窗口与 D3D11 渲染
 
@@ -11,8 +11,10 @@
 
 UI 线程创建并维护 `HWND`，处理 Win32 消息循环，更新最新渲染状态，并触发 Windows auto-reset event。
 渲染线程创建并维护 D3D11 Device、Immediate Context、Swap Chain、Shader、Render Target、Sampler
-和两张测试纹理。D3D11 COM 接口不会跨线程传递。渲染线程释放资源并发送 `WM_RENDER_STOPPED` 前，
-UI 线程会保持 `HWND` 有效。
+和两张测试纹理。D3D11 COM 接口不会跨线程传递。渲染线程释放资源后，会触发由 UI 持有的
+manual-reset completion event。UI 使用 `MsgWaitForMultipleObjects` 同时等待该事件和窗口消息，随后
+join 渲染线程，再销毁 `HWND`。线程退出 guard 即使在捕获 panic 后也会通知完成；若 `SetEvent` 失败，
+则向 UI 线程发送 `WM_QUIT` 作为后备。这避免依赖可能发送失败、而 UI 又在等待时收不到的窗口消息。
 
 ```mermaid
 flowchart LR
@@ -23,8 +25,9 @@ flowchart LR
   Latency[DXGI 帧延迟句柄] --> Render
   Render --> D3D[D3D11 Immediate Context]
   D3D --> Swap[Flip Discard Swap Chain]
-  Render --> Done[WM_RENDER_STOPPED]
-  Done --> UI
+  Render --> Done[Completion event]
+  Done --> Join[UI join 渲染线程]
+  Join --> UI
 ```
 
 `Arc<Shared>` 通过 `Mutex<PendingState>` 在线程间共享少量状态，里面包括当前测试纹理、客户区尺寸、
@@ -34,7 +37,8 @@ auto-reset event 只负责唤醒渲染线程，不存储渲染状态。有待绘
 
 窗口过程从 `GWLP_USERDATA` 读取稳定的 `Box<WindowContext>` 指针。UI 线程在 `WM_NCCREATE` 安装指针，
 在 `WM_NCDESTROY` 清除。收到关闭请求后，UI 线程通知渲染线程并继续处理消息。渲染线程先清空
-Immediate Context，释放 Back Buffer View 等 COM 包装器，再发送 `WM_RENDER_STOPPED`；UI 收到后才销毁窗口。
+Immediate Context 并释放 Back Buffer View 等 COM 包装器，随后触发 completion event；UI join 线程后才销毁窗口。
+如果 `SetEvent` 失败，线程 guard 会向 UI 线程发送 `WM_QUIT` 作为后备。
 `ResizeBuffers` 也只在渲染线程执行，并且会先解除 Context 对旧 Back Buffer 的绑定、释放旧 Render Target View。
 最小化时客户区尺寸为零，渲染暂停。
 
@@ -82,10 +86,24 @@ Rust COM 包装器会在渲染器于所属线程析构时释放引用。UI 线�
 这些计时无法证明画面何时到达显示器。可用 PresentMon/ETW 观察已显示帧事件；Input-to-Photon 还需外部高速
 拍摄方法。当前程序没有集成这些工具。首次 Present 是应用内阶段记录，不是屏显时间；不能把 `Present` 快速返回解释成屏显延迟结果。
 
-两次本机 Release 启动记录的进程入口到 `CreateWindowExW` 返回时间分别为 2.824 ms 和 4.762 ms，
+项目负责人在 Release 程序上完成了人工 GUI 验收：棋盘格正常显示，Left/Right 可以切换纹理，最大化、最小化、
+恢复和连续 Resize 正常，Alt+F4 能退出并输出计时报告。测试机器使用 NVIDIA GeForce RTX 4080 SUPER、
+Hardware Driver 和 Feature Level 11.1。这些是人工功能测试，不代表延迟或长期稳定性测试。
+
+项目负责人一次诊断运行测得 D3D11 初始化 183.236 ms，其中 Device 创建为 177.742 ms。输入状态发布 P50 为
+3 µs；状态发布到渲染线程处理 P50 为 168 µs、P99 为 2,352 µs、最大值为 156,976 µs。`Present(1, 0)` 调用
+P50 为 226 µs，Resize P50 为 1,759 µs，关闭请求到渲染线程退出为 14,554 µs。该次运行未记录样本数和受控的
+启动/缓存条件，因此这些数据是诊断观测值，不是受控性能结果。Present 耗时不表示像素何时到达显示器。
+
+现有汇总数据无法判断 156,976 µs 长尾来自何处。新增指标按渲染线程实际读取的最新合并请求分类：初始尺寸、
+键盘输入、Resize、最小化、恢复或 WM_PAINT。由于状态会合并，该分类只标记线程读取的快照，无法标记之前合并掉的
+每个输入。要区分系统调度延迟与正在执行的 Present/驱动或 Resize 工作，需要在隔离的输入和 Resize 场景下，
+采集并关联 Windows Performance Recorder 的 CPU Usage (Precise) 跟踪。旧的 156,976 µs 样本无法追溯分类。
+
+此前两次本机 Release 启动记录的进程入口到 `CreateWindowExW` 返回时间分别为 2.824 ms 和 4.762 ms，
 D3D11 初始化时间分别为 223.234 ms 和 206.379 ms。这只是同一台机器上的两次诊断样本，未控制冷/热启动条件，
 不足以形成可靠的分位数报告。两次日志都记录首个 `Present` 调用成功返回。这些运行早于 Driver Type 和 Adapter 名称日志，
-因此无法确认使用硬件驱动还是 WARP。新的分项指标尚未通过正常关闭流程采集到数值。
+因此无法确认使用硬件驱动还是 WARP。这两次启动也不是受控的冷启动/热启动测量。
 
 ## 构建和运行
 
@@ -106,13 +124,12 @@ GitHub Ruleset 的必需检查。
 
 ## 验证状态
 
-本地 Rust 验证已通过：格式检查、禁止警告的 Clippy、7 项单元测试、Release 构建和 Rustdoc 生成。
+本地 Rust 验证已通过格式检查、禁止警告的 Clippy、单元测试、Release 构建和 Rustdoc 生成。
 单元测试覆盖有界计时样本、分位数计算、测试纹理数据、最新状态合并和终止关闭状态。
 
-本机启动测试创建了 Win32 窗口，`IsWindowVisible` 返回可见，并输出 D3D11 Device 创建成功，Feature Level 为 11.1（`0xB100`）。
-当前自动化环境没有暴露原生窗口供视觉检查，所以纹理是否实际显示、方向键切换、交互式 Resize/最小化/恢复、正常关闭、
-连续启动关闭和输入延迟分布都尚未验证。Draft PR 的 docs 和 Rust CI 均已通过。Windows Rust Job 完成格式、Clippy、测试、
-Release 构建和 Rustdoc 检查；CI 不会验证交互式 GUI 行为。
+项目负责人在 NVIDIA GeForce RTX 4080 SUPER、Hardware Driver、Feature Level 11.1 的桌面上人工确认：棋盘格可见、
+方向键可切换纹理、最大化/最小化/恢复正常、连续 Resize 未卡死或黑屏，Alt+F4 正常退出并输出计时报告。
+CI 验证编译和非 GUI 测试，不执行交互式窗口验收。
 
-因此，独立渲染线程目前只是待评审的实现，尚未通过延迟实测。阶段 A 仍需在可交互的 Windows 桌面采集唤醒到渲染
-和 `Present` 样本，并与 50 ms 启动、5 ms 缓存切换处理和 1 ms 输入处理的工程目标比较。这些数值仍是目标，不是成绩。
+受控的冷启动和热启动统计、真实 Input-to-Photon 延迟、GPU Device Lost 压力测试和长期稳定性测试仍未完成。
+现有数据不能证明线程模型达到 50 ms 启动、5 ms 缓存命中切换或 1 ms 输入处理目标；这些仍是工程目标，不是成绩。
