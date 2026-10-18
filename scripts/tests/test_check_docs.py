@@ -210,11 +210,17 @@ class TreeTests(unittest.TestCase):
         self.assertIn('private-artifact', self.rules())
 
     def test_tracked_ignored_file_is_not_hidden(self):
-        subprocess.run(['git','init','-q',str(self.root)],check=True,capture_output=True)
         self.write('.gitignore', '/private/\n')
         self.write('private/report.txt', 'Private.\n')
-        subprocess.run(['git','-C',str(self.root),'add','--force','private/report.txt'],check=True,capture_output=True)
-        self.assertIn('private-artifact', self.rules())
+        git = subprocess.CompletedProcess(
+            args=['git', 'ls-files'],
+            returncode=0,
+            stdout=b'private/report.txt\0',
+            stderr=b'',
+        )
+        with patch.object(docs.subprocess, 'run', return_value=git) as run_git:
+            self.assertIn('private-artifact', self.rules())
+        run_git.assert_called_once()
 
     def test_private_links(self):
         self.write('.idea/report.txt', 'Ignored.\n')

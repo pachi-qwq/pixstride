@@ -1,19 +1,17 @@
 [English](../en/architecture.md) | [简体中文](architecture.md)
 
-<!-- doc-id: architecture; revision: 1; status: proposal -->
+<!-- doc-id: architecture; revision: 2; status: implementation-review -->
 
-# 架构范围与评审整改
+# 架构范围与阶段 A 评审
 
-Pixstride 已选定 Rust Stable、Win32/windows-rs、D3D11 和 DXGI Flip Model，
-目标平台为 Windows 10/11 x64。本页说明下一步实验及其边界，属于提案，不代表已经实现，
-也不完整翻译早期内部设计。
+Pixstride 面向 Windows 10/11 x64，采用 Rust Stable、Win32/windows-rs、D3D11 和 DXGI Flip Model。
+阶段 A 已有本地实现；图片解码、导航和缓存设计仍是提案。本页不复述早期内部设计草稿。
 
-## 阶段 A：验证所有权和延迟
+## 阶段 A 实现
 
-目前推荐由 UI 线程管理窗口和输入状态，由独立渲染线程管理 D3D11 即时上下文
-（D3D11 Immediate Context）、DXGI 交换链和 GPU 资源。
-这样可以将驱动阻塞和 `Present` 与输入处理隔离，代价是一次线程唤醒和显式生命周期协调。
-阶段 A 的测量结果仍可能改变这一方案。
+UI 线程维护 `HWND`、消息循环、输入和当前视图状态。独立渲染线程创建并维护 D3D11 Device、
+Immediate Context、DXGI Swap Chain、Shader 和纹理。这会让 D3D11 COM 接口留在线程内，
+并将设备操作和 `Present` 移出消息处理过程。获得交互式延迟测量前，线程模型仍不能视为性能结论。
 
 ```mermaid
 flowchart LR
@@ -25,18 +23,33 @@ flowchart LR
   Ack --> UI
 ```
 
-UI 发布不可变的[渲染快照（Render Snapshot）](../TERMINOLOGY.zh-CN.md)，并发出工作通知。
-渲染线程等到可提交帧后再读取最新状态。等待尺寸变化和关闭的确认期间，UI 持续处理消息，
-不能同步等待可能正在 `Present` 内的线程退出。图中尚未加入后续的解码和缓存服务。
+`Arc<Shared>` 通过一个 `Mutex<PendingState>` 保存最新渲染快照、重绘标志和关闭标志。UI 覆盖状态并触发
+auto-reset event，不会将每次输入都排成渲染任务。渲染线程等待工作通知；有待绘制帧时，也等待 DXGI 帧延迟句柄。
+没有待重绘内容时只等待工作，不轮询。COM 接口不会跨线程传递。Resize 和 Shutdown 期间，UI 继续处理消息，
+不在窗口过程中 join 渲染线程。
 
-| 阶段 A 必须验证的项目 | 证据与完成条件 |
+窗口过程在 `WM_NCCREATE` 时把稳定的 `Box<WindowContext>` 指针存入 `GWLP_USERDATA`，并在 `WM_NCDESTROY`
+时清除。渲染线程释放 D3D11 资源并发送 `WM_RENDER_STOPPED` 前，UI 保持 `HWND` 有效；收到通知后再销毁窗口。
+Resize 和 `ResizeBuffers` 都在渲染线程执行；调用 `ResizeBuffers` 前清空 Immediate Context 并释放旧 Back Buffer
+View。最小化形成零尺寸客户区时暂停绘制。
+
+渲染器先尝试 Feature Level 11.1 或 11.0 的硬件 Device；Device 创建失败后再尝试 WARP。它使用双缓冲 Flip
+Discard Swap Chain、最大帧延迟 1 和帧延迟等待对象，并调用 `Present(1, 0)`。程序在启动时生成两张
+256 × 256 RGBA8 测试纹理，方向键只切换已有的 Shader Resource View。`build.rs` 用 Windows SDK 的 `fxc.exe`
+编译 HLSL，并将 DXBC 嵌入程序。
+
+`Present` 失败时，渲染器查询 `GetDeviceRemovedReason`，报告错误、释放资源并退出。阶段 A 不重建已移除的 Device。
+Rust COM 包装器管理引用计数，但不保证 apartment、缓冲区和生命周期前置条件。UI 线程不共享 COM 对象，
+也不能据此随意添加 `unsafe impl Send`。
+
+| 阶段 A 验证项 | 当前证据与未完成工作 |
 |---|---|
-| 输入延迟 | 分别记录输入接收、状态发布、渲染开始、`Present` 和对应的已显示事件。 |
-| 线程唤醒成本 | 测量发布到渲染开始的时间，按足够样本报告 P50/P95/P99；必要时用有限的 UI 渲染实验对照。 |
-| Resize 协作 | 合并尺寸变化，跳过零尺寸表面，在 `ResizeBuffers` 前释放所有后缓冲区引用；反复改变尺寸和 DPI 不出错。 |
-| Shutdown | UI 持续处理消息，停止新提交，异步确认退出，释放资源且不形成相互等待。 |
-| Device Lost | 注入可恢复错误，使旧设备代际的资源失效并重建设备路径；重复失败时报告错误，不无限重试。 |
-| 资源同步 | 即时上下文和 DXGI 使用同一维护线程，限制待处理任务，验证在途资源不会过早复用。 |
+| 输入延迟 | 已记录输入处理、状态发布到渲染线程读取、命令准备和 `Present` 的计时点；仍需交互样本和已显示帧观察。 |
+| 线程唤醒成本 | 最新快照加事件可合并排队状态；尚未取得 P50/P95/P99，也未与 UI 线程渲染进行对照。 |
+| Resize | 尺寸变化会合并，零尺寸跳过绘制，调用 `ResizeBuffers` 前释放旧 Render Target；反复拖动和跨 DPI 屏幕移动尚未验证。 |
+| Shutdown | `WM_CLOSE` 发起异步关闭；UI 收到 `WM_RENDER_STOPPED` 后才销毁窗口。仍需交互式关闭和竞争场景测试。 |
+| Device Removed | `Present` 失败后会查询 `GetDeviceRemovedReason` 并安全退出；尚未实现重建，也未注入设备移除故障。 |
+| 资源同步 | Immediate Context 和 Swap Chain 由渲染线程维护；阶段 A 不含图片缓存或资源复用池。 |
 
 [D3D11 线程规则](https://learn.microsoft.com/en-us/windows/win32/direct3d11/overviews-direct3d-11-render-multi-thread-intro)
 和 [Present 契约](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-present)
@@ -44,11 +57,11 @@ UI 发布不可变的[渲染快照（Render Snapshot）](../TERMINOLOGY.zh-CN.md
 UI 的 COM 服务使用 STA；后续解码器 COM 对象留在各自的 MTA worker 中，跨 apartment 必须显式封送。
 本设计不能作为任意添加 `unsafe impl Send` 的依据。
 
-初始采用双缓冲 Flip Discard 交换链、最大帧延迟 1 和按需渲染，包括首帧在内都先等待帧就绪。
+当前实现采用双缓冲 Flip Discard 交换链、最大帧延迟 1 和按需渲染，包括首帧在内都先等待帧就绪。
 闲置时等待工作通知，不轮询已处于有信号状态的帧句柄。
 这些设置依据 [Flip Model 指南](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/for-best-performance--use-dxgi-flip-model)
 和[可等待对象契约](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-getframelatencywaitableobject)，
-实际延迟收益仍须在目标系统测量。
+实际延迟收益仍须在可交互的目标系统测量。
 
 ## 控制第一阶段的范围
 

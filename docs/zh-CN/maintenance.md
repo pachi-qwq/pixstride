@@ -1,6 +1,6 @@
 [English](../en/maintenance.md) | [简体中文](maintenance.md)
 
-<!-- doc-id: maintenance; revision: 3; status: active -->
+<!-- doc-id: maintenance; revision: 4; status: active -->
 
 # 仓库维护与发布
 
@@ -25,16 +25,20 @@
 取得负责人明确授权后，两条分支均已正常推送。GitHub 自动将 `main` 设为默认分支，
 双语 README 和两份许可证的远程内容已核对。
 [PR #1](https://github.com/pachi-qwq/pixstride/pull/1) 已从 `docs/repository-foundation` 向 `main`
-建立，保持未合并。首次文档 CI 的 [push](https://github.com/pachi-qwq/pixstride/actions/runs/39137217067)
+建立，并于 2026-10-18 以 Squash Merge 合并。合并提交为
+`2a1eb5254c01bb5b6fe4d61117ffa382755bc9b8`，GitHub 在合并后删除远程文档分支。
+首次文档 CI 的 [push](https://github.com/pachi-qwq/pixstride/actions/runs/39137217067)
 和 [pull request](https://github.com/pachi-qwq/pixstride/actions/runs/39137226043) 运行均成功。
-随后将实际产生的 `docs` 检查设为必需，并启用 `main` 保护规则。
+实际产生的 `docs` 检查现为必需项，`main` 保护规则已启用，默认分支仍为 `main`。
+合并后的 [文档 CI 运行 39139503844](https://github.com/pachi-qwq/pixstride/actions/runs/39139503844) 成功。
 没有改写历史或强推，自动合并保持关闭。后续使用普通 PR 流程；Agent 执行远程操作仍须明确授权。
+本地 `feat/stage-a-win32-d3d11` 分支含有尚未推送的 Stage A 工作，目前没有对应 PR。
 
 ## 分支和 Pull Request
 
 | 分支 | 用途 |
 |---|---|
-| `main` | 已评审且检查通过的基线；Cargo 工程存在后保持应用可构建。 |
+| `main` | 受保护且经过评审的基线；Stage A 在独立的本地功能分支开发。 |
 | `feat/*` | 新功能。 |
 | `fix/*` | 缺陷修复。 |
 | `docs/*` | 文档。 |
@@ -56,7 +60,7 @@ Squash Merge 后删除已合并功能分支。不建立长期 `develop`。
 | Status checks | 必须通过 `docs`，绑定 GitHub Actions integration 15368，启用严格的分支最新状态要求。 | `main`；实际 CI 成功后配置。 |
 | 历史 | 禁止强推和删除分支，bypass 名单为空。 | `main`。 |
 | 合并方式 | squash 已启用且为推荐方式，仍允许 merge 和 rebase。 | 仓库合并设置。 |
-| 功能分支 | 已启用合并后自动删除。 | 已合并功能分支；PR #1 仍未合并。 |
+| 功能分支 | 已启用合并后自动删除。 | PR #1 合并后，远程 `docs/repository-foundation` 已删除。 |
 | 可见性与自动合并 | 仓库公开，自动合并关闭。 | 没有修改可见性或执行自动合并。 |
 
 [已启用的 `main-protection` Ruleset](https://github.com/pachi-qwq/pixstride/rules/25346431)
@@ -73,15 +77,16 @@ Squash Merge 后删除已合并功能分支。不建立长期 `develop`。
 只读仓库权限和按 commit 固定的官方 checkout/setup action，不使用秘密。
 Push 和 PR 事件不按路径过滤，运行本地检查与检查器测试。
 手动 dispatch 可增加外部链接检查。首次成功的 Windows 运行检查了 33 个公开文件，
-41 项检查器测试全部通过。工作流目前位于 `docs/repository-foundation` 和 PR #1 中，
-该 PR 合并后才进入 `main`。后续 PR 更新必须重新通过必需的 `docs` 检查。
+41 项检查器测试全部通过。工作流随 PR #1 合并进入 `main`，合并后的 CI 运行成功。
+后续 PR 必须重新通过必需的 `docs` 检查。
 
 硬检查覆盖 Markdown 结构/相对链接、语言入口/修订/共享字面值、已知私人路径/凭据模式，
 以及过大或禁止公开的产物。语言质量只作提示，检查器测试覆盖代码、API 名称和链接的误报场景。
 工具不是完整 GFM 解析器、秘密扫描服务或翻译校验器。
 
-未来 Cargo 工程存在后，在 Windows 作业中加入 fmt、Clippy、测试和 Release 构建。
-硬件延迟/VRAM 测试单独执行。Actions 更新必须可评审，文档工作流不需要自动合并或发布权限。
+Windows Rust CI 工作流已加入 fmt、Clippy、测试、Release 构建和 rustdoc，作业名为 `rust`。
+该本地改动尚未推送，也未在 GitHub 运行，因此还不是必需状态检查。
+硬件延迟/VRAM 测试单独执行。Actions 更新必须可评审，工作流不需要自动合并或发布权限。
 
 ## 发布前检查
 
@@ -142,4 +147,5 @@ Apache [官方完整文本](https://www.apache.org/licenses/LICENSE-2.0)保持�
 上传草稿 Release 供负责人检查。安装、签名、文件关联、更新策略和正式发布需要另行决定。
 本轮不实现应用发布流水线。
 
-仓库初始化和保护配置已经完成。PR #1 仍等待维护者决定合并；Release 和签名策略需要另行批准。
+仓库初始化和保护配置已经完成，PR #1 也已合并。Stage A 功能分支仍只在本地，等待评审。
+Release 和签名策略需要另行批准。

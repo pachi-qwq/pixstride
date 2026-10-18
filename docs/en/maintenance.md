@@ -1,6 +1,6 @@
 [English](maintenance.md) | [简体中文](../zh-CN/maintenance.md)
 
-<!-- doc-id: maintenance; revision: 3; status: active -->
+<!-- doc-id: maintenance; revision: 4; status: active -->
 
 # Repository maintenance and publication
 
@@ -26,18 +26,22 @@ Review both the tree and commit metadata before publication.
 After explicit owner approval, both branches were pushed normally. GitHub automatically selected `main`
 as the default; its bilingual READMEs and both license texts were verified remotely.
 [PR #1](https://github.com/pachi-qwq/pixstride/pull/1) was opened from `docs/repository-foundation` against
-`main` and remains unmerged. The first documentation CI runs succeeded for both
+`main` and was subsequently merged by Squash Merge on 2026-10-18. The merge commit on `main` is
+`2a1eb5254c01bb5b6fe4d61117ffa382755bc9b8`; GitHub deleted the remote documentation branch after merge.
+The first documentation CI runs succeeded for both
 [push](https://github.com/pachi-qwq/pixstride/actions/runs/39137217067) and
 [pull request](https://github.com/pachi-qwq/pixstride/actions/runs/39137226043).
-The observed `docs` check was then made required, and `main` protection is active.
+The observed `docs` check is required, `main` protection is active, and `main` remains the default branch.
+The post-merge documentation run [39139503844](https://github.com/pachi-qwq/pixstride/actions/runs/39139503844) succeeded.
 No history was rewritten, no force push was used, and automatic merging remains disabled.
+The local `feat/stage-a-win32-d3d11` branch contains unpushed Stage A work and has no PR yet.
 Later changes use normal PRs; agents still need explicit authorization for remote actions.
 
 ## Branches and pull requests
 
 | Branch | Purpose |
 |---|---|
-| `main` | Reviewed, check-passing baseline; a buildable application once a Cargo project exists. |
+| `main` | Protected, reviewed baseline. Stage A development is on a separate local feature branch. |
 | `feat/*` | New functionality. |
 | `fix/*` | Bug fixes. |
 | `docs/*` | Documentation. |
@@ -59,7 +63,7 @@ Require a PR but allow zero required approvals so a solo maintainer can review a
 | Status checks | `docs` required, bound to GitHub Actions integration 15368; strict up-to-date policy enabled. | `main`; selected after actual successful CI runs. |
 | History | Force pushes and branch deletion blocked; bypass list empty. | `main`. |
 | Merge methods | Squash enabled and recommended; merge and rebase remain allowed. | Repository merge settings. |
-| Feature branches | Automatic deletion after merge enabled. | Merged feature branches; PR #1 is still open. |
+| Feature branches | Automatic deletion after merge enabled. | Merged feature branches; the remote `docs/repository-foundation` branch was deleted after PR #1 merged. |
 | Visibility and auto-merge | Repository public; automatic merging disabled. | No visibility change or automatic merge was performed. |
 
 [The active `main-protection` ruleset](https://github.com/pachi-qwq/pixstride/rules/25346431)
@@ -77,17 +81,18 @@ The workflow is named `Documentation`, with a Windows job named `docs`. It uses 
 library, read-only repository permissions, commit-pinned official checkout/setup actions, and no secrets.
 Push and PR events run local checks and checker tests without path filters. A manual dispatch can
 add external-link checks. The first successful Windows runs checked 33 public files and passed all
-41 checker tests. The workflow is on `docs/repository-foundation` and in PR #1; it reaches `main` when
-that PR is merged. Subsequent PR updates must pass the required `docs` check again.
+41 checker tests. The workflow was merged to `main` with PR #1, and its post-merge run succeeded.
+Subsequent PR updates must pass the required `docs` check again.
 
 Hard failures cover Markdown structure/local links, language entries/revisions/shared literals, known
 private-path/credential patterns, and oversized/publicly disallowed artifacts. Language-quality findings
 are advisory. The checker tests guard against false positives in code, API names and link syntax.
 It is a focused checker, not a full GFM implementation, secret-scanning service, or translation verifier.
 
-Future Rust CI runs on Windows and adds fmt, Clippy, tests and Release build only when Cargo exists.
-Hardware latency/VRAM tests run separately. Keep Actions updates reviewable; no auto-merge or release
-permissions are needed for this documentation workflow.
+A Windows Rust CI workflow now runs fmt, Clippy, tests, Release build, and rustdoc for the Stage A Cargo
+package. The job is named `rust`; this local change has not yet been pushed or run on GitHub and is not
+a required status check. Hardware latency/VRAM tests run separately. Keep Actions updates reviewable;
+no auto-merge or release permissions are needed for these workflows.
 
 ## Publication review
 
@@ -153,5 +158,5 @@ checksums/SBOM/notices, and upload a draft release for owner review. Installatio
 update policy and release publishing require separate decisions. No application-release workflow is
 implemented in this documentation task.
 
-Repository initialization and protection are complete. PR #1 still awaits the maintainer's merge
-decision; release and signing policies require separate approval.
+Repository initialization and protection are complete, and PR #1 has been merged. The current Stage A
+branch remains local pending review. Release and signing policies require separate approval.

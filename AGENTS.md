@@ -1,15 +1,26 @@
 [English](AGENTS.md) | [简体中文](AGENTS.zh-CN.md)
 
-<!-- doc-id: agents; revision: 2; status: active -->
+<!-- doc-id: agents; revision: 3; status: active -->
 
 # Agent instructions
 
 ## Current scope
 
-Pixstride is in design review. Documentation, repository configuration, CI, and documentation tools
-are in scope. Do not create viewer business code or a Cargo project without a new implementation task.
-Before each task, inspect Git status, the current branch, history, and upstream. Preserve untracked
-work before switching branches or reorganizing files. Do not develop features directly on `main`.
+Pixstride is under active development. Stay within the scope approved for the current task; Stage A
+does not authorize image decoding, navigation, caching, or later-stage features. Before each task,
+inspect Git status, the current branch, history, and upstream. Preserve untracked work before
+switching branches or reorganizing files. Do not develop features directly on `main`.
+
+## Rust source comments
+
+Write Rust comments and Rustdoc in natural Simplified Chinese. Keep Rust identifiers, API names, and
+established English technical terms unchanged. Use `//!` for module responsibilities, `///` for
+public APIs and important interfaces, and `//` for implementation intent, constraints, and lifecycle;
+do not narrate obvious statements. Every `unsafe` block must have an adjacent `// SAFETY:` comment
+that names the concrete pointer, handle, thread, lifetime, or buffer preconditions and how the code
+maintains them. Do not use `unsafe` merely to silence Clippy. Explain ownership, borrowing, `Result`,
+`Option`, `Arc`, `Mutex`, channels, `Send`/`Sync`, COM, and D3D11 lifetimes when the code first relies
+on a non-obvious constraint.
 
 ## Before editing public documents
 

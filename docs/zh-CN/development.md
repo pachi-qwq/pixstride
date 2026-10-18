@@ -1,11 +1,29 @@
 [English](../en/development.md) | [简体中文](development.md)
 
-<!-- doc-id: development; revision: 2; status: design-review -->
+<!-- doc-id: development; revision: 5; status: stage-a-development -->
 
 # 开发状态与检查
 
-仓库目前包含公开文档、模板和 Python 文档工具，没有 Cargo Workspace 或查看器程序。
-先运行文档检查；阶段 A 实现获单独批准后，Rust 构建命令才适用。
+仓库现在包含阶段 A 的单 Cargo Package Win32/D3D11 测试程序，以及公开文档和 Python 文档工具。
+图片解码、目录导航和公开发行版尚未实现。
+
+## 构建和运行阶段 A
+
+需要 Windows 10/11 x64、Rust Stable 和 `x86_64-pc-windows-msvc` Target、MSVC C++ Build Tools、
+Windows SDK 及 `fxc.exe`。构建脚本会将 HLSL 编译为 DXBC 并写入 Cargo 的 `OUT_DIR`；如果 SDK 自动发现失败，
+将 `PIXSTRIDE_FXC` 设置为 `fxc.exe` 完整路径。程序正常运行时不会启动 Shader 编译器。
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo build --release --locked
+cargo doc --no-deps --locked
+cargo run --release
+```
+
+程序使用内存生成的测试纹理，不打开图片文件。Left 和 Right 切换棋盘格与渐变图。退出时，stdout 会输出计时汇总。
+Release 可执行文件为 `target/release/pixstride.exe`。
 
 ## 当前可执行的检查
 
@@ -41,20 +59,19 @@ python -B scripts/check_docs.py --external-links
 测试只创建临时文件。默认临时目录不合适时，通过 `PIXSTRIDE_DOC_TEST_ROOT` 指定已存在的仓库外目录。
 报告也写在仓库外。`-B` 防止 Python 在工作区生成字节码。
 
-## 后续 Windows 环境准备
+## 已验证的本地工具链与限制
 
-阶段 A 需要 Rust Stable、`x86_64-pc-windows-msvc`、Cargo、rustfmt、Clippy、MSVC C++
-构建工具和兼容的 Windows SDK。先检查现有版本，再决定安装或更改。
-评审后采用项目局部工具链选择，不更改其他项目的默认工具链。
+当前验证环境有 Rust/Cargo 1.96.0、`x86_64-pc-windows-msvc` Target、Visual Studio Build Tools 2022
+（MSVC 14.44）和 Windows SDK 10.0.26100.0。项目依赖 `windows` 0.62.2 和 `anyhow` 1.0.104；
+`Cargo.lock` 记录了完整解析结果。Release 构建调用 SDK 中的 FXC 编译了两个 HLSL 入口。
 
-此前的本机探针使用 Rust/Cargo 1.96.0 和 windows-rs `windows` 0.62.2，
-经 MSVC 编译后成功创建 WIC Factory 和 D3D11 硬件设备。
-这只验证了单机上的特定组合，不代表项目已固定这些版本，也不代表干净机复现或性能成绩。
+本机启动可执行程序后，日志显示成功创建 D3D11 Device，Feature Level 为 11.1（`0xB100`）；日志没有记录设备来自硬件驱动还是 WARP。
+当前 UI 自动化接口没有暴露该原生窗口。首个 `Present` 调用已成功返回，但实际显示像素、键盘切换、调整尺寸/最小化/恢复和正常关闭均尚未验证。
+编译或成功创建设备不能证明整条渲染链路正常。
 
-Debug 设备创建返回 `0x887A002D`，缺少 SDK 调试组件。
-Graphics Tools 安装可能需要管理员权限，必须先获批准。
-PresentMon 2.6.0 CLI 的帮助输出、官方校验值和签名已在本地核实，实时采集尚未验证。
-WPR profile 查询成功，WPA/trace 分析和交换链、Shader、WARP 仍待验证，原始日志保存在内部。
+早期环境探针的 Debug Device 创建返回 `0x887A002D`，原因是缺少 SDK 调试组件。当前程序未启用 D3D11 Debug Layer。
+安装 Graphics Tools 可能需要管理员权限，须另行批准。此前已核实 PresentMon 2.6.0 CLI 帮助、官方校验值和签名；
+实时采集与 WPA 跟踪分析仍未验证。探针日志保存在仓库外。
 
 安装和调研参考 [Rust Windows MSVC 指南](https://doc.rust-lang.org/rustc/platform-support/windows-msvc.html)、
 [windows-rs](https://github.com/microsoft/windows-rs)、
@@ -62,9 +79,13 @@ WPR profile 查询成功，WPA/trace 分析和交换链、Shader、WARP 仍待�
 [WPA](https://learn.microsoft.com/en-us/windows-hardware/test/wpt/windows-performance-analyzer)
 和 [PresentMon](https://github.com/GameTechDev/PresentMon)。
 
-## Cargo 工程获准后
+## CI 与性能验证
 
-加入 Windows Runner 作业，运行 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、
-`cargo test --locked` 和 `cargo build --release --locked`。先解析并固定依赖，检查实际启用的 feature。
-不要为运行 CI 创建占位查看器。共享 CI 验证正确性和构建，专用硬件测量延迟和资源峰值。
-发布改动前阅读[阶段 A 范围](architecture.md)和[维护说明](maintenance.md)。
+本地新增的 `Rust` 工作流使用 Windows Runner，Job 名为 `rust`。它通过锁文件运行格式检查、Clippy、测试、
+Release 构建和 Rustdoc，权限为只读，不发布 Release。该工作流尚未在 GitHub 运行成功；Ruleset 仍只要求
+`docs` 检查。等 Rust CI 首次成功并经负责人评审后，再决定是否调整必需检查。
+
+程序使用 `std::time::Instant` 计时，每类最多保留最近 4096 个样本，分位数采用最近秩法。启动范围结束于
+`CreateWindowExW` 返回，不代表首帧已显示；`Present` 耗时也不代表屏显延迟。可用 PresentMon/ETW 观察已显示帧，
+用外部方法测量 Input-to-Photon。当前实现与限制见[阶段 A 验证](stage-a.md)、[架构](architecture.md)
+和[维护说明](maintenance.md)。

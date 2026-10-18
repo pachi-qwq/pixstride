@@ -1,15 +1,23 @@
 [English](AGENTS.md) | [简体中文](AGENTS.zh-CN.md)
 
-<!-- doc-id: agents; revision: 2; status: active -->
+<!-- doc-id: agents; revision: 3; status: active -->
 
 # Agent 工作要求
 
 ## 当前范围
 
-Pixstride 仍处于设计评审阶段。本轮范围包括文档、仓库配置、CI 和文档工具。
-收到新的实现任务前，不创建查看器业务代码或 Cargo 工程。
-每次任务开始前检查 Git 状态、当前分支、历史和上游。切换分支或整理文件前保护未跟踪成果，
-不直接在 `main` 开发功能。
+Pixstride 已进入开发阶段。每项任务只实施负责人批准的范围；阶段 A 不包含图片解码、导航、缓存
+或后续阶段功能。每次任务开始前检查 Git 状态、当前分支、历史和上游。切换分支或整理文件前保护
+未跟踪成果，不直接在 `main` 开发功能。
+
+## Rust 源码注释
+
+Rust 注释和 Rustdoc 使用自然、准确的简体中文。保留 Rust 标识符、API 名称和已有英文技术术语。
+使用 `//!` 说明模块职责，使用 `///` 说明公开 API 和重要接口，使用 `//` 解释实现意图、约束和
+生命周期；不要复述显而易见的语句。每个 `unsafe` 块旁必须有 `// SAFETY:` 注释，具体说明指针、句柄、
+线程、生命周期或缓冲区的安全前提，以及代码如何维持这些前提。不得仅为通过 Clippy 而使用 `unsafe`。
+首次依赖不直观机制时，解释 Ownership、Borrowing、`Result`、`Option`、`Arc`、`Mutex`、Channel、
+`Send`/`Sync`、COM 和 D3D11 资源生命周期。
 
 ## 修改公开文档前
 
