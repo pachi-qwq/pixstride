@@ -1,6 +1,6 @@
 [English](stage-a.md) | [简体中文](../zh-CN/stage-a.md)
 
-<!-- doc-id: stage-a; revision: 5; status: implementation-review -->
+<!-- doc-id: stage-a; revision: 6; status: implementation-review -->
 
 # Stage A: Win32 window and D3D11 rendering
 
@@ -46,8 +46,8 @@ dropping the previous Render Target View. A zero-sized minimized client area sus
 ## D3D11 and presentation path
 
 The renderer first requests a hardware D3D11 device at Feature Level 11.1 or 11.0. It tries WARP if
-device creation fails. The fallback does not retry a later Swap Chain or shader failure. The current
-code creates a two-buffer `DXGI_SWAP_EFFECT_FLIP_DISCARD` Swap Chain with
+device creation fails. Startup logs the selected driver type, Feature Level, and DXGI adapter name.
+The fallback does not retry a later Swap Chain or shader failure. The current code creates a two-buffer `DXGI_SWAP_EFFECT_FLIP_DISCARD` Swap Chain with
 `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT`, sets maximum frame latency to 1, waits for the
 frame-latency object before drawing, and calls `Present(1, 0)`.
 
@@ -77,6 +77,11 @@ selection. It does not synchronously write a log for each frame.
 |---|---|
 | Startup | Process entry to return from `CreateWindowExW`; not first visible or composed frame. |
 | D3D11 initialization | Device, Swap Chain, compiled shader creation, test texture upload, and initial Render Target setup. |
+| Device creation | `D3D11CreateDevice`, including a WARP retry if hardware creation fails. |
+| Swap Chain creation | DXGI Swap Chain creation and frame-latency configuration. |
+| Shader initialization | Vertex and Pixel Shader plus Sampler and Rasterizer State creation. |
+| Test texture preparation | CPU test-pixel generation, D3D11 Texture2D creation, and Shader Resource View creation. This measures the CPU/API path; it does not wait for GPU completion. |
+| First Present | Render Thread start to the first successful `Present` call return. It includes initialization and the first frame's work. |
 | Input handling | Direction-key handling through latest-state publication and event signal. |
 | Request to render thread | Snapshot publication timestamp to the render thread consuming that snapshot. |
 | Render commands | CPU time for setting D3D11 state, clearing the target, and issuing the triangle draw. |
@@ -87,13 +92,14 @@ selection. It does not synchronously write a log for each frame.
 The Stage A metrics do not prove when a frame reaches the monitor. Use PresentMon/ETW to observe
 displayed-frame events, and an external high-speed capture method for Input-to-Photon measurements.
 Neither method is part of the current application. Do not interpret a quick `Present` return as a
-display-latency result.
+display-latency result. The First Present metric is an application-side milestone, not a display timestamp.
 
 Two local Release launches recorded 2.824 ms and 4.762 ms from process entry to the return of
 `CreateWindowExW`, and 223.234 ms and 206.379 ms for D3D11 initialization. These are two diagnostic
 samples on one machine, not controlled cold/hot-start measurements or a reliable percentile report.
-Both runs logged that the first `Present` call returned successfully. The logs did not record whether
-the hardware driver or WARP created the device.
+Both runs logged that the first `Present` call returned successfully. Those runs predate driver and
+adapter logging, so they cannot identify the selected driver. The new per-stage metrics have not yet
+been collected from a normal application shutdown.
 
 ## Build and run
 

@@ -9,7 +9,7 @@ use windows::{
         Foundation::{WAIT_EVENT, WAIT_OBJECT_0},
         Graphics::{
             Direct3D::{
-                D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL,
+                D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL,
                 D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
                 D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
             },
@@ -29,7 +29,7 @@ use windows::{
                 },
                 DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
-                IDXGIFactory2, IDXGISwapChain2,
+                IDXGIAdapter, IDXGIFactory2, IDXGISwapChain2,
             },
         },
         System::Threading::{INFINITE, WaitForMultipleObjects},
@@ -50,8 +50,10 @@ const PIXEL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/test_ps.cs
 pub(crate) fn render_thread(hwnd_value: isize, shared: Arc<Shared>) -> Result<()> {
     // 线程边界上只传递 HWND 的整数表示；UI 收到渲染线程完成消息之前一直持有并保持原窗口有效。
     let hwnd = HWND(hwnd_value as _);
+    let render_thread_started = Instant::now();
     let init_started = Instant::now();
-    let mut renderer = Renderer::new(hwnd, &shared).context("初始化 D3D11 渲染器失败")?;
+    let mut renderer =
+        Renderer::new(hwnd, &shared, render_thread_started).context("初始化 D3D11 渲染器失败")?;
     let init_elapsed = init_started.elapsed();
     shared.record(Metric::D3dInitialization, init_elapsed);
     println!("D3D11 initialization: {} us", init_elapsed.as_micros());
@@ -72,23 +74,30 @@ struct Renderer {
     width: u32,
     height: u32,
     first_present_reported: bool,
+    render_thread_started: Instant,
 }
 
 impl Renderer {
-    fn new(hwnd: HWND, shared: &Shared) -> Result<Self> {
-        let (device, feature_level, context) = create_device()?;
-        println!(
-            "D3D11 device ready: feature level 0x{:04X}",
-            feature_level.0
-        );
+    fn new(hwnd: HWND, shared: &Shared, render_thread_started: Instant) -> Result<Self> {
+        let device_started = Instant::now();
+        let (device, feature_level, context, driver_type) = create_device()?;
+        shared.record(Metric::DeviceCreation, device_started.elapsed());
 
         let dxgi_device = device.cast::<windows::Win32::Graphics::Dxgi::IDXGIDevice>()?;
         // SAFETY: `dxgi_device` 是通过 `cast` 获取并由当前作用域持有的 COM 接口；GetAdapter 返回独立持有的 Adapter 引用。
         let adapter = unsafe { dxgi_device.GetAdapter() }.context("获取 DXGI Adapter 失败")?;
+        let adapter_name = adapter_name(&adapter)?;
+        println!(
+            "D3D11 device ready: driver={}, feature_level=0x{:04X}, adapter={}",
+            driver_type_name(driver_type),
+            feature_level.0,
+            adapter_name
+        );
         let factory: IDXGIFactory2 =
             // SAFETY: 调用期间 `adapter` 保持有效；windows-rs 会检查接口类型并构造其 COM 引用。
             unsafe { adapter.GetParent() }.context("获取 DXGI Factory2 失败")?;
 
+        let swap_chain_started = Instant::now();
         let swap_chain_desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: 0,
             Height: 0,
@@ -119,7 +128,9 @@ impl Renderer {
         if frame_latency_handle.0.is_null() {
             bail!("DXGI 未提供 Frame Latency Waitable Object");
         }
+        shared.record(Metric::SwapChainCreation, swap_chain_started.elapsed());
 
+        let shader_started = Instant::now();
         let mut vertex_shader = None;
         // SAFETY: 内嵌 DXBC 字节码由本 crate 的 HLSL 在构建时生成；输出槽是当前栈帧持有的有效空 Option。
         unsafe { device.CreateVertexShader(VERTEX_SHADER, None, Some(&mut vertex_shader)) }
@@ -132,10 +143,14 @@ impl Renderer {
         let pixel_shader = pixel_shader.context("D3D11 未返回 Pixel Shader")?;
         let sampler = create_sampler(&device)?;
         let rasterizer = create_rasterizer(&device)?;
+        shared.record(Metric::ShaderInitialization, shader_started.elapsed());
+
+        let texture_upload_started = Instant::now();
         let textures = [
             create_test_texture(&device, TestPattern::Checkerboard)?,
             create_test_texture(&device, TestPattern::Gradient)?,
         ];
+        shared.record(Metric::TextureUpload, texture_upload_started.elapsed());
 
         let mut renderer = Self {
             device,
@@ -151,6 +166,7 @@ impl Renderer {
             width: 0,
             height: 0,
             first_present_reported: false,
+            render_thread_started,
         };
 
         let snapshot = shared.current_snapshot();
@@ -345,6 +361,9 @@ impl Renderer {
                     .unwrap_or_else(|| "设备未报告移除原因".to_owned())
             ));
         }
+        if !self.first_present_reported {
+            shared.record(Metric::FirstPresent, self.render_thread_started.elapsed());
+        }
         shared.record(Metric::Present, present_started.elapsed());
         if !self.first_present_reported {
             println!(
@@ -368,12 +387,39 @@ enum TestPattern {
     Gradient,
 }
 
-fn create_device() -> Result<(ID3D11Device, D3D_FEATURE_LEVEL, ID3D11DeviceContext)> {
-    create_device_with_driver(D3D_DRIVER_TYPE_HARDWARE).or_else(|hardware_error| {
-        create_device_with_driver(D3D_DRIVER_TYPE_WARP).map_err(|warp_error| {
-            anyhow!("硬件 D3D11 初始化失败：{hardware_error:#}; WARP 回退失败：{warp_error:#}")
-        })
-    })
+fn create_device() -> Result<(
+    ID3D11Device,
+    D3D_FEATURE_LEVEL,
+    ID3D11DeviceContext,
+    D3D_DRIVER_TYPE,
+)> {
+    match create_device_with_driver(D3D_DRIVER_TYPE_HARDWARE) {
+        Ok((device, level, context)) => Ok((device, level, context, D3D_DRIVER_TYPE_HARDWARE)),
+        Err(hardware_error) => create_device_with_driver(D3D_DRIVER_TYPE_WARP)
+            .map(|(device, level, context)| (device, level, context, D3D_DRIVER_TYPE_WARP))
+            .map_err(|warp_error| {
+                anyhow!("硬件 D3D11 初始化失败：{hardware_error:#}; WARP 回退失败：{warp_error:#}")
+            }),
+    }
+}
+
+fn driver_type_name(driver_type: D3D_DRIVER_TYPE) -> &'static str {
+    if driver_type == D3D_DRIVER_TYPE_WARP {
+        "WARP"
+    } else {
+        "hardware"
+    }
+}
+
+fn adapter_name(adapter: &IDXGIAdapter) -> Result<String> {
+    // SAFETY: `adapter` 是持有中的有效 IDXGIAdapter COM 引用；GetDesc 将描述写入其返回的值类型结构体。
+    let desc = unsafe { adapter.GetDesc() }.context("读取 DXGI Adapter 名称失败")?;
+    let end = desc
+        .Description
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(desc.Description.len());
+    Ok(String::from_utf16_lossy(&desc.Description[..end]))
 }
 
 fn create_device_with_driver(

@@ -9,6 +9,11 @@ const MAX_SAMPLES_PER_METRIC: usize = 4096;
 pub(crate) enum Metric {
     Startup,
     D3dInitialization,
+    DeviceCreation,
+    SwapChainCreation,
+    ShaderInitialization,
+    TextureUpload,
+    FirstPresent,
     InputHandling,
     RequestToRender,
     RenderCommands,
@@ -18,9 +23,14 @@ pub(crate) enum Metric {
 }
 
 impl Metric {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 13] = [
         Self::Startup,
         Self::D3dInitialization,
+        Self::DeviceCreation,
+        Self::SwapChainCreation,
+        Self::ShaderInitialization,
+        Self::TextureUpload,
+        Self::FirstPresent,
         Self::InputHandling,
         Self::RequestToRender,
         Self::RenderCommands,
@@ -33,12 +43,17 @@ impl Metric {
         match self {
             Self::Startup => 0,
             Self::D3dInitialization => 1,
-            Self::InputHandling => 2,
-            Self::RequestToRender => 3,
-            Self::RenderCommands => 4,
-            Self::Present => 5,
-            Self::Resize => 6,
-            Self::Shutdown => 7,
+            Self::DeviceCreation => 2,
+            Self::SwapChainCreation => 3,
+            Self::ShaderInitialization => 4,
+            Self::TextureUpload => 5,
+            Self::FirstPresent => 6,
+            Self::InputHandling => 7,
+            Self::RequestToRender => 8,
+            Self::RenderCommands => 9,
+            Self::Present => 10,
+            Self::Resize => 11,
+            Self::Shutdown => 12,
         }
     }
 
@@ -46,6 +61,11 @@ impl Metric {
         match self {
             Self::Startup => "启动到 CreateWindowExW 返回",
             Self::D3dInitialization => "D3D11 初始化",
+            Self::DeviceCreation => "D3D11 Device 创建",
+            Self::SwapChainCreation => "DXGI Swap Chain 创建和帧延迟设置",
+            Self::ShaderInitialization => "Shader 与渲染状态初始化",
+            Self::TextureUpload => "测试纹理 CPU 准备与 GPU 资源创建",
+            Self::FirstPresent => "渲染线程启动到首次 Present 成功返回",
             Self::InputHandling => "Win32 输入处理到状态发布",
             Self::RequestToRender => "状态发布到渲染线程开始处理",
             Self::RenderCommands => "渲染命令准备",
@@ -105,7 +125,7 @@ struct Summary {
 /// 记录渲染与窗口生命周期中的计时样本。
 #[derive(Default)]
 pub(crate) struct Metrics {
-    samples: [Samples; 8],
+    samples: [Samples; 13],
 }
 
 impl Metrics {
@@ -190,6 +210,7 @@ mod tests {
         let report = metrics.report();
         assert!(report.contains("启动到 CreateWindowExW 返回: n=1"));
         assert!(report.contains("Present 调用耗时: n=0 (not measured)"));
+        assert!(report.contains("DXGI Swap Chain 创建和帧延迟设置: n=0 (not measured)"));
         assert!(report.contains("not display latency"));
     }
 }

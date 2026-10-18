@@ -1,6 +1,6 @@
 [English](../en/stage-a.md) | [简体中文](stage-a.md)
 
-<!-- doc-id: stage-a; revision: 5; status: implementation-review -->
+<!-- doc-id: stage-a; revision: 6; status: implementation-review -->
 
 # 阶段 A：Win32 窗口与 D3D11 渲染
 
@@ -40,8 +40,9 @@ Immediate Context，释放 Back Buffer View 等 COM 包装器，再发送 `WM_RE
 
 ## D3D11 与呈现路径
 
-程序先请求 Feature Level 11.1 或 11.0 的硬件 D3D11 Device。Device 创建失败时尝试 WARP；后续 Swap Chain
-或 Shader 创建失败时不会再次回退。当前实现创建两个缓冲区的 `DXGI_SWAP_EFFECT_FLIP_DISCARD` Swap Chain，
+程序先请求 Feature Level 11.1 或 11.0 的硬件 D3D11 Device。Device 创建失败时尝试 WARP；启动日志会记录
+实际 Driver Type、Feature Level 和 DXGI Adapter 名称。后续 Swap Chain 或 Shader 创建失败时不会再次回退。
+当前实现创建两个缓冲区的 `DXGI_SWAP_EFFECT_FLIP_DISCARD` Swap Chain，
 启用 `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT`，将最大帧延迟设为 1，绘制前等待帧延迟句柄，
 并调用 `Present(1, 0)`。
 
@@ -66,6 +67,11 @@ Rust COM 包装器会在渲染器于所属线程析构时释放引用。UI 线�
 |---|---|
 | 启动 | 进程入口到 `CreateWindowExW` 返回；不代表窗口已可见或已合成显示。 |
 | D3D11 初始化 | Device、Swap Chain、已编译 Shader、测试纹理上传和初始 Render Target 创建。 |
+| Device 创建 | `D3D11CreateDevice` 耗时；若硬件创建失败，也包括 WARP 重试。 |
+| Swap Chain 创建 | 创建 DXGI Swap Chain 并设置帧延迟的耗时。 |
+| Shader 初始化 | 创建 Vertex Shader、Pixel Shader、Sampler 和 Rasterizer State 的耗时。 |
+| 测试纹理准备 | CPU 生成测试像素、创建 D3D11 Texture2D 和 Shader Resource View 的耗时。该项测 CPU/API 路径，不等待 GPU 完成。 |
+| 首次 Present | 从 Render Thread 启动到首个 `Present` 调用成功返回的耗时，包括初始化和首帧工作。 |
 | 输入处理 | 方向键处理到发布最新状态并触发事件。 |
 | 请求到渲染线程 | 发布快照的时间到渲染线程读取该快照。 |
 | 渲染命令 | CPU 设置 D3D11 状态、清理 Render Target 并提交三角形绘制的时间。 |
@@ -74,11 +80,12 @@ Rust COM 包装器会在渲染器于所属线程析构时释放引用。UI 线�
 | 关闭 | UI 发出关闭请求到渲染线程退出；不包括所有 OS 进程清理。 |
 
 这些计时无法证明画面何时到达显示器。可用 PresentMon/ETW 观察已显示帧事件；Input-to-Photon 还需外部高速
-拍摄方法。当前程序没有集成这些工具。不能把 `Present` 快速返回解释成屏显延迟结果。
+拍摄方法。当前程序没有集成这些工具。首次 Present 是应用内阶段记录，不是屏显时间；不能把 `Present` 快速返回解释成屏显延迟结果。
 
 两次本机 Release 启动记录的进程入口到 `CreateWindowExW` 返回时间分别为 2.824 ms 和 4.762 ms，
 D3D11 初始化时间分别为 223.234 ms 和 206.379 ms。这只是同一台机器上的两次诊断样本，未控制冷/热启动条件，
-不足以形成可靠的分位数报告。两次日志都记录首个 `Present` 调用成功返回，但没有记录 Device 使用硬件驱动还是 WARP。
+不足以形成可靠的分位数报告。两次日志都记录首个 `Present` 调用成功返回。这些运行早于 Driver Type 和 Adapter 名称日志，
+因此无法确认使用硬件驱动还是 WARP。新的分项指标尚未通过正常关闭流程采集到数值。
 
 ## 构建和运行
 
