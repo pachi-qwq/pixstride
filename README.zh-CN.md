@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 2; status: design-review -->
+<!-- doc-id: readme; revision: 3; status: design-review -->
 
 # Pixstride
 
@@ -18,13 +18,24 @@ Design Review / Repository Foundation（设计评审与仓库基础建设）阶�
 目前推荐由独立渲染线程管理 GPU 资源，通过有界后台任务解码图片，并为超大图片设置独立路径。
 线程方案、缓存预算和分块尺寸仍需实验验证；测试计划中列出的格式不代表已经支持。
 
-## 文档与贡献
+## 阅读和参与
 
-架构摘要、贡献指南和文档检查工具正在独立文档分支上整理，等待评审。
-查看器实现需要单独批准的开发任务。
+- [架构范围与评审整改](docs/zh-CN/architecture.md)
+- [开发状态与文档检查](docs/zh-CN/development.md)
+- [跨格式压力测试计划](docs/zh-CN/stress-testing.md)
+- [写作规范](docs/STYLE_GUIDE.zh-CN.md)与[术语表](docs/TERMINOLOGY.zh-CN.md)
+- [贡献指南](CONTRIBUTING.zh-CN.md)
+- [GitHub 工作流、许可证与发布计划](docs/zh-CN/maintenance.md)
 
-私人图片、内部草稿、机器报告、大型测试数据和生成缓存不进入 Git。
-具有合法授权的项目资源和经过评审的小型测试样本可以放在 `assets/` 和 `tests/fixtures/`。
+文档工具仅使用 Python 3.11 及以上版本的标准库：
+
+```sh
+python -B scripts/check_docs.py
+python -B -m unittest discover -s scripts/tests
+```
+
+私人样本、设计草稿、机器检测报告和生成的缓存应保存在仓库外。通过本地配置或环境变量提供
+测试路径，不要在 Issue 中附加私人图片或未经脱敏的诊断信息。
 
 ## 许可证
 

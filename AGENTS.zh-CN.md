@@ -1,0 +1,54 @@
+[English](AGENTS.md) | [简体中文](AGENTS.zh-CN.md)
+
+<!-- doc-id: agents; revision: 2; status: active -->
+
+# Agent 工作要求
+
+## 当前范围
+
+Pixstride 仍处于设计评审阶段。本轮范围包括文档、仓库配置、CI 和文档工具。
+收到新的实现任务前，不创建查看器业务代码或 Cargo 工程。
+每次任务开始前检查 Git 状态、当前分支、历史和上游。切换分支或整理文件前保护未跟踪成果，
+不直接在 `main` 开发功能。
+
+## 修改公开文档前
+
+先阅读[写作规范](docs/STYLE_GUIDE.zh-CN.md)、[术语表](docs/TERMINOLOGY.zh-CN.md)
+及对应英文版本。公开文档默认英文，并提供完整的简体中文版本。
+同时更新两种语言、共享修订号和[文档配对目录](docs/document-pairs.json)。
+
+保留 API 名称、线程限制、资源所有权、异常路径和测量边界。
+区分事实、提案、估算与实测结果，不把目标写成成绩。
+项目概念使用术语表中的名称；新增概念时说明维护模块和生命周期。
+不自动修改已批准的架构决策。提出调整时提供依据；重要架构变更获准后，同步更新对应设计文档。
+
+## 隐私和产物
+
+整理原始设计前，先在仓库外备份，不删除原始记录。
+内部草稿、机器报告、私人样本、大型测试文件、缓存和构建结果均保存在仓库外。
+不发布本地绝对路径、凭据或未经脱敏的日志。
+未来本地测试通过 `PIXSTRIDE_STRESS_IMAGE` 提供输入，通过 `PIXSTRIDE_TEST_ROOT` 指定输出根目录；
+这两个名称是测试工具的计划约定，尚无对应查看器选项。
+
+## 检查和 Git
+
+修改文档工具后运行 `python -B scripts/check_docs.py` 和
+`python -B -m unittest discover -s scripts/tests`；只改文字时运行文档检查。
+两种语言仍须人工核对。网络链接检查按需运行：
+`python -B scripts/check_docs.py --external-links`。
+Rust 开发获准后，修改 Rust 代码须运行适用的 fmt、Clippy、测试和构建检查。
+性能改动必须说明验证方法，并区分目标与实测结果。
+
+正常开发从 `main` 创建短期 `feat/*`、`fix/*`、`docs/*`、`refactor/*`、`test/*` 或
+`chore/*` 分支，不建立长期 `develop` 分支。流程为检查 → 维护者评审 → Squash Merge，
+Agent 不自动合并 PR。首次发布流程见[维护说明](docs/zh-CN/maintenance.md)。
+没有负责人明确授权，不推送、不修改 GitHub 设置或可见性、不改写历史，也不删除远程分支。
+不把强推或历史改写作为日常任务清理步骤。
+管理员工具安装必须先获批准。
+
+## 许可证
+
+负责人已选择 `MIT OR Apache-2.0`，保留 [LICENSE-MIT](LICENSE-MIT) 和
+[LICENSE-APACHE](LICENSE-APACHE)。未来 Cargo Package 使用 `license = "MIT OR Apache-2.0"`。
+引入依赖或复用代码前检查许可证，原样保留必要声明并标明外部来源。
+Pixstride 自身的许可证不替代第三方义务。
