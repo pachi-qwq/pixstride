@@ -1,6 +1,6 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 1; status: implementation-review -->
+<!-- doc-id: stage-c; revision: 2; status: implementation-review -->
 
 # Stage C: large PNG path
 
@@ -26,6 +26,53 @@ An explicit Release probe ran separate processes for generated 8192 × 256 and 8
 owned input/output row capacity was 65,536 bytes in both, and peak working set was 10,022,912 bytes
 in both. Scan durations were 13.698 ms and 422.538 ms. This tests a 32× height change, not every PNG
 encoding or malformed-input allocation pattern. The private extreme image was not read.
+
+## C2 disk pyramid
+
+One row scan builds all ceil-half levels down to 1 × 1. A 2 × 2 box filter averages premultiplied
+encoded channels and repeats odd edges. It retains rows, not complete levels. Tiles have a one-pixel
+neighbor gutter; tests compare every level against an independent small-image reference and verify
+all level-zero gutters, including partial edge tiles.
+
+The experimental default is 1024. A generated 2049 × 1537 RGBA Release run produced:
+
+| Edge | Tiles | Data bytes | Build ms | Warm reopen ms | Reverse tile reads ms |
+| --- | --- | --- | --- | --- | --- |
+| 512 | 38 | 16,986,000 | 386.591 | 0.328 | 4.173 |
+| 1024 | 19 | 16,910,888 | 436.699 | 0.342 | 3.955 |
+| 2048 | 14 | 16,875,968 | 513.083 | 0.311 | 3.738 |
+
+These are single warm-filesystem samples, not percentiles or GPU upload measurements. Conservative
+owned-buffer estimates were 1,189,994 / 4,343,154 / 12,752,050 bytes, excluding decoder allocation.
+For the 1024 sample tile, PNG reduced 4,210,704 bytes to 1,192,620 but added 135.821 ms encoding and
+4.321 ms decoding. The initial cache stores raw PBGRA8, trading disk space for simpler bounded reads.
+
+`pixels.bin` contains padded tiles. `index.bin` records format version, dimensions, source identity,
+levels implied by checked geometry, 64-bit offsets/lengths, and tile CRC32; the index has its own CRC.
+Readers validate lengths and geometry before allocation and validate each tile when read. The default
+aggregate disk budget is 2 GiB, Builder budget 128 MiB including the decoder allowance, with 1 GiB
+additional free-space headroom. Neither estimate is a hard process-memory limit.
+
+A root file lease serializes builders, opens, and cleanup. Active read handles prevent eviction.
+Completed data/index files are synced and published by a same-volume directory rename; cancellation
+removes the partial directory. A later build cleans recognized abandoned partial directories. Invalid
+metadata is rebuilt; tile CRC failures report an error and require cache cleanup before rebuilding.
+Published caches are evicted oldest-first when a build needs space; this is not an LRU database.
+Another process building the same root returns a busy error rather than waiting without a bound.
+
+Source validation compares canonical path, length, modification time, and CRC32 samples from the
+first/middle/last 64 KiB. A read guard denies source writes/deletes during construction and the stamp
+is rechecked before publication. Changes outside the sampled bytes with preserved metadata can evade
+this check; CRC32 is not a cryptographic content identity. Cache-version, sampled-content-change,
+active-cache pinning, corruption, overflow, and interrupted-build tests passed.
+
+The private source has only had its file attributes checked. The owner approved a separate 10 GiB
+cache experiment after C3 passes; its estimated 1024 pyramid is 8,224,561,220 bytes. No source pixels
+have been read at this checkpoint.
+
+```powershell
+cargo test --release --locked release_tile_sizes_probe -- --ignored --nocapture
+```
 
 ## Dependencies and evidence
 
