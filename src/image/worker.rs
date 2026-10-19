@@ -8,7 +8,7 @@ use std::{
         mpsc::{self, Receiver},
     },
     thread::{self, JoinHandle},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -26,6 +26,8 @@ use super::{
     ComMta, DecodedImage, ImageBudget, SourceIdentity, cache::CpuCache, decode_wic,
     navigation::ImageDirectory,
 };
+
+const PRELOAD_IDLE_DELAY: Duration = Duration::from_millis(120);
 
 #[derive(Debug)]
 pub(crate) enum LoaderMessage {
@@ -65,6 +67,7 @@ struct WorkState {
     current: Option<DecodeJob>,
     scan: Option<ScanJob>,
     preloads: VecDeque<DecodeJob>,
+    preload_not_before: Option<Instant>,
     stopping: bool,
 }
 
@@ -94,11 +97,33 @@ impl WorkerControl {
                     return Some(Work::Scan(job));
                 }
             }
-            while let Some(job) = state.preloads.pop_front() {
-                if job.generation == state.generation {
-                    return Some(Work::Preload(job));
-                }
+            while state
+                .preloads
+                .front()
+                .is_some_and(|job| job.generation != state.generation)
+            {
+                state.preloads.pop_front();
             }
+            if !state.preloads.is_empty() {
+                let remaining = state
+                    .preload_not_before
+                    .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                    .unwrap_or_default();
+                if remaining.is_zero() {
+                    let job = state.preloads.pop_front();
+                    if state.preloads.is_empty() {
+                        state.preload_not_before = None;
+                    }
+                    return job.map(Work::Preload);
+                }
+                state = self
+                    .changed
+                    .wait_timeout(state, remaining)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .0;
+                continue;
+            }
+            state.preload_not_before = None;
             state = self
                 .changed
                 .wait(state)
@@ -220,6 +245,7 @@ impl ImageLoader {
             current: path,
         });
         state.preloads.clear();
+        state.preload_not_before = None;
         self.control.changed.notify_one();
     }
 
@@ -241,6 +267,8 @@ impl ImageLoader {
                 requested_at: Instant::now(),
             })
             .collect();
+        state.preload_not_before =
+            (!state.preloads.is_empty()).then(|| Instant::now() + PRELOAD_IDLE_DELAY);
         self.control.changed.notify_one();
     }
 
@@ -258,6 +286,8 @@ impl ImageLoader {
                 requested_at: Instant::now(),
             })
             .collect();
+        state.preload_not_before =
+            (!state.preloads.is_empty()).then(|| Instant::now() + PRELOAD_IDLE_DELAY);
         self.control.changed.notify_one();
     }
 
@@ -267,6 +297,7 @@ impl ImageLoader {
         state.current = None;
         state.scan = None;
         state.preloads.clear();
+        state.preload_not_before = None;
         self.control.changed.notify_all();
     }
 
@@ -439,7 +470,7 @@ mod tests {
     use std::{
         path::{Path, PathBuf},
         sync::{Condvar, Mutex},
-        time::Instant,
+        time::{Duration, Instant},
     };
 
     #[test]
@@ -506,5 +537,32 @@ mod tests {
 
         assert!(!control.is_current(1));
         assert!(matches!(control.next(), Some(Work::Current(job)) if job.generation == 2));
+    }
+
+    #[test]
+    fn current_selection_preempts_a_delayed_preload() {
+        let control = WorkerControl {
+            state: Mutex::new(WorkState::default()),
+            changed: Condvar::new(),
+        };
+        {
+            let mut state = control.lock();
+            state.generation = 3;
+            state.current = Some(super::DecodeJob {
+                generation: 3,
+                path: PathBuf::from("selected.jpg"),
+                requested_at: Instant::now(),
+            });
+            state.preloads.push_back(super::DecodeJob {
+                generation: 3,
+                path: PathBuf::from("neighbor.jpg"),
+                requested_at: Instant::now(),
+            });
+            state.preload_not_before = Some(Instant::now() + Duration::from_secs(5));
+        }
+
+        assert!(
+            matches!(control.next(), Some(Work::Current(job)) if job.path == Path::new("selected.jpg"))
+        );
     }
 }

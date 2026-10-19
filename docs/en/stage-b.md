@@ -1,6 +1,6 @@
 [English](stage-b.md) | [简体中文](../zh-CN/stage-b.md)
 
-<!-- doc-id: stage-b; revision: 2; status: draft-pr-review -->
+<!-- doc-id: stage-b; revision: 3; status: draft-pr-review -->
 
 # Stage B: image browsing core
 
@@ -55,7 +55,10 @@ WIC pixel decoding, but not that worker handoff and source-revision check. Keepi
 the UI thread avoids showing a stale texture after a file changes. New selections now discard queued
 GPU preloads. The renderer presents the current selection before uploading preloads, then uploads at
 most one of the two queued neighbors per wake. A texture upload already in progress cannot be
-preempted.
+preempted. The decoder worker delays queued adjacent preloads for 120 ms after a selection or preload
+queue update. A new current-image request wakes the worker immediately and takes priority. This idle
+window is a scheduling experiment: it avoids starting speculative WIC work during continuous input,
+but cannot interrupt a preload that has already entered WIC.
 
 ## Diagnostics and limits
 
@@ -74,9 +77,25 @@ cache misses. A GPU hit still requires the worker result described above. The pr
 reported aggregate CPU hits/misses
 of 26/13 and GPU hits/misses of 26/5, including preloads; this corresponds to 66.7% and 83.9% aggregate
 hit rates for that run, not navigation-only rates. Its 11 image-request-to-render samples had a 202 µs
-P50 and a 161.58 ms maximum. The sample mixed request origins and included a long-tail event, so it is
-not a controlled cache-hit latency benchmark. Re-run the new counters while repeatedly navigating a
-small local directory to get selection-only rates and percentiles.
+P50 and a 161.58 ms maximum. A later owner run used a real local directory and collected 78 current
+requests and 143 preload requests. Current-selection CPU hits were 73/78 (93.6%); GPU hits were 66/76
+(86.8%). Preload CPU hits were 66/143 (46.2%), and preload GPU hits were 65/134 (48.5%). The different
+denominators reflect successful cache lookups; failed source checks or uploads are not cache misses.
+
+In that run, source-identity and CPU-cache lookup took 3.072 ms P50 and 4.153 ms P95. Current request
+to worker result took 3.472 ms P50 and 126.214 ms P95 (376.136 ms maximum). A current GPU hit from
+selection to `Present` return took 3.456 ms P50 and 4.305 ms P95. A GPU miss took 51.537 ms P50 and
+177.570 ms P95. WIC full decode took 48.462 ms P50 and 212.795 ms P95; preload decode reached
+1.205 s maximum. The CPU and GPU cache-owned peak bytes were each about 511.5 MiB, close to their
+512 MiB budgets; these values do not represent total process RAM or actual driver VRAM use.
+
+The long request-to-worker tail, compared with the shorter cache-lookup time, is consistent with the
+single worker being occupied by a synchronous WIC read or decode. These aggregate measurements do
+not isolate queue wait from WIC work, so they do not prove the exact cause of each outlier. The 120 ms
+idle delay above is intended to reduce preload interference during continuous navigation; it cannot
+preempt active WIC work and needs another owner run to measure its effect. `Present`-return timings
+remain application-side values, not displayed-frame or Input-to-Photon latency. These runs are
+diagnostic samples, not a controlled benchmark.
 
 The automated suite includes path sorting and boundaries, checked image layout and budgets, EXIF
 mapping, CPU cache eviction, stale-generation replacement, cancellation of queued preloads, viewport
