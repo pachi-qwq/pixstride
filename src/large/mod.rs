@@ -2,3 +2,5 @@
 
 pub(crate) mod cache;
 pub(crate) mod stream;
+pub(crate) mod view;
+pub(crate) mod worker;

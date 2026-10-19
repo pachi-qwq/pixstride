@@ -84,6 +84,10 @@ pub(crate) enum Metric {
     WicGetFrame,
     WicExif,
     ImageSourceBudget,
+    TileRead,
+    TileUpload,
+    LargePreview,
+    TileViewport,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -186,7 +190,7 @@ impl Counter {
 }
 
 impl Metric {
-    const ALL: [Self; 51] = [
+    const ALL: [Self; 55] = [
         Self::Startup,
         Self::D3dInitialization,
         Self::DeviceCreation,
@@ -238,6 +242,10 @@ impl Metric {
         Self::WicGetFrame,
         Self::WicExif,
         Self::ImageSourceBudget,
+        Self::TileRead,
+        Self::TileUpload,
+        Self::LargePreview,
+        Self::TileViewport,
     ];
 
     fn index(self) -> usize {
@@ -293,11 +301,20 @@ impl Metric {
             Self::WicGetFrame => 48,
             Self::WicExif => 49,
             Self::ImageSourceBudget => 50,
+            Self::TileRead => 51,
+            Self::TileUpload => 52,
+            Self::LargePreview => 53,
+            Self::TileViewport => 54,
         }
     }
 
     fn name(self) -> &'static str {
         match self {
+            Self::TileRead => "Tile CPU 查询或磁盘读取与 CRC 校验",
+            Self::TileUpload => "Tile GPU 创建与上传提交",
+            Self::LargePreview => "大图选择到预览 Present 返回",
+            Self::TileViewport => "视口发布到本次最后所需 Tile Present 返回",
+
             Self::Startup => "启动到 CreateWindowExW 返回",
             Self::D3dInitialization => "D3D11 初始化",
             Self::DeviceCreation => "D3D11 Device 创建",
@@ -508,6 +525,11 @@ impl Metrics {
     }
     pub(crate) fn record(&mut self, metric: Metric, duration: Duration) {
         self.samples[metric.index()].record(duration);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sample_count(&self, metric: Metric) -> usize {
+        self.samples[metric.index()].values_us.len()
     }
 
     pub(crate) fn increment(&mut self, counter: Counter) {

@@ -24,6 +24,13 @@ fn main() {
     compile_shader(
         &fxc,
         shader,
+        &out_dir.join("tile_vs.cso"),
+        "VSTile",
+        "vs_4_0",
+    );
+    compile_shader(
+        &fxc,
+        shader,
         &out_dir.join("test_ps.cso"),
         "PSMain",
         "ps_4_0",

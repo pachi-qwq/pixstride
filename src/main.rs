@@ -5,7 +5,6 @@
 mod app;
 mod diagnostics;
 mod image;
-#[cfg(test)]
 mod large;
 mod renderer;
 mod window;

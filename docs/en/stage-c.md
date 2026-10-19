@@ -1,11 +1,11 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 2; status: implementation-review -->
+<!-- doc-id: stage-c; revision: 3; status: implementation-review -->
 
 # Stage C: large PNG path
 
-Stages A and B are merged. Stage C is in local development; no large-image viewer support is claimed
-until the cache and renderer gates pass. The private 48000 × 32000 PNG has not been decoded here.
+Stages A and B are merged. Stage C has a locally tested streaming cache and Tile renderer. The private
+48000 × 32000 PNG has not been decoded at this checkpoint; real-image and manual GUI acceptance remain.
 
 ## C1 row prototype
 
@@ -73,6 +73,57 @@ have been read at this checkpoint.
 ```powershell
 cargo test --release --locked release_tile_sizes_probe -- --ignored --nocapture
 ```
+
+## C3 viewer integration
+
+Over-budget PNGs route to the row builder before WIC pixel allocation. Ordinary JPEG/PNG/BMP retain
+WIC, CPU/GPU caches, and Generation. Uncached PNGs add a small header read; cloud placeholder attributes
+are checked first, and those PNGs require manual download. Large JPEG/BMP and unsupported PNG encodings
+still report errors. Ordinary budgets remain 256 MiB per image and 512 MiB per CPU/GPU cache.
+
+A lazily started Tile worker owns construction and reads: one latest build slot, one latest viewport
+slot, at most two replies, and a 64 MiB CPU Tile LRU. Replies, active upload, and preview retain extra
+bounded Tile buffers. The render thread owns a separate 128 MiB Tile GPU cache. At most 24 visible
+Tiles are requested; unusually large viewports use a coarser layer. The Builder's 128 MiB reservation
+includes its decoder allowance. OS file cache and allocator overhead are separate. No IPC is introduced.
+
+Selection Generation invalidates source work; the existing Render Snapshot sequence invalidates
+viewport work. Cancellation checks run between rows/Tiles. A blocked read cannot be preempted:
+shutdown waits up to two seconds, then detaches a worker with no HWND, GPU interfaces, or usable UI-event
+access. A later build cleans recognized partial caches. Device failure keeps error-and-exit behavior;
+device recreation and actual Device Lost stress remain unverified.
+
+The renderer draws each visible logical region once, using the Tile if ready or its preview UVs if
+missing. It never blends a Tile over the same preview pixels. One-pixel gutters prevent boundary
+sampling across unrelated data. The first complete preview currently waits for the full PNG scan,
+pyramid writes, checksum pass, and atomic publication. There is no partial-file resume or early
+complete-preview promise.
+
+Press **F** for Fit, **1** for native pixels. On the large-image path, wheel zooms around the window
+center and left-drag pans. Resize updates visible Tiles; minimize suspends drawing. The worker sleeps
+on a condition variable; rendering retains event-driven waits.
+
+A Release HWND/D3D11 probe used generated 20000 × 65 PNGs: build 122.490 ms, warm metadata reopen
+0.331 ms, selection-to-preview Present return 123.681 ms first / 1.886 ms cached. Tile read/CPU lookup
+P50 was 61 µs (11 samples), upload P50 131 µs (13 samples), Tile GPU peak 1,724,772 bytes. These are
+synthetic samples, insufficient for stable tail percentiles. GPU readback checked 17,425 pixels across
+a Tile boundary, including premultiplied-alpha composition, within two channel values. Fit/native,
+pan, zoom, minimize/restore, reopen, ordinary GPU-hit navigation during construction, and close during
+construction ran. This does not establish visual desktop acceptance or input-to-photon latency.
+
+```powershell
+cargo build --release --locked
+$env:PIXSTRIDE_TILE_CACHE = Join-Path $env:PIXSTRIDE_TEST_ROOT 'viewer-cache'
+& .\target\release\pixstride.exe $env:PIXSTRIDE_STRESS_IMAGE
+cargo test --release --locked release_large_viewer_probe -- --ignored --nocapture
+cargo test --release --locked release_tile_gpu_readback -- --ignored --nocapture
+```
+
+Set both path variables outside Git. Default cache: `%LOCALAPPDATA%/Pixstride/tiles-v1`. Use a dedicated
+root, never a source folder. `PIXSTRIDE_TILE_CACHE_GIB` accepts 1–10, defaults to 2; values above 2 require
+separate owner approval. The real experiment has approval for 10 GiB after C3 passes but has not run at
+this checkpoint. Manual checks still need real-image seams, alpha, gestures, arbitrary regions,
+cancellation, and repeated open/close.
 
 ## Dependencies and evidence
 

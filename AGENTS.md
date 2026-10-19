@@ -1,13 +1,13 @@
 [English](AGENTS.md) | [简体中文](AGENTS.zh-CN.md)
 
-<!-- doc-id: agents; revision: 4; status: active -->
+<!-- doc-id: agents; revision: 5; status: active -->
 
 # Agent instructions
 
 ## Current scope
 
 Pixstride is under active development. Stay within the scope approved for the current task; Stage B
-currently covers ordinary JPEG, PNG, and BMP browsing only. Do not add later-stage features without
+is merged; Stage C covers static large-PNG streaming and Tile rendering. Do not add later-stage features without
 approval. Before each task,
 inspect Git status, the current branch, history, and upstream. Preserve untracked work before
 switching branches or reorganizing files. Do not develop features directly on `main`.
@@ -41,7 +41,8 @@ Back up original design material outside the repository before reorganizing it. 
 Keep internal drafts, machine reports, private samples, large fixtures, caches, and build outputs outside
 the repository. Do not publish local absolute paths, credentials, or unredacted logs.
 Use `PIXSTRIDE_STRESS_IMAGE` and `PIXSTRIDE_TEST_ROOT` for future local test inputs and outputs;
-these are proposed test-tool conventions, not implemented viewer options.
+these configure explicit local probes, not command-line viewer options. Large-cache probes require the
+approved dedicated root and disk budget; never hydrate a cloud-only extreme sample automatically.
 
 ## Checks and Git
 

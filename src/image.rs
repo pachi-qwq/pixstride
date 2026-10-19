@@ -141,7 +141,7 @@ impl std::fmt::Display for BudgetRejection {
                 limit,
             } => write!(
                 f,
-                "图片尺寸 {width}×{height} 超过单张纹理边长上限 {limit}；超大图片路径尚未实现"
+                "图片尺寸 {width}×{height} 超过单张纹理边长上限 {limit}；该格式不在普通单纹理路径内"
             ),
             Self::DecodedBytes { bytes, limit } => write!(
                 f,

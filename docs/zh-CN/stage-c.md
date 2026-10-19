@@ -1,11 +1,11 @@
 [English](../en/stage-c.md) | [简体中文](stage-c.md)
 
-<!-- doc-id: stage-c; revision: 2; status: implementation-review -->
+<!-- doc-id: stage-c; revision: 3; status: implementation-review -->
 
 # Stage C：超大 PNG 路径
 
-Stage A、Stage B 已合并。Stage C 正在本地开发；缓存和渲染器验收通过前，不宣称查看器已支持超大图片。
-本轮尚未解码私人 48000 × 32000 PNG。
+Stage A、Stage B 已合并。Stage C 的流式缓存和分块渲染器已通过本地小图测试；在此检查点尚未解码私人
+48000 × 32000 PNG，真实图片及人工 GUI 验收仍待完成。
 
 ## C1 行解码原型
 
@@ -57,6 +57,45 @@ Tile CRC32，索引另有 CRC。读取前验证长度和几何，读取每块时
 ```powershell
 cargo test --release --locked release_tile_sizes_probe -- --ignored --nocapture
 ```
+
+## C3 查看器集成
+
+超预算 PNG 在 WIC 分配像素前路由到行构建器。普通 JPEG/PNG/BMP 保留 WIC、CPU/GPU 缓存及 Generation。
+未缓存 PNG 增加小型块头读取，先检查云占位属性；此类 PNG 需用户先下载到本地。超大 JPEG/BMP 和新路径不支持的 PNG
+编码仍返回错误。普通预算保持单图 256 MiB、CPU/GPU 缓存各 512 MiB。
+
+首次大图请求才启动单个 Tile Worker：一个最新构建槽、一个最新视口槽、最多两项答复和 64 MiB CPU Tile LRU。
+答复、活动上传和预览可额外持有有界 Tile 缓冲。渲染线程独占独立的 128 MiB Tile GPU 缓存。最多请求 24 个可见 Tile，
+特别大的视口会降到更粗层。Builder 的 128 MiB 额度含解码器预算，OS 文件缓存和分配器开销另计，没有引入 IPC。
+
+选择 Generation 淘汰旧源任务，已有 Render Snapshot 序号淘汰旧视口任务。取消在行和 Tile 之间检查，不能抢占阻塞读取。
+关闭最多等待两秒，再分离不持有 HWND、GPU 接口且无法再访问 UI 事件的 Worker。下次构建清理可识别的半成品。设备失败
+保留报错退出方式，设备重建和实际 Device Lost 压力测试尚未验证。
+
+每个可见逻辑区域只画一次：Tile 就绪则采样该块，缺块则使用预览对应的 UV，不在相同预览像素上叠加高清 Tile。
+一像素边框避免采样到无关数据。首次完整预览目前要等待全流扫描、金字塔写入、校验及原子发布；没有实现半成品续建，
+也不承诺首开提前显示完整预览。
+
+**F** 适应窗口，**1** 原始像素。大图路径中，滚轮围绕窗口中心缩放，鼠标左键拖动平移。Resize 更新可见 Tile，最小化暂停
+绘制。Worker 等待条件变量，渲染器保留事件驱动等待。
+
+Release HWND/D3D11 诊断使用生成的 20000 × 65 PNG：构建 122.490 ms，热缓存元数据重开 0.331 ms，选择到预览
+Present 返回首开 123.681 ms、缓存命中 1.886 ms。Tile 读取/CPU 查询 P50 为 61 µs（11 个样本），上传 P50 为
+131 µs（13 个样本），Tile GPU 峰值 1,724,772 字节。合成样本不足以得出稳定长尾百分位。GPU 回读检查跨 Tile 边界的
+17,425 个像素，含预乘 Alpha 合成，差异不超过两个通道值。Fit/原始尺寸、平移、缩放、最小化/恢复、缓存重开、构建期间
+普通 GPU 命中切换和关闭均已程序化执行。这不等于人工视觉验收，也不是 Input-to-Photon 测量。
+
+```powershell
+cargo build --release --locked
+$env:PIXSTRIDE_TILE_CACHE = Join-Path $env:PIXSTRIDE_TEST_ROOT 'viewer-cache'
+& .\target\release\pixstride.exe $env:PIXSTRIDE_STRESS_IMAGE
+cargo test --release --locked release_large_viewer_probe -- --ignored --nocapture
+cargo test --release --locked release_tile_gpu_readback -- --ignored --nocapture
+```
+
+两个路径变量均应指向 Git 外。默认缓存为 `%LOCALAPPDATA%/Pixstride/tiles-v1`。使用专用根目录，不能指向源图目录。
+`PIXSTRIDE_TILE_CACHE_GIB` 接受 1–10，默认 2，超过 2 需负责人单独批准。真实实验已得到 C3 通过后使用 10 GiB 的批准，
+但在此检查点尚未运行。人工验收仍需检查真实图片的接缝、透明度、连续手势、任意区域、取消和反复打开/关闭。
 
 ## 依赖与依据
 

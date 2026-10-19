@@ -1,12 +1,12 @@
 [English](AGENTS.md) | [简体中文](AGENTS.zh-CN.md)
 
-<!-- doc-id: agents; revision: 4; status: active -->
+<!-- doc-id: agents; revision: 5; status: active -->
 
 # Agent 工作要求
 
 ## 当前范围
 
-Pixstride 已进入开发阶段。每项任务只实施负责人批准的范围；当前阶段 B 仅覆盖常规 JPEG、PNG、BMP 浏览，
+Pixstride 已进入开发阶段。每项任务只实施负责人批准的范围；阶段 B 已合并，当前阶段 C 覆盖静态超大 PNG 流式处理和分块渲染，
 未经批准不添加后续阶段功能。每次任务开始前检查 Git 状态、当前分支、历史和上游。切换分支或整理文件前保护
 未跟踪成果，不直接在 `main` 开发功能。
 

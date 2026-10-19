@@ -45,6 +45,11 @@ pub(crate) enum LoaderMessage {
         requested_at: Instant,
         result: std::result::Result<(Arc<DecodedImage>, bool), String>,
     },
+    Large {
+        generation: u64,
+        path: PathBuf,
+        requested_at: Instant,
+    },
     Directory {
         generation: u64,
         result: std::result::Result<ImageDirectory, String>,
@@ -630,16 +635,27 @@ fn worker_loop(
                 if control.can_finish_current(job.generation)
                     && shared.can_present_image_generation(job.generation)
                 {
-                    send(
-                        sender,
-                        ready,
+                    let large = result
+                        .as_ref()
+                        .err()
+                        .is_some_and(|e| e.is::<BudgetRejection>())
+                        && is_png(&job.path)
+                        && shared.is_image_generation_current(job.generation);
+                    let message = if large {
+                        LoaderMessage::Large {
+                            generation: job.generation,
+                            path: job.path,
+                            requested_at: job.requested_at,
+                        }
+                    } else {
                         LoaderMessage::Current {
                             generation: job.generation,
                             path: job.path,
                             requested_at: job.requested_at,
-                            result: result.map_err(|error| format!("{error:#}")),
-                        },
-                    );
+                            result: result.map_err(|e| format!("{e:#}")),
+                        }
+                    };
+                    send(sender, ready, message);
                 }
                 control.lock().active_current_generation = None;
             }
@@ -818,6 +834,11 @@ fn identity_loop(
     }
 }
 
+fn is_png(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+}
+
 fn load_with_cache(
     cache: &mut CpuCache,
     path: &Path,
@@ -859,6 +880,17 @@ fn load_with_cache(
     if let Some(error) = cache.rejection(&identity) {
         shared.increment(Counter::BudgetRejectionHit);
         return Err(error.into());
+    }
+    if is_png(path) {
+        crate::large::cache::ensure_local(path)?;
+        if let Ok(size) = crate::large::stream::inspect(path) {
+            if let Err(e) = super::checked_layout(size.width, size.height, budget) {
+                if let Some(rejection) = e.downcast_ref::<BudgetRejection>() {
+                    cache.remember_rejection(identity, rejection.clone());
+                }
+                return Err(e);
+            }
+        }
     }
     let decode_started = Instant::now();
     let result = decode_wic(path, &identity, budget, &record, is_current);
