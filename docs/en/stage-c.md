@@ -1,12 +1,12 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 4; status: implementation-review -->
+<!-- doc-id: stage-c; revision: 5; status: implementation-review -->
 
 # Stage C: large PNG path
 
 Stages A and B are merged. Stage C has a locally tested streaming cache and Tile renderer. The private
-48000 × 32000 PNG passed full cache construction and programmatic D3D11 viewport tests. Manual desktop
-acceptance and remaining stress gates are still open.
+48000 × 32000 PNG passed full cache construction and programmatic D3D11 viewport tests. The owner also
+confirmed normal cache-hit operation on the Windows desktop. Detailed visual and stress gates remain open.
 
 ## C1 row prototype
 
@@ -193,16 +193,43 @@ CPU-hit selections, plus failure/stale-result assertions. All six runs passed:
 Median processing paths stayed in the same sub-millisecond range; CPU tails varied. This short synthetic
 probe does not prove unchanged real-directory tail latency or constitute a controlled startup test.
 
+### Owner's desktop cache-hit run
+
+The owner ran the Release viewer on the same real source and reported normal operation. This was a
+cache-hit run on the RTX 4080 SUPER Hardware device, Feature Level 11.1; it did not repeat construction.
+The following values come from that supplied shutdown report, independently of the scripted probes:
+
+| Measurement | Result and boundary |
+| --- | --- |
+| Cache open | 10.008 ms, n=1, completed cache with 2,027 Tiles |
+| Selection to preview Present return | 203.761 ms, n=1; D3D11 initialization was 181.830 ms |
+| Viewport completion | n=798; P50 0.651 ms, P95 2.947 ms, P99 145.561 ms, maximum 426.249 ms |
+| Disk Tile read + CRC | n=251; P50 17.067 ms, P95 42.768 ms, maximum 59.585 ms |
+| GPU Tile upload submission | n=250; P50 0.363 ms, P95 1.809 ms |
+| Tile resident peaks | CPU 66,441,600 / 67,108,864 bytes; GPU 134,140,928 / 134,217,728 bytes |
+| DXGI process-local usage | Sampled peak 229,634,048 bytes, including non-Tile allocations |
+| Shutdown | 23.977 ms, n=1 |
+
+Target and last successful Present Generation both ended at 1. Two adjacent-file preloads failed with
+`0x8007016A` (cloud file provider not running); the current image had no load-failure notification.
+The ordinary-worker trace labels the large-image routing rejection as `error`, although the Tile path
+then succeeds. This diagnostic label does not indicate a failure to display the current image.
+
+This confirms normal manual cache-hit operation, without certifying every seam, gesture, cancellation,
+or repeated-open scenario. The viewport tail remains a follow-up item. Filesystem cache state and the
+interaction sequence were not controlled, so these figures are not a strict comparison with the
+scripted warm-cache run. High request/Present counts alone do not establish idle rendering activity.
+
 All timings above stop at application/API boundaries. They do not measure displayed-frame completion
 or input-to-photon latency. First build n=1 and the small reopen/viewport sample counts cannot establish
 stable P95/P99. Controlled cold/warm startup, Device Lost injection/recovery, disk exhaustion, forced
-allocation failure, driver-stalled shutdown, long-duration stability, and manual real-image GUI remain
+allocation failure, driver-stalled shutdown, long-duration stability, and detailed manual visual gates remain
 unverified. EXIF Orientation, ICC/HDR, APNG, Adam7, and 16-bit large-PNG handling are outside this path;
 large PNG orientation metadata is not applied.
 
 The final local suite has 58 passing Rust tests and 10 explicit diagnostics omitted by default; document
 tool regression has 41 passing tests. Formatting, Clippy, Release build, Rustdoc, document checks and
-diff whitespace checks passed. No Stage C branch was pushed, so no new GitHub CI run is claimed.
+diff whitespace checks passed. These are local results; GitHub CI must be checked separately after publication.
 
 For an approved real-cache probe only:
 

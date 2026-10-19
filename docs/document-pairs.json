@@ -210,7 +210,7 @@
       "id": "stage-c",
       "en": "docs/en/stage-c.md",
       "zh-CN": "docs/zh-CN/stage-c.md",
-      "revision": 4,
+      "revision": 5,
       "shared_literals": [
         "png 0.18.1",
         "64 MiB",
