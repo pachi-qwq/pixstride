@@ -1,6 +1,6 @@
 //! 创建 Win32 主窗口，并把输入和尺寸变化转换为最新渲染状态。
 
-use std::ffi::c_void;
+use std::{ffi::c_void, time::Instant};
 
 use anyhow::{Context, Result};
 use windows::{
@@ -9,20 +9,26 @@ use windows::{
         Graphics::Gdi::{BeginPaint, EndPaint, HBRUSH, PAINTSTRUCT},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
-            Input::KeyboardAndMouse::{VK_LEFT, VK_RIGHT},
+            Input::KeyboardAndMouse::{
+                GetKeyState, VK_1, VK_CONTROL, VK_F, VK_LEFT, VK_O, VK_RIGHT,
+            },
             WindowsAndMessaging::{
                 CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
                 DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, IDC_ARROW, LoadCursorW,
                 RegisterClassW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
                 ShowWindow, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN,
-                WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                WM_KEYUP, WM_KILLFOCUS, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSW,
+                WS_OVERLAPPEDWINDOW,
             },
         },
     },
     core::{Error, w},
 };
 
-use crate::{app::WindowContext, diagnostics::Metric};
+use crate::{
+    app::{WindowAction, WindowContext},
+    diagnostics::Metric,
+};
 
 const WINDOW_WIDTH: i32 = 1100;
 const WINDOW_HEIGHT: i32 = 760;
@@ -114,15 +120,33 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_KEYDOWN if !context.close_started => {
-            let texture_index = match wparam.0 as u32 {
-                key if key == VK_LEFT.0 as u32 => Some(0),
-                key if key == VK_RIGHT.0 as u32 => Some(1),
+            let input_started = Instant::now();
+            // SAFETY: GetKeyState 查询当前 UI 线程键盘状态，不接收指针或外部缓冲区。
+            let control_down = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
+            context.action = match (wparam.0 as u32, control_down) {
+                (key, true) if key == VK_O.0 as u32 => Some(WindowAction::Open),
+                (key, _) if key == VK_LEFT.0 as u32 => Some(WindowAction::Previous),
+                (key, _) if key == VK_RIGHT.0 as u32 => Some(WindowAction::Next),
+                (key, false) if key == VK_F.0 as u32 => Some(WindowAction::Fit),
+                (key, false) if key == VK_1.0 as u32 => Some(WindowAction::NativePixels),
                 _ => None,
             };
-            if let Some(texture_index) = texture_index {
-                let elapsed = context.shared.select_texture(texture_index);
-                context.shared.record(Metric::InputHandling, elapsed);
-            }
+            context
+                .shared
+                .record(Metric::InputHandling, input_started.elapsed());
+            LRESULT(0)
+        }
+        WM_KEYUP
+            if !context.close_started
+                && matches!(wparam.0 as u16, key if key == VK_LEFT.0 || key == VK_RIGHT.0) =>
+        {
+            let direction = if wparam.0 as u16 == VK_LEFT.0 { -1 } else { 1 };
+            context.navigation_key_released(direction, Instant::now());
+            LRESULT(0)
+        }
+        WM_KILLFOCUS if !context.close_started => {
+            context.shared.end_navigation_progress();
+            context.action = Some(WindowAction::StopNavigation);
             LRESULT(0)
         }
         WM_DPICHANGED if !context.close_started => {

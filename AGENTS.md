@@ -1,13 +1,14 @@
 [English](AGENTS.md) | [简体中文](AGENTS.zh-CN.md)
 
-<!-- doc-id: agents; revision: 3; status: active -->
+<!-- doc-id: agents; revision: 4; status: active -->
 
 # Agent instructions
 
 ## Current scope
 
-Pixstride is under active development. Stay within the scope approved for the current task; Stage A
-does not authorize image decoding, navigation, caching, or later-stage features. Before each task,
+Pixstride is under active development. Stay within the scope approved for the current task; Stage B
+currently covers ordinary JPEG, PNG, and BMP browsing only. Do not add later-stage features without
+approval. Before each task,
 inspect Git status, the current branch, history, and upstream. Preserve untracked work before
 switching branches or reorganizing files. Do not develop features directly on `main`.
 

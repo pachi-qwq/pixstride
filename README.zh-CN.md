@@ -1,20 +1,19 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 4; status: stage-a-development -->
+<!-- doc-id: readme; revision: 5; status: stage-b-local-review -->
 
 # Pixstride
 
 Pixstride 是一个 Windows 原生图片查看器项目，目标是快速启动、低延迟交互和有界的资源占用。
 
-项目受 MassiGra 轻量化界面和快速交互体验启发，现已开始阶段 A。分支
-`feat/stage-a-win32-d3d11` 包含 Win32/D3D11 原生测试程序。它还不是完整图片查看器；项目尚无公开发行版，
-也没有经过评审的产品性能报告。
+项目受 MassiGra 轻量化界面和快速交互体验启发，已完成阶段 A 基础并进入阶段 B 评审。本地功能分支加入了
+JPEG、PNG、BMP 打开与浏览的首版代码，真实图片图形界面验收仍待完成。项目尚无公开发行版，也没有已验证的阶段 B 性能报告。
 
 ## 当前基础
 
 已选定 Rust Stable、通过 windows-rs 调用的 Win32、Direct3D 11 和 DXGI Flip Model
-交换链（DXGI Swap Chain），目标平台为 Windows 10/11 x64。阶段 A 验证窗口与渲染基础；
-图片解码和目录浏览尚未实现。
+交换链（DXGI Swap Chain），目标平台为 Windows 10/11 x64。阶段 A 建立窗口与渲染基础；阶段 B 加入初版 WIC 解码和目录导航，
+仍需完成图形界面验收。
 
 目前推荐由独立渲染线程管理 GPU 资源，通过有界后台任务解码图片，并为超大图片设置独立路径。
 线程方案、缓存预算和分块尺寸仍需实验验证；测试计划中列出的格式不代表已经支持。
@@ -22,6 +21,7 @@ Pixstride 是一个 Windows 原生图片查看器项目，目标是快速启动�
 ## 阅读和参与
 
 - [阶段 A 实现与验证](docs/zh-CN/stage-a.md)
+- [阶段 B 图片浏览实现与限制](docs/zh-CN/stage-b.md)
 - [架构范围与评审整改](docs/zh-CN/architecture.md)
 - [开发状态与文档检查](docs/zh-CN/development.md)
 - [跨格式压力测试计划](docs/zh-CN/stress-testing.md)

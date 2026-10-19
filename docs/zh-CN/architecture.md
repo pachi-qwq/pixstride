@@ -1,11 +1,11 @@
 [English](../en/architecture.md) | [简体中文](architecture.md)
 
-<!-- doc-id: architecture; revision: 4; status: implementation-review -->
+<!-- doc-id: architecture; revision: 7; status: implementation-review -->
 
 # 架构范围与阶段 A 评审
 
 Pixstride 面向 Windows 10/11 x64，采用 Rust Stable、Win32/windows-rs、D3D11 和 DXGI Flip Model。
-阶段 A 已有本地实现；图片解码、导航和缓存设计仍是提案。本页不复述早期内部设计草稿。
+阶段 A、B 已有待评审的本地实现。后续格式、分块和其他功能仍属提案。本页不复述早期内部设计草稿。
 
 ## 阶段 A 实现
 
@@ -53,10 +53,20 @@ Rust COM 包装器管理引用计数，但不保证 apartment、缓冲区和生�
 | Device Removed | `Present` 失败后会查询 `GetDeviceRemovedReason` 并安全退出；尚未实现重建，也未注入设备移除故障。 |
 | 资源同步 | Immediate Context 和 Swap Chain 由渲染线程维护；阶段 A 不含图片缓存或资源复用池。 |
 
+## 阶段 B 图片处理路径
+
+UI 线程维护当前 `Generation` 和目录选择。一个有界 MTA 工作线程独占 WIC、CPU LRU、目录扫描和相邻预加载。
+线程通过 Channel 发送自有 BGRA8 缓冲区，WIC COM 接口不会跨线程传递。渲染线程独占 D3D11 Texture LRU，负责创建纹理和绘制。
+另外一个有界身份线程校验源元数据，再交给渲染线程探测 GPU 缓存；命中绕过 WIC Worker，未命中才调度解码。
+UI、身份、解码和渲染阶段使用同一选择 Generation 拒绝过期工作。负责人批准同方向长按进度显示：UI 在已有 Generation
+区间内维护下界，渲染器只接受代际不倒退的已完成图片，不修改目标。松键、反向、失焦或打开文件时关闭区间，最新目标继续加载。
+较新 GPU 命中禁止旧解码覆盖；没有降低输入频率、增加线程或引入无界请求队列。已提交 DXGI 的帧不能撤回。原始尺寸预算在
+EXIF 前检查；Worker 按已校验的源修订最多保留 32 条预算拒绝，与像素缓存和暂时读取错误分开。实现范围和限制见[阶段 B 说明](stage-b.md)。
+
 [D3D11 线程规则](https://learn.microsoft.com/en-us/windows/win32/direct3d11/overviews-direct3d-11-render-multi-thread-intro)
 和 [Present 契约](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-present)
 约束具体实现。Rust COM 包装器管理引用计数，不保证 apartment、缓冲区和生命周期前置条件正确。
-UI 的 COM 服务使用 STA；后续解码器 COM 对象留在各自的 MTA worker 中，跨 apartment 必须显式封送。
+原生文件对话框在 UI 线程运行；WIC COM 对象留在图片工作线程的 MTA，不传到 UI 或渲染线程。
 本设计不能作为任意添加 `unsafe impl Send` 的依据。
 
 当前实现采用双缓冲 Flip Discard 交换链、最大帧延迟 1 和按需渲染，包括首帧在内都先等待帧就绪。
@@ -70,7 +80,7 @@ UI 的 COM 服务使用 STA；后续解码器 COM 对象留在各自的 MTA work
 | 阶段 | 获准进入该阶段后实现 | 预留或延后 |
 |---|---|---|
 | A | Win32 生命周期、单一渲染维护线程、最新快照、按需使用的简单快照序号和设备代际、内嵌测试纹理、QPC 事件、尺寸变化/关闭/恢复测试。 | 不加入文件导航、解码池、CPU/GPU 图片缓存、IPC、Job Object、Color Cache 或分块调度器。 |
-| B | 普通图片的 WIC 评估、像素与行跨度契约、源有效性、有界解码、CPU/GPU 缓存、导航和过期结果拒收。 | 从简单有界队列和在途任务表开始；通用优先级框架和纹理池等测量后再决定。 |
+| B | 本地实现覆盖 WIC JPEG/PNG/BMP 解码、检查过的像素布局、源身份、一个 WIC Worker 和一个源校验线程、CPU/GPU LRU 缓存、目录导航、相邻预加载和过期 Generation 丢弃；基本图形界面验收已通过；快速导航优化仍需负责人复测。 | 保持单个 WIC Worker、有界源校验和两个相邻预加载；通用优先级框架、平移和纹理池待测量后再评估。 |
 | C | 顺序解码大 PNG 的原型、预览、磁盘分块缓存、分块金字塔、可见区域渲染和资源不足测试。 | 扫描行解码和取消原型通过后，再评估工作进程 IPC 与 Job Object 隔离；暂不固定插件或 IPC ABI。 |
 | D | 各格式能力、动画、基本 ICC、可配置输入和漫画阅读。 | 有可验证的颜色处理路径后再加入颜色键和派生缓存；HDR 和复杂滤镜仍属后续提案。 |
 

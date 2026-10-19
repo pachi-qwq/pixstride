@@ -1,14 +1,15 @@
 [English](development.md) | [简体中文](../zh-CN/development.md)
 
-<!-- doc-id: development; revision: 8; status: stage-a-development -->
+<!-- doc-id: development; revision: 10; status: stage-b-development -->
 
 # Development status and checks
 
-The repository now contains a single Cargo package for the Stage A Win32/D3D11 test application,
-alongside its public documents and Python documentation tools. It does not yet contain image decoding,
-file navigation, or a public release.
+The repository contains a single Cargo package for a Win32/D3D11 viewer. Stage B adds WIC decoding for
+JPEG, PNG, and BMP, directory navigation, and bounded CPU/GPU caches. The project owner has confirmed
+real-image display, zoom, keyboard navigation, the native file dialog, and window resizing. Review of
+cache-path latency and preload scheduling is in progress. There is no public release.
 
-## Build and run Stage A
+## Build and run Stage B
 
 Use Windows 10/11 x64, Rust Stable with `x86_64-pc-windows-msvc`, MSVC C++ Build Tools, the Windows SDK,
 and `fxc.exe`. The build script compiles HLSL into DXBC in Cargo's `OUT_DIR`; set `PIXSTRIDE_FXC` to
@@ -23,9 +24,11 @@ cargo doc --no-deps --locked
 cargo run --release
 ```
 
-The program displays generated test textures rather than opening an image. Left and Right select the
-checkerboard or gradient. On exit, stdout prints the timing summary. The Release executable is
-`target/release/pixstride.exe`.
+With no argument, the program displays the Stage A generated test textures. Pass one image path to open
+JPEG, PNG, or BMP; `Ctrl+O` opens the native file dialog, Left/Right navigate the current directory,
+`F` selects Fit, and `1` selects 1:1 pixels. On exit, stdout prints bounded timing samples and cache
+counters. The Release executable is `target/release/pixstride.exe`. Feature details and limits are in
+[Stage B](stage-b.md).
 
 ## Run the current checks
 
@@ -92,12 +95,12 @@ Use [Rust's Windows MSVC guidance](https://doc.rust-lang.org/rustc/platform-supp
 ## CI and performance validation
 
 The `Rust` workflow uses a Windows runner and a `rust` job. It runs formatting, Clippy, tests, Release
-build, and Rustdoc with the checked-in lockfile. Its docs and Rust jobs passed on the current Draft PR
-commit. The workflow has read-only repository permissions and does not publish releases. The `docs`
-check remains the only required Ruleset status check; this task did not change repository protection.
+build, and Rustdoc with the checked-in lockfile. The workflow has read-only repository permissions and
+does not publish releases. The `docs` check remains the only required Ruleset status check; this task
+did not change repository protection.
 
 Application timings use `std::time::Instant` and retain at most 4096 recent samples per category.
 Percentiles use nearest rank. Startup ends at `CreateWindowExW` return, not first display. `Present`
 duration is not display latency. Use PresentMon/ETW for displayed-frame events and an external method
-for Input-to-Photon measurement. See [Stage A verification](stage-a.md), [architecture](architecture.md),
+for Input-to-Photon measurement. See [Stage A verification](stage-a.md), [Stage B](stage-b.md), [architecture](architecture.md),
 and [maintenance](maintenance.md) for the current implementation and limits.

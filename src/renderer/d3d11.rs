@@ -1,6 +1,10 @@
 //! 在专属线程中创建 D3D11 设备、Swap Chain 和测试纹理，并按需绘制。
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+    time::Instant,
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use windows::{
@@ -14,13 +18,15 @@ use windows::{
                 D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
             },
             Direct3D11::{
-                D3D11_BIND_SHADER_RESOURCE, D3D11_COMPARISON_NEVER,
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-                D3D11_RASTERIZER_DESC, D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA,
+                D3D11_BIND_SHADER_RESOURCE, D3D11_BLEND_DESC, D3D11_BLEND_INV_SRC_ALPHA,
+                D3D11_BLEND_ONE, D3D11_BLEND_OP_ADD, D3D11_COLOR_WRITE_ENABLE_ALL,
+                D3D11_COMPARISON_NEVER, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_RASTERIZER_DESC,
+                D3D11_RENDER_TARGET_BLEND_DESC, D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA,
                 D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE2D_DESC, D3D11_VIEWPORT,
-                D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader,
-                ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11SamplerState,
-                ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
+                D3D11CreateDevice, ID3D11BlendState, ID3D11Device, ID3D11DeviceContext,
+                ID3D11PixelShader, ID3D11RasterizerState, ID3D11RenderTargetView,
+                ID3D11SamplerState, ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
             },
             Dxgi::{
                 Common::{
@@ -38,8 +44,9 @@ use windows::{
 };
 
 use crate::{
-    app::{RenderSnapshot, RequestOrigin, Shared},
+    app::{GpuProbeReply, RenderSnapshot, RequestOrigin, Shared, ViewMode},
     diagnostics::Metric,
+    image::{DecodedImage, ImageBudget, PixelFormat, SourceIdentity},
 };
 
 const TEST_TEXTURE_SIZE: u32 = 256;
@@ -57,7 +64,9 @@ pub(crate) fn render_thread(hwnd_value: isize, shared: Arc<Shared>) -> Result<()
     let init_elapsed = init_started.elapsed();
     shared.record(Metric::D3dInitialization, init_elapsed);
     println!("D3D11 initialization: {} us", init_elapsed.as_micros());
-    renderer.run(&shared)
+    let result = renderer.run(&shared);
+    shared.set_gpu_cache_bytes(0);
+    result
 }
 
 struct Renderer {
@@ -69,11 +78,23 @@ struct Renderer {
     vertex_shader: ID3D11VertexShader,
     pixel_shader: ID3D11PixelShader,
     sampler: ID3D11SamplerState,
+    blend: ID3D11BlendState,
     rasterizer: ID3D11RasterizerState,
     textures: [ID3D11ShaderResourceView; 2],
+    image_cache: HashMap<SourceIdentity, (ID3D11ShaderResourceView, u64, u32, u32)>,
+    image_lru: VecDeque<SourceIdentity>,
+    pending_preloads: VecDeque<Arc<DecodedImage>>,
+    current_image: Option<SourceIdentity>,
+    selection_generation: Option<u64>,
+    presented_generation: Option<u64>,
+    current_dimensions: (u32, u32),
+    gpu_cache_bytes: u64,
+    gpu_cache_budget: u64,
     width: u32,
     height: u32,
     first_present_reported: bool,
+    first_image_present_reported: bool,
+    pending_selection_present: Option<(Instant, bool, bool)>,
     render_thread_started: Instant,
 }
 
@@ -142,6 +163,7 @@ impl Renderer {
             .context("创建 Pixel Shader 失败")?;
         let pixel_shader = pixel_shader.context("D3D11 未返回 Pixel Shader")?;
         let sampler = create_sampler(&device)?;
+        let blend = create_alpha_blend(&device)?;
         let rasterizer = create_rasterizer(&device)?;
         shared.record(Metric::ShaderInitialization, shader_started.elapsed());
 
@@ -161,11 +183,23 @@ impl Renderer {
             vertex_shader,
             pixel_shader,
             sampler,
+            blend,
             rasterizer,
             textures,
+            image_cache: HashMap::new(),
+            image_lru: VecDeque::new(),
+            pending_preloads: VecDeque::new(),
+            current_image: None,
+            selection_generation: None,
+            presented_generation: None,
+            current_dimensions: (TEST_TEXTURE_SIZE, TEST_TEXTURE_SIZE),
+            gpu_cache_bytes: 0,
+            gpu_cache_budget: ImageBudget::default().gpu_cache_bytes,
             width: 0,
             height: 0,
             first_present_reported: false,
+            first_image_present_reported: false,
+            pending_selection_present: None,
             render_thread_started,
         };
 
@@ -183,24 +217,95 @@ impl Renderer {
         loop {
             let wait_result = self.wait_for_work(shared, needs_render)?;
             if wait_result == WaitResult::Work {
-                let (latest, redraw, shutdown) = shared.take_pending();
-                if shutdown {
+                let work = shared.take_pending();
+                if work.shutdown {
                     break;
                 }
-                if redraw {
-                    let delay = latest.requested_at.elapsed();
+                #[cfg(test)]
+                if work.clear_gpu_cache {
+                    let budget = self.gpu_cache_budget;
+                    self.gpu_cache_budget = 0;
+                    self.evict_gpu_cache();
+                    self.gpu_cache_budget = budget;
+                    shared.set_gpu_cache_bytes(self.gpu_cache_bytes);
+                }
+                if work.cancel_preloads {
+                    self.pending_preloads.clear();
+                }
+                if work.redraw {
+                    let delay = work.snapshot.requested_at.elapsed();
                     shared.record(Metric::RequestToRender, delay);
-                    let metric = match latest.request_origin {
+                    let metric = match work.snapshot.request_origin {
                         RequestOrigin::InitialWindowSize => Metric::RequestToRenderInitial,
                         RequestOrigin::KeyInput => Metric::RequestToRenderInput,
                         RequestOrigin::Resize => Metric::RequestToRenderResize,
                         RequestOrigin::Minimize => Metric::RequestToRenderMinimize,
                         RequestOrigin::Restore => Metric::RequestToRenderRestore,
                         RequestOrigin::Paint => Metric::RequestToRenderPaint,
+                        RequestOrigin::ImageReady => Metric::ImageRequestToRender,
                     };
                     shared.record(metric, delay);
                 }
-                snapshot = latest;
+                if let Some((generation, image, cpu_cache_hit)) = work.image {
+                    if !shared.can_present_image_generation(generation) {
+                        continue;
+                    }
+                    // 当前请求变更后，旧选择的 GPU 预加载不再有价值。
+                    self.pending_preloads.clear();
+                    self.pending_selection_present = Some((
+                        work.snapshot.requested_at,
+                        self.image_cache.contains_key(&image.source),
+                        cpu_cache_hit,
+                    ));
+                    self.upload_image(image, true, shared)?;
+                    self.selection_generation = Some(generation);
+                }
+                for image in work.preloads {
+                    if !self
+                        .pending_preloads
+                        .iter()
+                        .any(|queued| queued.source == image.source)
+                    {
+                        if self.pending_preloads.len() == 2 {
+                            self.pending_preloads.pop_front();
+                        }
+                        self.pending_preloads.push_back(image);
+                    }
+                }
+                snapshot = work.snapshot;
+                let mut probe_hit = false;
+                if let Some(selection) = work.gpu_probe {
+                    if shared.is_image_generation_current(selection.generation) {
+                        if let Some((_, _, width, height)) =
+                            self.image_cache.get(&selection.identity)
+                        {
+                            let dimensions = (*width, *height);
+                            if !shared.claim_image_generation(selection.generation) {
+                                continue;
+                            }
+                            self.current_image = Some(selection.identity.clone());
+                            self.current_dimensions = dimensions;
+                            self.touch_gpu(&selection.identity);
+                            shared.increment(crate::diagnostics::Counter::GpuCacheHit);
+                            shared.increment(crate::diagnostics::Counter::GpuCurrentHit);
+                            self.pending_selection_present =
+                                Some((selection.requested_at, true, false));
+                            let delay = selection.requested_at.elapsed();
+                            shared.record(Metric::RequestToRender, delay);
+                            shared.record(Metric::ImageRequestToRender, delay);
+                            self.selection_generation = Some(selection.generation);
+                            snapshot.requested_at = selection.requested_at;
+                            snapshot.request_origin = RequestOrigin::ImageReady;
+                            shared.publish_gpu_probe_reply(GpuProbeReply::Hit {
+                                generation: selection.generation,
+                                path: selection.path,
+                            });
+                            probe_hit = true;
+                        } else {
+                            shared.publish_gpu_probe_reply(GpuProbeReply::Miss(selection));
+                        }
+                    }
+                }
 
                 if snapshot.width > 0
                     && snapshot.height > 0
@@ -208,15 +313,28 @@ impl Renderer {
                 {
                     self.resize_resources(snapshot.width, snapshot.height, true, shared)?;
                 }
-                needs_render =
-                    snapshot.width > 0 && snapshot.height > 0 && (needs_render || redraw);
+                needs_render = snapshot.width > 0
+                    && snapshot.height > 0
+                    && (needs_render || work.redraw || probe_hit);
+                if !needs_render {
+                    self.upload_one_preload(shared)?;
+                }
                 continue;
             }
 
             if needs_render {
-                self.draw(&snapshot, shared)?;
+                // 上传或等待帧就绪期间 UI 可能发布新选择；不为已经过期、尚未提交的选择 Present。
+                // 已经提交给 DXGI 的帧无法撤回，最终最新选择仍由同一渲染线程顺序提交。
+                let stale_candidate = self.pending_selection_present.is_some()
+                    && self
+                        .selection_generation
+                        .is_some_and(|generation| !shared.can_present_image_generation(generation));
+                if !stale_candidate {
+                    self.draw(&snapshot, shared)?;
+                }
                 needs_render = false;
             }
+            self.upload_one_preload(shared)?;
         }
 
         // SAFETY: Immediate Context 只有当前 Render Thread 一个所有者；退出时先 ClearState 释放命令引用，再释放 Render Target。
@@ -324,29 +442,52 @@ impl Renderer {
         } else {
             [0.015, 0.025, 0.04, 1.0]
         };
+        let (srv, image_width, image_height) = if let Some(key) = self.current_image.as_ref() {
+            let (srv, _, _, _) = self
+                .image_cache
+                .get(key)
+                .context("当前图片纹理不在 GPU 缓存中")?;
+            (
+                srv.clone(),
+                self.current_dimensions.0,
+                self.current_dimensions.1,
+            )
+        } else {
+            (
+                self.textures[snapshot.texture_index].clone(),
+                TEST_TEXTURE_SIZE,
+                TEST_TEXTURE_SIZE,
+            )
+        };
+        let (view_width, view_height) = fit_viewport(
+            image_width,
+            image_height,
+            snapshot.width,
+            snapshot.height,
+            snapshot.view_mode,
+        );
+        let viewport = D3D11_VIEWPORT {
+            TopLeftX: (snapshot.width as f32 - view_width) * 0.5,
+            TopLeftY: (snapshot.height as f32 - view_height) * 0.5,
+            Width: view_width,
+            Height: view_height,
+            MinDepth: 0.0,
+            MaxDepth: 1.0,
+        };
         // SAFETY: Renderer 在调用期间持有所有绑定的 COM 接口；Viewport、Render Target、SRV 和 Sampler 切片在调用期间有效。
         // SAFETY: Immediate Context 和 Swap Chain 只由当前 Render Thread 使用。
         unsafe {
             self.context
                 .OMSetRenderTargets(Some(&[Some(render_target.clone())]), None);
             self.context.ClearRenderTargetView(render_target, &color);
-            self.context.RSSetViewports(Some(&[D3D11_VIEWPORT {
-                TopLeftX: 0.0,
-                TopLeftY: 0.0,
-                Width: snapshot.width as f32,
-                Height: snapshot.height as f32,
-                MinDepth: 0.0,
-                MaxDepth: 1.0,
-            }]));
+            self.context.RSSetViewports(Some(&[viewport]));
             self.context.RSSetState(&self.rasterizer);
+            self.context.OMSetBlendState(&self.blend, None, u32::MAX);
             self.context
                 .IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             self.context.VSSetShader(&self.vertex_shader, None);
             self.context.PSSetShader(&self.pixel_shader, None);
-            self.context.PSSetShaderResources(
-                0,
-                Some(&[Some(self.textures[snapshot.texture_index].clone())]),
-            );
+            self.context.PSSetShaderResources(0, Some(&[Some(srv)]));
             self.context
                 .PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
             self.context.Draw(3, 0);
@@ -375,14 +516,177 @@ impl Renderer {
             shared.record(Metric::FirstPresent, self.render_thread_started.elapsed());
         }
         shared.record(Metric::Present, present_started.elapsed());
+        if let Some(generation) = self
+            .selection_generation
+            .filter(|generation| Some(*generation) != self.presented_generation)
+        {
+            shared.record_presented_generation(generation);
+            self.presented_generation = Some(generation);
+        }
+        if self.current_image.is_some() && !self.first_image_present_reported {
+            shared.record(Metric::ImageFirstPresent, snapshot.requested_at.elapsed());
+            self.first_image_present_reported = true;
+        }
         if !self.first_present_reported {
             println!(
                 "First Present call returned successfully; display timing is not measured here."
             );
             self.first_present_reported = true;
         }
+        if let Some((requested_at, gpu_cache_hit, cpu_cache_hit)) =
+            self.pending_selection_present.take()
+        {
+            if cpu_cache_hit {
+                shared.record(Metric::CurrentCpuHitToPresent, requested_at.elapsed());
+            }
+            shared.record(
+                if gpu_cache_hit {
+                    Metric::CurrentGpuHitToPresent
+                } else {
+                    Metric::CurrentGpuMissToPresent
+                },
+                requested_at.elapsed(),
+            );
+        }
         Ok(())
     }
+
+    fn upload_image(
+        &mut self,
+        image: Arc<DecodedImage>,
+        current: bool,
+        shared: &Shared,
+    ) -> Result<()> {
+        if self.image_cache.contains_key(&image.source) {
+            shared.increment(crate::diagnostics::Counter::GpuCacheHit);
+            shared.increment(if current {
+                crate::diagnostics::Counter::GpuCurrentHit
+            } else {
+                crate::diagnostics::Counter::GpuPreloadHit
+            });
+            if current {
+                self.current_image = Some(image.source.clone());
+                self.current_dimensions = (image.width, image.height);
+                self.evict_gpu_cache();
+                shared.set_gpu_cache_bytes(self.gpu_cache_bytes);
+            }
+            self.touch_gpu(&image.source);
+            return Ok(());
+        }
+        shared.increment(crate::diagnostics::Counter::GpuCacheMiss);
+        shared.increment(if current {
+            crate::diagnostics::Counter::GpuCurrentMiss
+        } else {
+            crate::diagnostics::Counter::GpuPreloadMiss
+        });
+        if image.format != PixelFormat::Bgra8Premultiplied {
+            bail!("Renderer 收到不支持的像素格式");
+        }
+        let started = Instant::now();
+        let byte_cost = u64::from(image.stride) * u64::from(image.height);
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: image.width,
+            Height: image.height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: windows::Win32::Graphics::Direct3D11::D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let data = D3D11_SUBRESOURCE_DATA {
+            pSysMem: image.pixels.as_ptr().cast(),
+            SysMemPitch: image.stride,
+            SysMemSlicePitch: 0,
+        };
+        let mut texture = None;
+        // SAFETY: 像素 Vec 在同步上传期间保持存活，布局已在 WIC 解码前检查；D3D11 创建调用返回后才释放 CPU 数据。
+        unsafe {
+            self.device
+                .CreateTexture2D(&desc, Some(&data), Some(&mut texture))
+        }
+        .context("创建图片 GPU Texture 失败")?;
+        let texture = texture.context("D3D11 未返回图片 Texture")?;
+        let mut view = None;
+        // SAFETY: 创建 SRV 时仍持有 Texture，输出槽有效；成功返回的 COM 引用转由 GPU 缓存持有。
+        unsafe {
+            self.device
+                .CreateShaderResourceView(&texture, None, Some(&mut view))
+        }
+        .context("创建图片 Shader Resource View 失败")?;
+        let view = view.context("D3D11 未返回图片 Shader Resource View")?;
+        let key = image.source.clone();
+        self.image_cache
+            .insert(key.clone(), (view, byte_cost, image.width, image.height));
+        self.image_lru.push_back(key.clone());
+        self.gpu_cache_bytes = self.gpu_cache_bytes.saturating_add(byte_cost);
+        if current {
+            self.current_image = Some(key);
+            self.current_dimensions = (image.width, image.height);
+        }
+        self.evict_gpu_cache();
+        shared.set_gpu_cache_bytes(self.gpu_cache_bytes);
+        shared.record(Metric::ImageTextureUpload, started.elapsed());
+        Ok(())
+    }
+
+    /// 每次最多上传一个预加载纹理；当前帧先 Present，随后再服务其余预加载。
+    fn upload_one_preload(&mut self, shared: &Shared) -> Result<()> {
+        if let Some(image) = self.pending_preloads.pop_front() {
+            self.upload_image(image, false, shared)?;
+            if !self.pending_preloads.is_empty() {
+                shared.wake_render_thread();
+            }
+        }
+        Ok(())
+    }
+
+    fn touch_gpu(&mut self, key: &SourceIdentity) {
+        self.image_lru.retain(|item| item != key);
+        self.image_lru.push_back(key.clone());
+    }
+
+    fn evict_gpu_cache(&mut self) {
+        let mut skipped_current = false;
+        while self.gpu_cache_bytes > self.gpu_cache_budget {
+            let Some(key) = self.image_lru.pop_front() else {
+                break;
+            };
+            if self.current_image.as_ref() == Some(&key) {
+                self.image_lru.push_back(key);
+                if skipped_current {
+                    break;
+                }
+                skipped_current = true;
+                continue;
+            }
+            skipped_current = false;
+            if let Some((_, cost, _, _)) = self.image_cache.remove(&key) {
+                self.gpu_cache_bytes = self.gpu_cache_bytes.saturating_sub(cost);
+            }
+        }
+    }
+}
+
+fn fit_viewport(
+    image_width: u32,
+    image_height: u32,
+    window_width: u32,
+    window_height: u32,
+    mode: ViewMode,
+) -> (f32, f32) {
+    let width = image_width as f32;
+    let height = image_height as f32;
+    let scale = match mode {
+        ViewMode::Fit => (window_width as f32 / width).min(window_height as f32 / height),
+        ViewMode::NativePixels => 1.0,
+    };
+    (width * scale, height * scale)
 }
 
 #[derive(PartialEq, Eq)]
@@ -482,6 +786,25 @@ fn create_sampler(device: &ID3D11Device) -> Result<ID3D11SamplerState> {
     sampler.context("D3D11 未返回 Sampler State")
 }
 
+fn create_alpha_blend(device: &ID3D11Device) -> Result<ID3D11BlendState> {
+    let mut desc = D3D11_BLEND_DESC::default();
+    desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
+        BlendEnable: true.into(),
+        SrcBlend: D3D11_BLEND_ONE,
+        DestBlend: D3D11_BLEND_INV_SRC_ALPHA,
+        BlendOp: D3D11_BLEND_OP_ADD,
+        SrcBlendAlpha: D3D11_BLEND_ONE,
+        DestBlendAlpha: D3D11_BLEND_INV_SRC_ALPHA,
+        BlendOpAlpha: D3D11_BLEND_OP_ADD,
+        RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+    };
+    let mut blend = None;
+    // SAFETY: 描述结构体已初始化，只有 RenderTarget[0] 启用标准 premultiplied alpha 混合；输出槽在调用期间有效。
+    unsafe { device.CreateBlendState(&desc, Some(&mut blend)) }
+        .context("创建透明图片混合状态失败")?;
+    blend.context("D3D11 未返回 Blend State")
+}
+
 fn create_rasterizer(device: &ID3D11Device) -> Result<ID3D11RasterizerState> {
     let desc = D3D11_RASTERIZER_DESC {
         FillMode: windows::Win32::Graphics::Direct3D11::D3D11_FILL_SOLID,
@@ -569,7 +892,8 @@ fn make_test_pixels(pattern: TestPattern) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TEST_TEXTURE_SIZE, TestPattern, make_test_pixels};
+    use super::{TEST_TEXTURE_SIZE, TestPattern, fit_viewport, make_test_pixels};
+    use crate::app::ViewMode;
 
     #[test]
     fn generated_test_images_have_expected_rgba_size_and_alpha() {
@@ -588,6 +912,18 @@ mod tests {
         assert_ne!(
             make_test_pixels(TestPattern::Checkerboard),
             make_test_pixels(TestPattern::Gradient)
+        );
+    }
+
+    #[test]
+    fn fit_and_native_viewports_preserve_image_aspect_and_pixel_size() {
+        assert_eq!(
+            fit_viewport(400, 200, 1000, 600, ViewMode::Fit),
+            (1000.0, 500.0)
+        );
+        assert_eq!(
+            fit_viewport(400, 200, 1000, 600, ViewMode::NativePixels),
+            (400.0, 200.0)
         );
     }
 }

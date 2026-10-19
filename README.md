@@ -1,20 +1,21 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 4; status: stage-a-development -->
+<!-- doc-id: readme; revision: 5; status: stage-b-local-review -->
 
 # Pixstride
 
 A native Windows image viewer project focused on fast startup, responsive input, and bounded resource use.
 
-Inspired by MassiGra's lightweight interface and fast interaction, Pixstride has started Stage A.
-The `feat/stage-a-win32-d3d11` branch contains a native Win32/D3D11 test application. It is not a
-general-purpose image viewer and there is no public release or reviewed product performance report.
+Inspired by MassiGra's lightweight interface and fast interaction, Pixstride has completed the Stage A
+foundation and is under Stage B review. Initial JPEG, PNG, and BMP opening and browsing code is in the
+local feature branch; real-image GUI acceptance is pending. There is no public release or verified
+Stage B performance report.
 
 ## Current foundation
 
 The selected stack is Rust Stable, Win32 through windows-rs, Direct3D 11, and a DXGI Flip Model
-Swap Chain. The target is Windows 10/11 x64. Stage A validates window and rendering foundations;
-image decoding and navigation have not been implemented.
+Swap Chain. The target is Windows 10/11 x64. Stage A established the window and rendering foundation;
+Stage B adds initial WIC decoding and directory navigation, subject to GUI validation.
 
 The proposed architecture keeps GPU resource ownership on a render thread and decodes images in
 bounded background work. Large images have a separate path. Threading, cache budgets, and Tile sizes
@@ -23,6 +24,7 @@ remain subject to experiments; format names in the test plan are not a support c
 ## Read and contribute
 
 - [Stage A implementation and verification](docs/en/stage-a.md)
+- [Stage B image browsing implementation and limits](docs/en/stage-b.md)
 - [Architecture scope and review actions](docs/en/architecture.md)
 - [Development status and documentation checks](docs/en/development.md)
 - [Cross-format stress test plan](docs/en/stress-testing.md)
