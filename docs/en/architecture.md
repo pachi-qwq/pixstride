@@ -1,12 +1,12 @@
 [English](architecture.md) | [简体中文](../zh-CN/architecture.md)
 
-<!-- doc-id: architecture; revision: 7; status: implementation-review -->
+<!-- doc-id: architecture; revision: 8; status: implementation-review -->
 
-# Architecture scope and Stage A review
+# Architecture and implementation scope
 
 Pixstride targets Windows 10/11 x64 with Rust Stable, Win32/windows-rs, D3D11, and DXGI Flip Model
-presentation. Stages A and B have local implementations under review. Later formats, tiling, and other
-features remain proposals; this page does not reproduce the early internal design drafts.
+presentation. Stages A and B are merged. Stage C has a locally tested static-PNG Tile path; later
+formats remain proposals. This page does not reproduce the early internal design drafts.
 
 ## Stage A implementation
 
@@ -91,12 +91,36 @@ waits for work rather than polling an already-signalled frame handle. These sett
 and [waitable-object contract](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-getframelatencywaitableobject);
 their latency benefit must be measured on an interactive target system.
 
+## Stage C decision: bounded rows and viewport Tiles
+
+Stage C implements a separate static PNG path using `png 0.18.1`, raw PBGRA8 disk Tiles, a ceil-half
+pyramid, and a render-thread Tile shader. Ordinary images keep Stage B. The initial 512 MiB Builder
+proposal was replaced with a 128 MiB budget after row-buffer experiments; 1024 remains experimental.
+Tile CPU/GPU resident budgets are 64/128 MiB, separate from ordinary 512 MiB caches. Bounded replies
+retain additional staging buffers. [Stage C](stage-c.md) records the tests, limitations, and measurements.
+
+One lazy background worker builds or reads Tiles; it does not occupy WIC. One latest build request,
+one latest viewport request, and two replies bound work. Existing source Generation and Render Snapshot
+sequence reject stale work. Cancellation is cooperative; a blocked read can outlive the two-second
+shutdown grace but cannot use HWND/GPU/UI handles afterwards. The renderer never reads Tile files.
+
+The preview is only published after full construction. Each visible region draws either its selected
+Tile or a corresponding preview region, preserving alpha without overlapping layers. CRC-protected
+index/data records and atomic directory publication reject incomplete/corrupt data. Source consistency
+uses metadata and three sampled CRCs, not a full or cryptographic identity. An active cache handle
+prevents eviction; a root file lease serializes builders and cleanup. No cache database, worker process,
+IPC, Job Object, or automatic Device Lost recovery was added.
+
+This choice favors small ownership boundaries and measurable allocation over compressed-cache density
+or an early complete preview. Disk write performance, sampled-source false negatives, OS cache growth,
+disk exhaustion, driver hangs, and real desktop gesture quality remain review risks.
+
 ## Keep the first implementation small
 
 | Stage | Implement when that stage is approved | Reserve or defer |
 |---|---|---|
 | A | Win32 lifecycle, one render owner, latest snapshot, simple sequence/Device Epoch if needed, embedded test texture, QPC events, resize/shutdown/recovery tests. | No file navigation, decoder pool, CPU/GPU image cache, IPC, Job Object, Color Cache, or Tile scheduler. |
-| B | Local implementation covers WIC JPEG/PNG/BMP decoding, checked pixel layout, source identity, one WIC worker plus one source-validation thread, CPU/GPU LRU caches, directory navigation, adjacent preloads, and stale-generation rejection. Basic GUI acceptance passed; rapid-navigation optimization needs renewed owner verification. | Keep one WIC worker, bounded source validation, and a two-image preload window; defer a general priority framework, panning, and pooled Texture allocator until measured. |
+| B | Local implementation covers WIC JPEG/PNG/BMP decoding, checked pixel layout, source identity, one WIC worker plus one source-validation thread, CPU/GPU LRU caches, directory navigation, adjacent preloads, and stale-generation rejection. GUI acceptance and rapid-navigation retesting passed. | Keep one WIC worker, bounded source validation, and a two-image preload window; defer a general priority framework, panning, and pooled Texture allocator until measured. |
 | C | Sequential large-PNG prototype, preview, disk Tile Cache, Tile Pyramid, visible-region rendering and resource-failure tests. | Evaluate worker IPC and Job Object isolation after the row-decoding and cancellation prototype; no stable plugin or IPC ABI yet. |
 | D | Per-format capabilities, animation, basic ICC, configurable input and comic reading. | Add Color Key/derived caches only with a tested color path; HDR and complex filters remain later proposals. |
 
@@ -112,13 +136,13 @@ decoding, scanning the directory, or uploading pixels. File/colour-policy change
 events; weak size/time metadata alone cannot guarantee immutable contents.
 
 Large PNGs need a separate path. Their concatenated IDAT payloads form a continuous compressed
-stream; arbitrary rectangles cannot be located by an independent file offset. A proposed builder
+stream; arbitrary rectangles cannot be located by an independent file offset. The Stage C builder
 reads rows, creates lower resolutions, and writes independently readable disk Tiles. A complete first
 preview may require scanning the entire image stream. See the
 [PNG specification](https://www.w3.org/TR/png-3/) and [stress test plan](stress-testing.md).
 
-The initial candidate is a 1024-pixel logical Tile with a 512 MiB builder allocation budget.
-Compare 512, 1024, and 2048 Tiles. A 640 MiB worker-process limit is a separate proposal, not a measured
+The early candidate was a 1024-pixel logical Tile with a 512 MiB builder allocation budget.
+Stage C compared 512, 1024, and 2048 and now uses 1024 with 128 MiB; see its measured limits. A 640 MiB worker-process limit is a separate proposal, not a measured
 working-set bound. Job Object limits provide resource/failure isolation, not a complete security sandbox.
 None of these values has been established as optimal.
 
@@ -147,4 +171,4 @@ The original designs and raw environment evidence are retained privately, unchan
 budgets and mechanisms remain proposals. A prior environment probe compiled and created a WIC Factory
 and a D3D11 hardware device; it did not test a Swap Chain, viewer, or product latency.
 The debug device returned `0x887A002D`; obtain authorization for Graphics Tools installation before
-claiming debug-layer validation. No product performance result is available.
+claiming debug-layer validation. That probe supplied no product performance result; subsequent Stage A/B reports are recorded separately.

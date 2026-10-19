@@ -69,6 +69,7 @@ pub(crate) struct Plan {
     pub(crate) bytes: u64,
 }
 impl Plan {
+    /// 只生成有界索引，检查尺寸、Tile 数和 u64 偏移；不分配图片像素。
     pub(crate) fn new(size: PngSize, edge: u32) -> Result<Self> {
         ensure!([512, 1024, 2048].contains(&edge), "不支持的 Tile 尺寸");
         stream::row_layout(size, StreamBudget::default())?;
@@ -190,6 +191,11 @@ impl Stamp {
 /// 只查文件属性，拒绝可能触发云端回调取回的占位文件；不请求下载或改变驻留状态。
 pub(crate) fn ensure_local(path: &Path) -> Result<()> {
     let attrs = fs::metadata(path)?.file_attributes();
+    check_local_attributes(attrs)
+}
+
+/// 属性预检不打开像素流，供源身份检查在 canonicalize 之前共用。
+pub(crate) fn check_local_attributes(attrs: u32) -> Result<()> {
     ensure!(
         attrs & (0x1000 | 0x40000 | 0x400000) == 0,
         "PNG 不在本地或需要云端取回；请先自行确认下载，不会自动读取"
@@ -214,6 +220,7 @@ pub(crate) struct TilePixels {
 }
 
 impl DiskCache {
+    /// 在后台读取一块并验证 CRC；返回独立拥有的带边框像素，禁止在 Render/UI Thread 调用。
     pub(crate) fn read_tile(&self, id: usize) -> Result<TilePixels> {
         let t = self.plan.tiles.get(id).context("Tile 索引越界")?;
         let mut bytes = stream::allocated(usize::try_from(t.length)?)?;
@@ -379,6 +386,10 @@ impl Drop for PartialBuild {
 }
 
 fn remove_inactive(path: &Path) -> Result<()> {
+    ensure!(
+        fs::symlink_metadata(path)?.file_attributes() & 0x400 == 0,
+        "拒绝清理重解析目录"
+    );
     // 调用者持有整个缓存根的独占 lease，其他实例不能在检查后打开新缓存。
     // 活动读者的只读句柄拒绝写共享，只有没有读者时才能先独占检查，再释放并删除。
     let exclusive = OpenOptions::new()
@@ -394,7 +405,8 @@ fn remove_inactive(path: &Path) -> Result<()> {
 fn clean_for_build(root: &Path, needed: u64, cap: u64) -> Result<()> {
     let mut entries = Vec::new();
     let mut used = 0u64;
-    for entry in fs::read_dir(root)? {
+    for (scanned, entry) in fs::read_dir(root)?.enumerate() {
+        ensure!(scanned < 4096, "专用缓存根目录条目超过清理上限");
         let entry = entry?;
         if !entry.file_type()?.is_dir() || entry.metadata()?.file_attributes() & 0x400 != 0 {
             continue;
@@ -404,17 +416,6 @@ fn clean_for_build(root: &Path, needed: u64, cap: u64) -> Result<()> {
             && fs::read(entry.path().join("owner")).ok().as_deref() == Some(MAGIC)
         {
             fs::remove_dir_all(entry.path())?;
-            continue;
-        }
-        if name.starts_with(".evict-") && entry.path().join("index.bin").is_file() {
-            let mut header = [0u8; 8];
-            if File::open(entry.path().join("index.bin"))?
-                .read_exact(&mut header)
-                .is_ok()
-                && &header == MAGIC
-            {
-                fs::remove_dir_all(entry.path())?;
-            }
             continue;
         }
         if name.starts_with("cache-") && entry.path().join("index.bin").is_file() {
@@ -513,6 +514,20 @@ pub(crate) fn build_or_open(
     let builder_owned = owned_rows
         .checked_add(max_tile)
         .and_then(|v| v.checked_add(index_bytes as usize))
+        .and_then(|v| {
+            v.checked_add(
+                plan.tiles
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Tile>() * 2)?,
+            )
+        })
+        .and_then(|v| {
+            v.checked_add(
+                plan.levels
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Level>() * 2)?,
+            )
+        })
         .context("Builder 内存溢出")?;
     ensure!(
         builder_owned
@@ -668,6 +683,13 @@ fn write_tile_row(data: &mut File, tile: &Tile, y: u32, row: &[u8]) -> Result<()
 mod tests {
     use super::super::stream::tests::{generate, root};
     use super::*;
+    #[test]
+    fn cloud_recall_attributes_are_rejected_before_opening_a_stream() {
+        assert!(check_local_attributes(0x20).is_ok());
+        for attrs in [0x1000, 0x40000, 0x400000, 0x20 | 0x1000] {
+            assert!(check_local_attributes(attrs).is_err());
+        }
+    }
     #[test]
     fn pyramid_pixels_gutters_reuse_revision_and_corruption() -> Result<()> {
         let root = root("cache");
@@ -940,6 +962,91 @@ mod tests {
             drop(cache);
         }
         fs::remove_dir_all(root)?;
+        Ok(())
+    }
+    /// 只在 C3 通过且负责人批准的显式本地诊断中读取真实源；不含任何私人默认路径。
+    #[test]
+    #[ignore = "C4 私人大图诊断，需要明确批准与独立缓存根目录"]
+    fn real_large_cache_probe() -> Result<()> {
+        ensure!(
+            std::env::var("PIXSTRIDE_APPROVED_LARGE_CACHE").as_deref() == Ok("1"),
+            "必须先获得超过 2 GiB 缓存批准"
+        );
+        let image = std::env::var_os("PIXSTRIDE_STRESS_IMAGE")
+            .map(PathBuf::from)
+            .context("缺少 PIXSTRIDE_STRESS_IMAGE")?;
+        let root = std::env::var_os("PIXSTRIDE_TILE_CACHE")
+            .map(PathBuf::from)
+            .context("缺少 PIXSTRIDE_TILE_CACHE")?;
+        ensure_local(&image)?;
+        let before = fs::metadata(&image)?;
+        let budget = CacheBudget {
+            disk_bytes: 10 * 1024 * 1024 * 1024,
+            ..Default::default()
+        };
+        let size = stream::inspect(&image)?;
+        let plan = Plan::new(size, budget.tile_edge)?;
+        println!(
+            "REAL preflight width={} height={} source_bytes={} planned_data_bytes={} disk_cap={} free_bytes={}",
+            size.width,
+            size.height,
+            before.len(),
+            plan.bytes,
+            budget.disk_bytes,
+            free_bytes(root.parent().context("缺少缓存父目录")?)?
+        );
+        let (cache, r) = build_or_open(&image, &root, budget, || true)?;
+        println!(
+            "REAL build hit={} elapsed_us={} scan_us={:?} row_owned_bytes={:?} builder_owned_estimate={} data_bytes={} tiles={} index_bytes={}",
+            r.cache_hit,
+            r.elapsed.as_micros(),
+            r.scan.as_ref().map(|s| s.elapsed.as_micros()),
+            r.scan.as_ref().map(|s| s.owned_row_bytes),
+            r.builder_owned_bytes,
+            cache.plan.bytes,
+            cache.plan.tiles.len(),
+            fs::metadata(cache.directory.join("index.bin"))?.len()
+        );
+        let l = &cache.plan.levels[0];
+        let mut reads = Vec::new();
+        for (x, y) in [
+            (0, 0),
+            (l.columns - 1, 0),
+            (0, l.rows - 1),
+            (l.columns - 1, l.rows - 1),
+            (l.columns / 2, l.rows / 2),
+        ] {
+            let id = cache.plan.tile_id(0, x, y).context("Tile 坐标错误")?;
+            let at = Instant::now();
+            let tile = cache.read_tile(id)?;
+            reads.push(at.elapsed().as_micros());
+            ensure!(
+                tile.bytes
+                    .chunks_exact(4)
+                    .all(|p| p[..3].iter().all(|&v| v <= p[3])),
+                "预乘通道大于 Alpha"
+            );
+        }
+        println!("REAL corner_center_tile_read_us={reads:?}");
+        drop(cache);
+        let mut reopen = Vec::new();
+        for _ in 0..20 {
+            let (cache, r) = build_or_open(&image, &root, budget, || true)?;
+            ensure!(r.cache_hit, "缓存未命中");
+            reopen.push(r.elapsed.as_micros());
+            drop(cache);
+        }
+        reopen.sort_unstable();
+        println!(
+            "REAL warm_reopen n=20 min_us={} p50_us={} p95_us={} p99_us={} max_us={}; OS cache warm, tail sample insufficient",
+            reopen[0], reopen[9], reopen[18], reopen[19], reopen[19]
+        );
+        let after = fs::metadata(&image)?;
+        ensure!(
+            before.len() == after.len() && before.modified()? == after.modified()?,
+            "原图元数据变化"
+        );
+        println!("REAL source length and modification time unchanged; source opened read-only");
         Ok(())
     }
 }

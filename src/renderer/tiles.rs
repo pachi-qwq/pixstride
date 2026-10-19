@@ -15,10 +15,14 @@ use std::{
     sync::Arc,
     time::Instant,
 };
+use windows::Win32::Graphics::Dxgi::{
+    DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter3, IDXGIDevice,
+};
 use windows::Win32::Graphics::{
     Direct3D11::*,
     Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
 };
+use windows::core::Interface;
 
 const GPU_BUDGET: u64 = 128 * 1024 * 1024;
 const TILE_VS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/tile_vs.cso"));
@@ -34,6 +38,7 @@ struct Scene {
     view_started: Instant,
     view_reported: bool,
     first: Option<Instant>,
+    upload_error_reported: bool,
 }
 /// 延迟到首次大图才创建，不给普通图片启动路径增加线程或 GPU 对象。
 pub(super) struct Tiles {
@@ -42,6 +47,9 @@ pub(super) struct Tiles {
     shader: ID3D11VertexShader,
     constants: ID3D11Buffer,
     peak: u64,
+    adapter: Option<IDXGIAdapter3>,
+    video_peak: Option<u64>,
+    video_budget: Option<u64>,
 }
 impl Tiles {
     pub(super) fn new(device: &ID3D11Device, shared: &Arc<Shared>) -> Result<Self> {
@@ -57,16 +65,27 @@ impl Tiles {
         let mut constants = None;
         // SAFETY: 常量缓冲长度为 16 字节倍数，输出槽由当前栈帧持有；无初始数据指针。
         unsafe { device.CreateBuffer(&desc, None, Some(&mut constants)) }?;
+        let adapter = device
+            .cast::<IDXGIDevice>()
+            .ok()
+            .and_then(|d| {
+                // SAFETY: Device 是当前线程持有的有效 COM 接口；返回 Adapter 引用独立计数。
+                unsafe { d.GetAdapter() }.ok()
+            })
+            .and_then(|a| a.cast::<IDXGIAdapter3>().ok());
         Ok(Self {
             worker: Worker::start(shared)?,
             scene: None,
             shader: shader.context("缺少 Tile Shader")?,
             constants: constants.context("缺少常量缓冲")?,
             peak: 0,
+            adapter,
+            video_peak: None,
+            video_budget: None,
         })
     }
-    pub(super) fn request(&self, request: Request) {
-        self.worker.build(request);
+    pub(super) fn request(&self, request: Request) -> Result<()> {
+        self.worker.build(request)
     }
     pub(super) fn clear(&mut self) {
         self.scene = None;
@@ -96,7 +115,13 @@ impl Tiles {
                     preview,
                     started,
                 } if shared.is_image_generation_current(generation) => {
-                    let srv = upload(device, &preview, shared)?;
+                    let srv = match upload(device, &preview, shared) {
+                        Ok(srv) => srv,
+                        Err(error) => {
+                            report_upload_error(device, shared, generation, error)?;
+                            continue;
+                        }
+                    };
                     let bytes = preview.bytes.len() as u64;
                     let mut textures = HashMap::new();
                     textures.insert(preview.id, (srv, bytes));
@@ -112,6 +137,7 @@ impl Tiles {
                         view_started: Instant::now(),
                         view_reported: false,
                         first: Some(started),
+                        upload_error_reported: false,
                     });
                     shared.claim_image_generation(generation);
                     changed = Some(generation);
@@ -137,13 +163,27 @@ impl Tiles {
                                     scene.lru.push_back(id);
                                 }
                             }
-                            anyhow::ensure!(
-                                scene.bytes + bytes <= GPU_BUDGET,
-                                "Tile GPU 缓存预算不足"
-                            );
-                            scene
-                                .textures
-                                .insert(pixels.id, (upload(device, &pixels, shared)?, bytes));
+                            if scene.bytes + bytes > GPU_BUDGET {
+                                if !scene.upload_error_reported {
+                                    shared.publish_gpu_probe_reply(GpuProbeReply::LargeError {
+                                        generation,
+                                        message: "Tile GPU 预算不足，保留低分辨率预览".into(),
+                                    });
+                                    scene.upload_error_reported = true;
+                                }
+                                continue;
+                            }
+                            let srv = match upload(device, &pixels, shared) {
+                                Ok(srv) => srv,
+                                Err(error) => {
+                                    if !scene.upload_error_reported {
+                                        report_upload_error(device, shared, generation, error)?;
+                                        scene.upload_error_reported = true;
+                                    }
+                                    continue;
+                                }
+                            };
+                            scene.textures.insert(pixels.id, (srv, bytes));
                             scene.bytes += bytes;
                             scene.lru.push_back(pixels.id);
                         }
@@ -162,7 +202,21 @@ impl Tiles {
             }
         }
         if let Some(scene) = self.scene.as_mut() {
-            self.peak = self.peak.max(scene.bytes);
+            if scene.bytes > self.peak {
+                self.peak = scene.bytes;
+                if let Some(adapter) = &self.adapter {
+                    let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+                    // SAFETY: Adapter3 和输出结构在调用期间有效；查询当前进程本地显存，不改变资源预算。
+                    if unsafe {
+                        adapter.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
+                    }
+                    .is_ok()
+                    {
+                        self.video_peak = Some(self.video_peak.unwrap_or(0).max(info.CurrentUsage));
+                        self.video_budget = Some(info.Budget);
+                    }
+                }
+            }
             if scene.sequence != Some(snapshot.sequence)
                 && shared.is_image_generation_current(scene.generation)
             {
@@ -256,8 +310,29 @@ impl Drop for Tiles {
             "Tile GPU cache peak={} bytes; budget={} bytes; CPU resident budget=67108864 bytes plus bounded staging",
             self.peak, GPU_BUDGET
         );
+        println!(
+            "DXGI process-local video usage sampled_peak={:?} budget={:?} bytes; includes ordinary textures, swap chain and driver allocations; not Tile-only",
+            self.video_peak, self.video_budget
+        );
     }
 }
+/// 正常设备的分配失败保留粗预览；设备确实移除时沿用 Renderer 的错误退出流程。
+fn report_upload_error(
+    device: &ID3D11Device,
+    shared: &Shared,
+    generation: u64,
+    error: anyhow::Error,
+) -> Result<()> {
+    // SAFETY: 当前 Render Thread 仍持有 Device；查询移除状态不接收裸缓冲，也不改变资源。
+    unsafe { device.GetDeviceRemovedReason() }
+        .with_context(|| format!("Tile 上传失败且设备已移除：{error:#}"))?;
+    shared.publish_gpu_probe_reply(GpuProbeReply::LargeError {
+        generation,
+        message: format!("Tile 上传失败，保留已显示内容：{error:#}"),
+    });
+    Ok(())
+}
+
 fn upload(
     device: &ID3D11Device,
     pixels: &TilePixels,

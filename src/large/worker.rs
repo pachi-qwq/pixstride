@@ -17,6 +17,7 @@ pub(crate) struct Request {
     pub(crate) path: PathBuf,
     pub(crate) started: Instant,
 }
+/// 只传不可变缓存引用和像素所有权；GPU 对象从不出现在后台答复中。
 pub(crate) enum Reply {
     Ready {
         generation: u64,
@@ -42,6 +43,7 @@ struct ViewJob {
 #[derive(Default)]
 struct State {
     stopping: bool,
+    failed: bool,
     build: Option<Request>,
     view: Option<ViewJob>,
     replies: VecDeque<Reply>,
@@ -92,6 +94,7 @@ pub(crate) struct Worker {
     done: mpsc::Receiver<()>,
 }
 impl Worker {
+    /// 延迟创建一个可睡眠的文件 Worker；不初始化 COM，也不借用 Windows 事件句柄。
     pub(crate) fn start(shared: &Arc<Shared>) -> Result<Self> {
         let control = Arc::new(Control {
             state: Mutex::new(State::default()),
@@ -105,12 +108,13 @@ impl Worker {
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&c)));
                 if let Some(shared) = c.shared.upgrade().filter(|_| result.is_err()) {
+                    c.lock().failed=true;
                     let generation = shared.image_generation();
                     c.publish(
                         generation,
                         Reply::Error {
                             generation,
-                            message: "大图后台线程发生 panic，未完成缓存将按规则清理".into(),
+                                message: "大图后台线程发生 panic，已停止接收工作；可浏览普通图片，重试大图需重启程序".into(),
                         },
                     );
                 }
@@ -122,13 +126,20 @@ impl Worker {
             done,
         })
     }
-    pub(crate) fn build(&self, request: Request) {
+    /// 覆盖待处理构建和视口槽；正在进行的扫描通过共享 Generation 在下个取消点退出。
+    pub(crate) fn build(&self, request: Request) -> Result<()> {
         let mut s = self.control.lock();
+        anyhow::ensure!(
+            !s.failed && !s.stopping,
+            "大图线程已退出，重试大图需重启程序"
+        );
         s.build = Some(request);
         s.view = None;
         s.replies.clear();
         self.control.changed.notify_all();
+        Ok(())
     }
+    /// 覆盖视口需求，序号来自现有 Render Snapshot；调用方最多传 MAX_VISIBLE 个索引。
     pub(crate) fn view(
         &self,
         generation: u64,
@@ -137,6 +148,9 @@ impl Worker {
         ids: Vec<usize>,
     ) {
         let mut s = self.control.lock();
+        if s.failed || s.stopping {
+            return;
+        }
         s.sequence = sequence;
         s.view = Some(ViewJob {
             generation,
@@ -146,6 +160,7 @@ impl Worker {
         });
         self.control.changed.notify_all();
     }
+    /// Render Thread 取走最多两个答复并唤醒背压等待者；此处不读文件。
     pub(crate) fn drain(&self) -> Vec<Reply> {
         let mut s = self.control.lock();
         let r = s.replies.drain(..).collect();
@@ -198,6 +213,9 @@ fn configuration() -> Result<(PathBuf, CacheBudget)> {
 fn run(control: &Control) {
     let mut cache_key = PathBuf::new();
     let mut cpu: VecDeque<Arc<TilePixels>> = VecDeque::new();
+    let mut peak_cpu = 0usize;
+    let mut hits = 0u64;
+    let mut misses = 0u64;
     loop {
         let (build, view) = {
             let mut s = control.lock();
@@ -208,6 +226,9 @@ fn run(control: &Control) {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
             if s.stopping {
+                println!(
+                    "Tile CPU resident peak={peak_cpu} bytes; hits={hits} misses={misses}; excludes bounded reply/upload staging"
+                );
                 return;
             }
             if let Some(b) = s.build.take() {
@@ -289,6 +310,12 @@ fn run(control: &Control) {
                     .iter()
                     .position(|p| p.id == id)
                     .and_then(|i| cpu.remove(i));
+                let cpu_hit = found.is_some();
+                if cpu_hit {
+                    hits += 1;
+                } else {
+                    misses += 1;
+                }
                 let pixels = match found {
                     Some(p) => p,
                     None => match job.cache.read_tile(id) {
@@ -307,11 +334,20 @@ fn run(control: &Control) {
                 };
                 if let Some(s) = control.shared.upgrade() {
                     s.record(crate::diagnostics::Metric::TileRead, at.elapsed());
+                    s.record(
+                        if cpu_hit {
+                            crate::diagnostics::Metric::TileCpuHit
+                        } else {
+                            crate::diagnostics::Metric::TileDiskRead
+                        },
+                        at.elapsed(),
+                    );
                 }
                 cpu.push_back(Arc::clone(&pixels));
                 while cpu.iter().map(|p| p.bytes.len()).sum::<usize>() > 64 * 1024 * 1024 {
                     cpu.pop_front();
                 }
+                peak_cpu = peak_cpu.max(cpu.iter().map(|p| p.bytes.len()).sum());
                 if control.valid(job.generation) && control.lock().sequence == job.sequence {
                     control.publish(
                         job.generation,
@@ -406,8 +442,19 @@ mod tests {
                 generation,
                 path: PathBuf::from("own.png"),
                 started: Instant::now(),
-            });
+            })?;
         }
+        assert_eq!(control.lock().build.as_ref().unwrap().generation, 1000);
+        control.lock().failed = true;
+        assert!(
+            worker
+                .build(Request {
+                    generation: 1001,
+                    path: PathBuf::from("new.png"),
+                    started: Instant::now()
+                })
+                .is_err()
+        );
         assert_eq!(control.lock().build.as_ref().unwrap().generation, 1000);
         // 测试构造没有线程；不触发正式 Drop 的两秒等待。
         drop(_tx);

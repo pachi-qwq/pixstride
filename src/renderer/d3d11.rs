@@ -240,7 +240,13 @@ impl Renderer {
                             self.tiles = Some(super::tiles::Tiles::new(&self.device, shared)?);
                         }
                         if let Some(tiles) = &self.tiles {
-                            tiles.request(request);
+                            let generation = request.generation;
+                            if let Err(error) = tiles.request(request) {
+                                shared.publish_gpu_probe_reply(GpuProbeReply::LargeError {
+                                    generation,
+                                    message: format!("{error:#}"),
+                                });
+                            }
                         }
                     }
                 }
@@ -985,7 +991,7 @@ mod tests {
             generation: 1,
             path: source,
             started: Instant::now(),
-        });
+        })?;
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
         while !tiles.complete() {
             anyhow::ensure!(Instant::now() < deadline, "Tile GPU 回读等待超时");

@@ -88,6 +88,8 @@ pub(crate) enum Metric {
     TileUpload,
     LargePreview,
     TileViewport,
+    TileCpuHit,
+    TileDiskRead,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -190,7 +192,7 @@ impl Counter {
 }
 
 impl Metric {
-    const ALL: [Self; 55] = [
+    const ALL: [Self; 57] = [
         Self::Startup,
         Self::D3dInitialization,
         Self::DeviceCreation,
@@ -246,6 +248,8 @@ impl Metric {
         Self::TileUpload,
         Self::LargePreview,
         Self::TileViewport,
+        Self::TileCpuHit,
+        Self::TileDiskRead,
     ];
 
     fn index(self) -> usize {
@@ -305,6 +309,8 @@ impl Metric {
             Self::TileUpload => 52,
             Self::LargePreview => 53,
             Self::TileViewport => 54,
+            Self::TileCpuHit => 55,
+            Self::TileDiskRead => 56,
         }
     }
 
@@ -314,6 +320,8 @@ impl Metric {
             Self::TileUpload => "Tile GPU 创建与上传提交",
             Self::LargePreview => "大图选择到预览 Present 返回",
             Self::TileViewport => "视口发布到本次最后所需 Tile Present 返回",
+            Self::TileCpuHit => "Tile CPU 缓存命中查询",
+            Self::TileDiskRead => "Tile 磁盘读取与 CRC 校验",
 
             Self::Startup => "启动到 CreateWindowExW 返回",
             Self::D3dInitialization => "D3D11 初始化",

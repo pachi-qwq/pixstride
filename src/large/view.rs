@@ -13,6 +13,7 @@ pub(crate) struct Piece {
     pub(crate) preview_uv: [f32; 4],
 }
 
+/// 使用已校验的预览索引计算可见区域；零窗口或图像完全移出视口时返回空列表。
 pub(crate) fn pieces(plan: &Plan, snapshot: &RenderSnapshot, preview: usize) -> Vec<Piece> {
     if snapshot.width == 0 || snapshot.height == 0 {
         return Vec::new();

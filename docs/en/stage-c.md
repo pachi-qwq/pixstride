@@ -1,11 +1,12 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 3; status: implementation-review -->
+<!-- doc-id: stage-c; revision: 4; status: implementation-review -->
 
 # Stage C: large PNG path
 
 Stages A and B are merged. Stage C has a locally tested streaming cache and Tile renderer. The private
-48000 × 32000 PNG has not been decoded at this checkpoint; real-image and manual GUI acceptance remain.
+48000 × 32000 PNG passed full cache construction and programmatic D3D11 viewport tests. Manual desktop
+acceptance and remaining stress gates are still open.
 
 ## C1 row prototype
 
@@ -66,7 +67,7 @@ is rechecked before publication. Changes outside the sampled bytes with preserve
 this check; CRC32 is not a cryptographic content identity. Cache-version, sampled-content-change,
 active-cache pinning, corruption, overflow, and interrupted-build tests passed.
 
-The private source has only had its file attributes checked. The owner approved a separate 10 GiB
+At the C2 checkpoint, the private source had only had its file attributes checked. The owner approved a separate 10 GiB
 cache experiment after C3 passes; its estimated 1024 pyramid is 8,224,561,220 bytes. No source pixels
 have been read at this checkpoint.
 
@@ -84,14 +85,16 @@ still report errors. Ordinary budgets remain 256 MiB per image and 512 MiB per C
 A lazily started Tile worker owns construction and reads: one latest build slot, one latest viewport
 slot, at most two replies, and a 64 MiB CPU Tile LRU. Replies, active upload, and preview retain extra
 bounded Tile buffers. The render thread owns a separate 128 MiB Tile GPU cache. At most 24 visible
-Tiles are requested; unusually large viewports use a coarser layer. The Builder's 128 MiB reservation
+Tiles are requested; unusually large viewports use a coarser layer. The Builder's 128 MiB budget
 includes its decoder allowance. OS file cache and allocator overhead are separate. No IPC is introduced.
 
 Selection Generation invalidates source work; the existing Render Snapshot sequence invalidates
 viewport work. Cancellation checks run between rows/Tiles. A blocked read cannot be preempted:
 shutdown waits up to two seconds, then detaches a worker with no HWND, GPU interfaces, or usable UI-event
 access. A later build cleans recognized partial caches. Device failure keeps error-and-exit behavior;
-device recreation and actual Device Lost stress remain unverified.
+device recreation and actual Device Lost stress remain unverified. Ordinary Tile allocation failures
+keep an available coarse preview and report a non-modal error; forced GPU allocation failure was not
+injected. A panicked Tile worker rejects subsequent builds with a restart instruction.
 
 The renderer draws each visible logical region once, using the Tile if ready or its preview UVs if
 missing. It never blends a Tile over the same preview pixels. One-pixel gutters prevent boundary
@@ -121,16 +124,111 @@ cargo test --release --locked release_tile_gpu_readback -- --ignored --nocapture
 
 Set both path variables outside Git. Default cache: `%LOCALAPPDATA%/Pixstride/tiles-v1`. Use a dedicated
 root, never a source folder. `PIXSTRIDE_TILE_CACHE_GIB` accepts 1–10, defaults to 2; values above 2 require
-separate owner approval. The real experiment has approval for 10 GiB after C3 passes but has not run at
-this checkpoint. Manual checks still need real-image seams, alpha, gestures, arbitrary regions,
+separate owner approval. The real experiment has approval for 10 GiB after C3 passes; the C4 results
+below record its execution. Manual checks still need real-image seams, alpha, gestures, arbitrary regions,
 cancellation, and repeated open/close.
+
+## C4 real-sample results
+
+After C3 passed, the owner authorized a dedicated 10 GiB local cache. Residency flags and free space
+were rechecked before reading. The source was opened read-only, never copied or uploaded, and its
+length and modification time were unchanged afterwards. It is a non-interlaced RGBA8 PNG, 48000 × 32000,
+2,071,102,933 source bytes; a full RGBA8 bitmap would require 6,144,000,000 bytes.
+
+| Measurement | Result and boundary |
+| --- | --- |
+| First full build | 755.866 s; row scan plus pyramid writes 750.860 s, followed by CRC/sync/publication |
+| Persistent cache | 2,027 Tiles; 8,224,561,220 data bytes + 81,228 index bytes + 8-byte ownership marker |
+| Builder process | Peak working set 16,023,552 bytes; sampled private bytes peak 7,577,600 |
+| Source row buffers | 384,000 bytes total input/output capacity; no complete bitmap |
+| Warm metadata reopen | First run: n=20, P50 0.313 ms, P95 0.470 ms; separate verification: P50 0.408 ms, P95 0.548 ms |
+| Corner/center Tile reads | Five level-zero Tiles, 0.123–1.044 ms including CRC, warm filesystem |
+| Warm Viewer preview | 170.994 ms from request to preview Present return, n=1, includes a new D3D11 device |
+| Viewport completion | n=53, P50 6.993 ms, P95 9.815 ms, maximum 133.217 ms; includes initial device/startup wait and mixed GPU reuse/misses |
+| Tile disk read + CRC | n=166, P50 0.957 ms, P95 1.071 ms; no decompression in raw cache |
+| Tile GPU upload submission | n=167, P50 0.332 ms, P95 0.419 ms |
+| Viewer shutdown | 26.417 ms for render/loader join and window destruction, n=1 |
+
+The RTX 4080 SUPER hardware device reported Feature Level 11.1. Two 5 × 5 native-pixel viewport passes
+exercised eviction: CPU Tile resident peak 66,845,952 bytes of 67,108,864; GPU Tile logical peak
+134,151,296 of 134,217,728 bytes. DXGI process-local video usage sampled peak was 174,297,088 bytes,
+including swap-chain and driver/other allocations. Viewer peak working set was 145,068,032 bytes;
+sampled private commitment peak was 421,969,920. These are distinct from the application cache budgets.
+OS filesystem cache usage was not measured, and GPU usage samples are not a continuous residency trace.
+
+The Viewer probe loaded only the authorized source through the large-image request, skipping private
+directory scanning and adjacent files. The real first build ran in the independent cache probe; its
+full selection-to-preview timing and twelve-minute Viewer responsiveness were not measured. It submitted a preview and native regions, returned to Fit,
+verified a 250 ms idle interval without additional Present, and closed normally. It does not establish
+visual seams/gesture quality on a human-operated desktop. Real build interruption was tested on
+generated sources, not by interrupting the private 12-minute build.
+
+This first build is slow. More than a million small write calls were observed while it ran; row-write
+batching is a follow-up experiment. There was no controlled storage/decoder comparison, so this is not
+a claim that PNG decoding alone caused the wall time. No cache was rebuilt merely to repeat the timing.
+The working-set measurements demonstrate this input's streaming behavior, not a hard process-memory
+ceiling for every decoder/driver. The small C1 repeat also passed its limits: peak working sets
+10,141,696 / 10,158,080 bytes for heights 256 / 8192, with 65,536 owned row bytes.
+
+Ordinary navigation regression passed with 110 GPU hits, 100 forced CPU-hit paths, source replacement,
+read errors, reverse/release/focus-loss/new-open boundaries, and a busy WIC worker. GPU-hit P50/P95 was
+0.241/6.457 ms; CPU-hit 0.454/5.097 ms. A synthetic hold run produced 25 image submissions, 14 progress
+images, and final target/Present Generation 61. These runs overlapped the separate cache-build process
+and are not controlled Stage B before/after comparisons. JPEG/PNG/BMP correctness tests also passed.
+
+A subsequent alternating baseline comparison ran the same generated-BMP Release navigation probe
+three times per version, with no large-image builder active. Stage B used commit `0e39b64`; Stage C
+used the current local build, on the same host/toolchain. Each run contained 110 GPU-hit and 100 forced
+CPU-hit selections, plus failure/stale-result assertions. All six runs passed:
+
+| Round | Version | GPU P50 µs | GPU P95 µs | CPU P50 µs | CPU P95 µs |
+| --- | --- | --- | --- | --- | --- |
+| 1 | stage-b | 271 | 6523 | 435 | 3329 |
+| 1 | stage-c | 259 | 5894 | 445 | 3489 |
+| 2 | stage-b | 264 | 6590 | 427 | 2209 |
+| 2 | stage-c | 273 | 6743 | 420 | 4191 |
+| 3 | stage-b | 280 | 6701 | 445 | 3999 |
+| 3 | stage-c | 275 | 6579 | 434 | 3699 |
+
+Median processing paths stayed in the same sub-millisecond range; CPU tails varied. This short synthetic
+probe does not prove unchanged real-directory tail latency or constitute a controlled startup test.
+
+All timings above stop at application/API boundaries. They do not measure displayed-frame completion
+or input-to-photon latency. First build n=1 and the small reopen/viewport sample counts cannot establish
+stable P95/P99. Controlled cold/warm startup, Device Lost injection/recovery, disk exhaustion, forced
+allocation failure, driver-stalled shutdown, long-duration stability, and manual real-image GUI remain
+unverified. EXIF Orientation, ICC/HDR, APNG, Adam7, and 16-bit large-PNG handling are outside this path;
+large PNG orientation metadata is not applied.
+
+The final local suite has 58 passing Rust tests and 10 explicit diagnostics omitted by default; document
+tool regression has 41 passing tests. Formatting, Clippy, Release build, Rustdoc, document checks and
+diff whitespace checks passed. No Stage C branch was pushed, so no new GitHub CI run is claimed.
+
+For an approved real-cache probe only:
+
+```powershell
+$env:PIXSTRIDE_APPROVED_LARGE_CACHE = '1'
+$env:PIXSTRIDE_TILE_CACHE_GIB = '10'
+cargo test --release --locked real_large_cache_probe -- --ignored --nocapture
+cargo test --release --locked real_large_viewer_probe -- --ignored --nocapture
+```
+
+Set the source/cache environment paths first. The approval variable records an external decision;
+setting it does not grant permission. Keep the cache root available to reuse the completed pyramid.
+Close all viewer/probe instances before deleting that dedicated root; the next open will need a full
+build again. Partial directories are cleaned on a later build; completed caches do not resume partial
+work and corrupted Tile data requires explicit cleanup.
 
 ## Dependencies and evidence
 
 `png 0.18.1` and `crc32fast 1.5.2` use MIT OR Apache-2.0. Pure Rust decoding avoids a separate libpng
 DLL and supplies the row API that the WIC ordinary path does not expose as a guaranteed bounded stream.
 The image-rs repository publishes ongoing changes and reports fuzz testing; that is not a security audit
-of Pixstride. No nightly features or external AI services are used.
+of Pixstride. No nightly features or external AI services are used. The new dependency tree also includes MIT-only
+`simd-adler32 0.3.10` and Zlib-licensed `zlib-rs 0.6.8`; other new crates offer MIT/Apache alternatives.
+Their original notices are retained in [third-party notices](../../THIRD-PARTY-NOTICES.txt). This covers
+Stage C additions, not a complete release inventory. Release size at this checkpoint is 893,440 bytes
+versus the Stage B artifact of 596,480; that difference includes code and embedded shaders, not only libraries.
 
 See the [Reader API](https://docs.rs/png/0.18.1/png/struct.Reader.html),
 [Decoder limits](https://docs.rs/png/0.18.1/png/struct.Decoder.html), and

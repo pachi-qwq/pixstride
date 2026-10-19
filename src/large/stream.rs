@@ -352,6 +352,80 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    #[test]
+    fn expands_rgb_gray_palette_and_rejects_unsupported_headers() -> Result<()> {
+        let root = root("colors");
+        for (name, color, raw, expected) in [
+            (
+                "rgb",
+                png::ColorType::Rgb,
+                vec![20, 40, 60],
+                vec![60, 40, 20, 255],
+            ),
+            (
+                "gray",
+                png::ColorType::Grayscale,
+                vec![80],
+                vec![80, 80, 80, 255],
+            ),
+            (
+                "gray-alpha",
+                png::ColorType::GrayscaleAlpha,
+                vec![80, 128],
+                vec![40, 40, 40, 128],
+            ),
+            (
+                "palette",
+                png::ColorType::Indexed,
+                vec![0],
+                vec![30, 20, 10, 128],
+            ),
+        ] {
+            let path = root.join(format!("{name}.png"));
+            let mut e = png::Encoder::new(File::create(&path)?, 1, 1);
+            e.set_color(color);
+            e.set_depth(png::BitDepth::Eight);
+            if color == png::ColorType::Indexed {
+                e.set_palette(vec![20, 40, 60]);
+                e.set_trns(vec![128]);
+            }
+            let mut w = e.write_header()?;
+            w.write_image_data(&raw)?;
+            w.finish()?;
+            scan(
+                &path,
+                StreamBudget::default(),
+                || true,
+                |_, row, _| {
+                    assert_eq!(row, expected);
+                    Ok(())
+                },
+            )?;
+        }
+        let path = root.join("header.png");
+        generate(&path, 8, 8)?;
+        let original = std::fs::read(&path)?;
+        for (byte, value) in [(24, 16), (28, 1)] {
+            let mut b = original.clone();
+            b[byte] = value;
+            let crc = crc32fast::hash(&b[12..29]);
+            b[29..33].copy_from_slice(&crc.to_be_bytes());
+            std::fs::write(&path, b)?;
+            assert!(inspect(&path).is_err());
+        }
+        let mut apng = original[..33].to_vec();
+        apng.extend_from_slice(&8u32.to_be_bytes());
+        let mut chunk = b"acTL".to_vec();
+        chunk.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 0]);
+        apng.extend_from_slice(&chunk);
+        apng.extend_from_slice(&crc32fast::hash(&chunk).to_be_bytes());
+        apng.extend_from_slice(&original[33..]);
+        std::fs::write(&path, apng)?;
+        assert!(scan(&path, StreamBudget::default(), || true, |_, _, _| Ok(())).is_err());
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
     /// 在独立进程中扫描，外部读取进程 PeakWorkingSet64；结果不含 OS 文件缓存。
     #[test]
     #[ignore = "独立行内存诊断，由父诊断指定合成 PNG"]

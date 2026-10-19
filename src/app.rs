@@ -263,12 +263,17 @@ impl Shared {
         self.pending().image_generation
     }
 
+    /// 发布当前源的大图请求，清除上一源的缩放偏移；不在 UI 线程读取 PNG 或缓存。
     pub(crate) fn request_large(&self, request: crate::large::worker::Request) {
         {
             let mut p = self.pending();
             if p.shutdown || p.image_generation != request.generation {
                 return;
             }
+            // 新源不能继承上一张图的任意平移位置；保留用户选择的 Fit/100% 模式。
+            p.snapshot.zoom = 1.0;
+            p.snapshot.pan = (0.0, 0.0);
+            p.snapshot.sequence = p.snapshot.sequence.wrapping_add(1);
             p.large_request = Some(request);
         }
         self.wake_render_thread();
@@ -278,7 +283,11 @@ impl Shared {
     pub(crate) fn zoom_by(&self, factor: f32) {
         if factor.is_finite() && factor > 0.0 {
             self.publish(RequestOrigin::Paint, |p| {
-                p.snapshot.zoom = (p.snapshot.zoom * factor).clamp(0.01, 64.0)
+                let next = (p.snapshot.zoom * factor).clamp(0.01, 64.0);
+                let ratio = next / p.snapshot.zoom;
+                p.snapshot.pan.0 = (p.snapshot.pan.0 * ratio).clamp(-1e9, 1e9);
+                p.snapshot.pan.1 = (p.snapshot.pan.1 * ratio).clamp(-1e9, 1e9);
+                p.snapshot.zoom = next;
             });
         }
     }
@@ -602,6 +611,7 @@ struct UiNavigation {
     progress_floor: Option<u64>,
 }
 
+/// UI 独占的渲染唤醒事件；所有发布者停止且 Render Thread join 后才释放句柄。
 pub(crate) struct WakeEvent(HANDLE);
 
 impl Drop for WakeEvent {
@@ -1105,6 +1115,7 @@ fn process_gpu_probe_reply(
             message,
         } => {
             if context.shared.is_image_generation_current(generation) {
+                context.shared.increment(Counter::ImageLoadFailed);
                 show_non_modal_error(hwnd, &format!("大图加载失败：{message}"));
             }
         }
@@ -1400,6 +1411,31 @@ pub(crate) mod tests {
             ui_ready_event: Mutex::new(0),
         });
         Ok((shared, event))
+    }
+
+    #[test]
+    fn large_source_reset_and_center_zoom_do_not_reuse_an_old_pan() -> Result<()> {
+        let (shared, _event) = test_shared()?;
+        shared.set_image_generation(4);
+        shared.pan_by(10.0, 20.0);
+        shared.zoom_by(2.0);
+        assert_eq!(shared.current_snapshot().pan, (20.0, 40.0));
+        shared.request_large(crate::large::worker::Request {
+            generation: 3,
+            path: "old.png".into(),
+            started: Instant::now(),
+        });
+        assert!(shared.take_pending().large_request.is_none());
+        shared.request_large(crate::large::worker::Request {
+            generation: 4,
+            path: "new.png".into(),
+            started: Instant::now(),
+        });
+        assert_eq!(shared.current_snapshot().pan, (0.0, 0.0));
+        assert_eq!(shared.current_snapshot().zoom, 1.0);
+        shared.set_image_generation(5);
+        assert!(shared.take_pending().large_request.is_none());
+        Ok(())
     }
 
     #[test]
@@ -2265,6 +2301,100 @@ pub(crate) mod tests {
         result?;
         render_result?;
         std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+    /// C4 已发布缓存的真实 Viewer 路径；路径由本地环境传入，不触碰源图片内容。
+    #[test]
+    #[ignore = "C4 真实缓存 Viewer 验证，需要明确批准"]
+    fn real_large_viewer_probe() -> Result<()> {
+        use crate::{
+            diagnostics::Metric,
+            image::{ImageBudget, worker::ImageLoader},
+        };
+        anyhow::ensure!(
+            std::env::var("PIXSTRIDE_APPROVED_LARGE_CACHE").as_deref() == Ok("1"),
+            "缺少真实大图测试批准"
+        );
+        let source = std::env::var_os("PIXSTRIDE_STRESS_IMAGE")
+            .map(std::path::PathBuf::from)
+            .context("设置 PIXSTRIDE_STRESS_IMAGE")?;
+        crate::large::cache::ensure_local(&source)?;
+        let (shared, _event) = test_shared()?;
+        let mut loader = ImageLoader::start(ImageBudget::default(), Arc::clone(&shared))?;
+        shared.set_ui_ready_event(loader.ready_handle());
+        let mut context = Box::new(super::WindowContext {
+            shared: Arc::clone(&shared),
+            close_started: false,
+            drag_position: None,
+            action: None,
+            navigation: super::UiNavigation::default(),
+        });
+        let hwnd = crate::window::create_main_window(&mut context)?;
+        crate::window::show_main_window(hwnd);
+        let rs = Arc::clone(&shared);
+        let raw = hwnd.0 as isize;
+        let thread = std::thread::spawn(move || crate::renderer::render_thread(raw, rs));
+        let n = |m| shared.metrics.lock().unwrap().sample_count(m);
+        let result = (|| -> Result<()> {
+            // C3 已验证路由；真实样本诊断直接发布大图请求，避免扫描私人目录或预加载其他私人图片。
+            context.navigation.generation = 1;
+            context.navigation.current_path = Some(source.clone());
+            shared.set_image_generation(1);
+            shared.request_large(crate::large::worker::Request {
+                generation: 1,
+                path: source,
+                started: Instant::now(),
+            });
+            pump(&mut context, &loader, hwnd, || n(Metric::LargePreview) > 0)?;
+            pump(&mut context, &loader, hwnd, || n(Metric::TileViewport) > 0)?;
+            let before = n(Metric::TileViewport);
+            shared.set_view_mode(super::ViewMode::NativePixels);
+            pump(&mut context, &loader, hwnd, || {
+                n(Metric::TileViewport) > before
+            })?;
+            let mut previous = (0.0, 0.0);
+            for _ in 0..2 {
+                for y in [-15500.0, -7750.0, 0.0, 7750.0, 15500.0] {
+                    for x in [-23300.0, -11650.0, 0.0, 11650.0, 23300.0] {
+                        let before = n(Metric::TileViewport);
+                        shared.pan_by(x - previous.0, y - previous.1);
+                        previous = (x, y);
+                        pump(&mut context, &loader, hwnd, || {
+                            n(Metric::TileViewport) > before
+                        })?;
+                    }
+                }
+            }
+            let before = n(Metric::TileViewport);
+            shared.set_view_mode(super::ViewMode::Fit);
+            pump(&mut context, &loader, hwnd, || {
+                n(Metric::TileViewport) > before
+            })?;
+            // GPU 完成且窗口不变时，不得由 Tile Worker 不断请求重绘。
+            let presents = n(Metric::Present);
+            let deadline = Instant::now() + Duration::from_millis(250);
+            while Instant::now() < deadline {
+                // SAFETY: 测试持有 ready event；短等待仅观察空闲，不替代正式事件驱动循环。
+                unsafe {
+                    WaitForSingleObject(loader.ready_handle(), 25);
+                }
+            }
+            assert_eq!(n(Metric::Present), presents, "静止后不应持续 Present");
+            Ok(())
+        })();
+        let shutdown = Instant::now();
+        shared.request_shutdown();
+        loader.request_stop();
+        let render_result = thread.join().map_err(|_| anyhow::anyhow!("Render panic"))?;
+        loader.join()?;
+        // SAFETY: 当前测试线程拥有 HWND，所有渲染资源使用者已退出，上下文仍然有效。
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd)?;
+        }
+        println!("REAL viewer shutdown_us={}", shutdown.elapsed().as_micros());
+        println!("{}", shared.metrics_report());
+        result?;
+        render_result?;
         Ok(())
     }
 }

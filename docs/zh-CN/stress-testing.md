@@ -1,6 +1,6 @@
 [English](../en/stress-testing.md) | [简体中文](stress-testing.md)
 
-<!-- doc-id: stress; revision: 1; status: proposal -->
+<!-- doc-id: stress; revision: 2; status: proposal -->
 
 # 跨格式压力测试计划
 
@@ -127,3 +127,6 @@ PSD/PSB 生成器需要独立格式校验。区分编码器拒绝和解码器失
 
 每项 L3 能力应正确显示预览/区域，或明确报告不支持/超预算，同时提供输入响应、
 有界队列和资源、取消/故障恢复、清理证据。加入极限路径后，重跑普通图片性能基线。
+
+阶段 C 可执行行解码、缓存和视口诊断见[阶段 C](stage-c.md)。Rust CI 运行生成的小样本，GPU 和私人图片诊断需
+显式启用，真实极限图片不得作为 CI 输入。大图缓存预算独立于普通图片单图 256 MiB 限制。
