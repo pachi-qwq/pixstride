@@ -10,14 +10,16 @@ use windows::{
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Input::KeyboardAndMouse::{
-                GetKeyState, VK_1, VK_CONTROL, VK_F, VK_LEFT, VK_O, VK_RIGHT,
+                GetKeyState, ReleaseCapture, SetCapture, VK_1, VK_CONTROL, VK_F, VK_LEFT, VK_O,
+                VK_RIGHT,
             },
             WindowsAndMessaging::{
                 CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
                 DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, IDC_ARROW, LoadCursorW,
                 RegisterClassW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
-                ShowWindow, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN,
-                WM_KEYUP, WM_KILLFOCUS, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSW,
+                ShowWindow, WM_CAPTURECHANGED, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
+                WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+                WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSW,
                 WS_OVERLAPPEDWINDOW,
             },
         },
@@ -112,6 +114,39 @@ unsafe extern "system" fn window_proc(
     let context = unsafe { &mut *context_pointer };
 
     match message {
+        WM_MOUSEWHEEL if !context.close_started => {
+            let delta = ((wparam.0 >> 16) as u16) as i16;
+            context
+                .shared
+                .zoom_by(1.2f32.powf(f32::from(delta) / 120.0));
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN if !context.close_started => {
+            context.drag_position = Some(mouse_position(lparam));
+            // SAFETY: 当前 UI 线程的 HWND 仍有效；捕获在松键、失焦或系统取消时释放。
+            unsafe {
+                SetCapture(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE if !context.close_started => {
+            if let Some(previous) = context.drag_position {
+                let next = mouse_position(lparam);
+                context
+                    .shared
+                    .pan_by((next.0 - previous.0) as f32, (next.1 - previous.1) as f32);
+                context.drag_position = Some(next);
+            }
+            LRESULT(0)
+        }
+        WM_LBUTTONUP | WM_CAPTURECHANGED => {
+            context.drag_position = None;
+            if message == WM_LBUTTONUP {
+                // SAFETY: ReleaseCapture 只释放当前线程鼠标捕获，不访问外部缓冲区。
+                let _ = unsafe { ReleaseCapture() };
+            }
+            LRESULT(0)
+        }
         WM_SIZE => {
             if !context.close_started {
                 let dimensions = lparam.0 as u32;
@@ -145,6 +180,9 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_KILLFOCUS if !context.close_started => {
+            context.drag_position = None;
+            // SAFETY: 失焦时放弃当前线程的捕获，避免恢复焦点后错误延续旧拖动。
+            let _ = unsafe { ReleaseCapture() };
             context.shared.end_navigation_progress();
             context.action = Some(WindowAction::StopNavigation);
             LRESULT(0)
@@ -204,4 +242,11 @@ unsafe extern "system" fn window_proc(
             unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
         }
     }
+}
+
+fn mouse_position(value: LPARAM) -> (i32, i32) {
+    (
+        (value.0 as u16 as i16) as i32,
+        ((value.0 >> 16) as u16 as i16) as i32,
+    )
 }
