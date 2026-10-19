@@ -77,7 +77,7 @@
       "id": "architecture",
       "en": "docs/en/architecture.md",
       "zh-CN": "docs/zh-CN/architecture.md",
-      "revision": 5,
+      "revision": 6,
       "shared_literals": [
         "16384",
         "1024",
@@ -180,7 +180,7 @@
       "id": "stage-b",
       "en": "docs/en/stage-b.md",
       "zh-CN": "docs/zh-CN/stage-b.md",
-      "revision": 4,
+      "revision": 5,
       "shared_literals": [
         "WIC",
         "JPEG",

@@ -108,10 +108,17 @@ pub(crate) struct DecodedImage {
     pub(crate) pixels: Vec<u8>,
 }
 
-pub(crate) struct WicTimings {
-    pub(crate) open: Duration,
-    pub(crate) conversion: Duration,
-    pub(crate) copy_pixels: Duration,
+/// 离开一个阶段时立即记录耗时；`?` 提前返回也保留失败路径的样本。
+struct StageTimer<'a> {
+    started: Instant,
+    record: &'a dyn Fn(crate::diagnostics::Metric, Duration),
+    metric: crate::diagnostics::Metric,
+}
+
+impl Drop for StageTimer<'_> {
+    fn drop(&mut self) {
+        (self.record)(self.metric, self.started.elapsed());
+    }
 }
 
 impl DecodedImage {
@@ -188,13 +195,28 @@ impl Drop for ComMta {
 }
 
 /// 使用当前线程的 WIC MTA 解码 JPEG、PNG 或 BMP 的首帧。
-pub(crate) fn decode_wic(path: &Path, budget: ImageBudget) -> Result<(DecodedImage, WicTimings)> {
+///
+/// `identity` 是调用者在后台读取的源修订；完成后再次校验，变化则返回错误。
+/// `record` 同步接收阶段耗时，包括提前失败的阶段；不得阻塞或写入大量日志。
+pub(crate) fn decode_wic(
+    path: &Path,
+    identity: &SourceIdentity,
+    budget: ImageBudget,
+    record: impl Fn(crate::diagnostics::Metric, Duration),
+) -> Result<DecodedImage> {
+    use crate::diagnostics::Metric;
+    let timer = |metric| StageTimer {
+        started: Instant::now(),
+        record: &record,
+        metric,
+    };
+    let _total_timer = timer(Metric::ImageDecodeTotal);
     if !is_supported_path(path) {
         bail!("不支持的图片扩展名：{}", path.display());
     }
-    let identity = SourceIdentity::read(path)?;
+    let identity = identity.clone();
     let wide_path = wide_nul(&identity.path);
-    let open_started = Instant::now();
+    let open_timer = timer(Metric::WicOpen);
     // SAFETY: 当前线程已初始化 MTA；CoCreateInstance 返回由本地变量拥有的进程内接口，所有 WIC 对象都在同一线程释放。
     let factory: IWICImagingFactory =
         unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
@@ -213,7 +235,9 @@ pub(crate) fn decode_wic(path: &Path, budget: ImageBudget) -> Result<(DecodedIma
     let frame = unsafe { decoder.GetFrame(0) }.context("读取图片首帧失败")?;
     let orientation = exif_orientation(&frame);
     let transform = orientation_transform(orientation);
-    let open_elapsed = open_started.elapsed();
+    drop(open_timer);
+
+    let layout_timer = timer(Metric::ImageLayout);
 
     let source: IWICBitmapSource = if transform == WICBitmapTransformRotate0 {
         frame.cast().context("转换 WIC Bitmap Source 接口失败")?
@@ -233,8 +257,9 @@ pub(crate) fn decode_wic(path: &Path, budget: ImageBudget) -> Result<(DecodedIma
     // SAFETY: 输出指针指向当前栈帧内两个有效 u32 槽，source 由当前线程持有。
     unsafe { source.GetSize(&mut width, &mut height) }.context("读取图片尺寸失败")?;
     let (stride, buffer_len, _) = checked_layout(width, height, budget)?;
+    drop(layout_timer);
 
-    let conversion_started = Instant::now();
+    let conversion_timer = timer(Metric::PixelFormatConversion);
     // SAFETY: Factory 与 source 属于当前 MTA 线程；转换器输出与 GPU 目标格式约定一致的 PBGRA8。
     let converter = unsafe { factory.CreateFormatConverter() }
         .context("创建 WIC Pixel Format Converter 失败")?;
@@ -250,38 +275,35 @@ pub(crate) fn decode_wic(path: &Path, budget: ImageBudget) -> Result<(DecodedIma
         )
     }
     .context("将图片转换为 premultiplied BGRA8 失败")?;
-    let conversion_elapsed = conversion_started.elapsed();
+    drop(conversion_timer);
 
+    let allocation_timer = timer(Metric::PixelAllocation);
     let mut pixels = Vec::new();
     pixels
         .try_reserve_exact(buffer_len)
         .context("为图片像素缓冲区预留内存失败")?;
     pixels.resize(buffer_len, 0);
-    let copy_started = Instant::now();
+    drop(allocation_timer);
+    let copy_timer = timer(Metric::WicCopyPixels);
     // SAFETY: stride 与宽度匹配 BGRA8，每行有 stride 字节，已分配长度等于 stride × height；WIC 只写入此切片。
     unsafe { converter.CopyPixels(std::ptr::null(), stride, &mut pixels) }
         .context("WIC 解码图片像素失败")?;
-    let copy_elapsed = copy_started.elapsed();
+    drop(copy_timer);
 
+    let verification_timer = timer(Metric::SourceIdentityVerify);
     let after = SourceIdentity::read(&identity.path)?;
+    drop(verification_timer);
     if identity != after {
         bail!("图片在解码期间发生变化，已丢弃本次结果");
     }
-    Ok((
-        DecodedImage {
-            source: identity,
-            width,
-            height,
-            format: PixelFormat::Bgra8Premultiplied,
-            stride,
-            pixels,
-        },
-        WicTimings {
-            open: open_elapsed,
-            conversion: conversion_elapsed,
-            copy_pixels: copy_elapsed,
-        },
-    ))
+    Ok(DecodedImage {
+        source: identity,
+        width,
+        height,
+        format: PixelFormat::Bgra8Premultiplied,
+        stride,
+        pixels,
+    })
 }
 
 fn wide_nul(path: &Path) -> Vec<u16> {
@@ -332,7 +354,8 @@ fn orientation_transform(value: u16) -> WICBitmapTransformOptions {
 mod tests {
     use super::{
         CLSID_WICImagingFactory, ComMta, IWICImagingFactory, ImageBudget, PixelFormat,
-        checked_layout, decode_wic, is_supported_path, orientation_transform, wide_nul,
+        SourceIdentity, checked_layout, decode_wic, is_supported_path, orientation_transform,
+        wide_nul,
     };
     use anyhow::{Context, Result};
     use std::path::{Path, PathBuf};
@@ -412,12 +435,12 @@ mod tests {
         let thread_path = path.clone();
         let decoded = std::thread::spawn(move || {
             let _com = ComMta::initialize()?;
-            decode_wic(&thread_path, ImageBudget::default())
+            let identity = SourceIdentity::read(&thread_path)?;
+            decode_wic(&thread_path, &identity, ImageBudget::default(), |_, _| {})
         })
         .join()
         .unwrap()
-        .unwrap()
-        .0;
+        .unwrap();
         assert_eq!((decoded.width, decoded.height, decoded.stride), (2, 1, 8));
         assert_eq!(decoded.pixels, [0, 0, 255, 255, 0, 255, 0, 255]);
         let _ = std::fs::remove_dir_all(root);
@@ -432,11 +455,56 @@ mod tests {
         let thread_path = path.clone();
         let result = std::thread::spawn(move || {
             let _com = ComMta::initialize()?;
-            decode_wic(&thread_path, ImageBudget::default())
+            let identity = SourceIdentity::read(&thread_path)?;
+            decode_wic(&thread_path, &identity, ImageBudget::default(), |_, _| {})
         })
         .join()
         .unwrap();
         assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_wic_open_still_records_total_and_stage_timing() {
+        use crate::diagnostics::Metric;
+        let root = unique_test_dir("pixstride-wic-failed-timing");
+        let path = root.join("broken.jpg");
+        std::fs::write(&path, [0xff, 0xd8]).unwrap();
+        let metrics = std::thread::spawn(move || {
+            let _com = ComMta::initialize().unwrap();
+            let identity = SourceIdentity::read(&path).unwrap();
+            let metrics = std::cell::RefCell::new(Vec::new());
+            let result = decode_wic(&path, &identity, ImageBudget::default(), |metric, _| {
+                metrics.borrow_mut().push(metric)
+            });
+            assert!(result.is_err());
+            metrics.into_inner()
+        })
+        .join()
+        .unwrap();
+        assert!(
+            metrics
+                .iter()
+                .any(|metric| matches!(metric, Metric::WicOpen))
+        );
+        assert!(
+            metrics
+                .iter()
+                .any(|metric| matches!(metric, Metric::ImageDecodeTotal))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_revision_changes_after_replacement_and_deleted_file_is_rejected() {
+        let root = unique_test_dir("pixstride-source-revision");
+        let path = root.join("sample.bmp");
+        std::fs::write(&path, [1, 2]).unwrap();
+        let old = SourceIdentity::read(&path).unwrap();
+        std::fs::write(&path, [1, 2, 3]).unwrap();
+        assert_ne!(SourceIdentity::read(&path).unwrap(), old);
+        std::fs::remove_file(&path).unwrap();
+        assert!(SourceIdentity::read(&path).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -499,11 +567,9 @@ mod tests {
                 }
             }
             for extension in ["jpg", "png"] {
-                let decoded = decode_wic(
-                    &thread_root.join(format!("sample.{extension}")),
-                    ImageBudget::default(),
-                )?
-                .0;
+                let path = thread_root.join(format!("sample.{extension}"));
+                let identity = SourceIdentity::read(&path)?;
+                let decoded = decode_wic(&path, &identity, ImageBudget::default(), |_, _| {})?;
                 assert_eq!((decoded.width, decoded.height), (2, 1));
                 assert_eq!(decoded.format, PixelFormat::Bgra8Premultiplied);
                 assert_eq!(decoded.pixels.len(), 8);

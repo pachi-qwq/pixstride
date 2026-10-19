@@ -41,6 +41,15 @@ pub(crate) enum Metric {
     CpuCacheLookup,
     CurrentGpuHitToPresent,
     CurrentGpuMissToPresent,
+    IdentityQueueWait,
+    SourceIdentityRead,
+    SourceIdentityVerify,
+    ImageLayout,
+    PixelAllocation,
+    QueueBehindPreload,
+    CurrentWicTotal,
+    PreloadWicTotal,
+    CurrentCpuHitToPresent,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -58,10 +67,14 @@ pub(crate) enum Counter {
     GpuCurrentMiss,
     GpuPreloadHit,
     GpuPreloadMiss,
+    NavigationTargetChanged,
+    ImageSelectionPresented,
+    ImageDecodeFailed,
+    ImageLoadFailed,
 }
 
 impl Counter {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 17] = [
         Self::CpuCacheHit,
         Self::CpuCacheMiss,
         Self::GpuCacheHit,
@@ -75,6 +88,10 @@ impl Counter {
         Self::GpuCurrentMiss,
         Self::GpuPreloadHit,
         Self::GpuPreloadMiss,
+        Self::NavigationTargetChanged,
+        Self::ImageSelectionPresented,
+        Self::ImageDecodeFailed,
+        Self::ImageLoadFailed,
     ];
 
     fn index(self) -> usize {
@@ -92,6 +109,10 @@ impl Counter {
             Self::GpuCurrentMiss => 10,
             Self::GpuPreloadHit => 11,
             Self::GpuPreloadMiss => 12,
+            Self::NavigationTargetChanged => 13,
+            Self::ImageSelectionPresented => 14,
+            Self::ImageDecodeFailed => 15,
+            Self::ImageLoadFailed => 16,
         }
     }
 
@@ -110,12 +131,16 @@ impl Counter {
             Self::GpuCurrentMiss => "当前选择 GPU 缓存未命中",
             Self::GpuPreloadHit => "预加载 GPU 缓存命中",
             Self::GpuPreloadMiss => "预加载 GPU 缓存未命中",
+            Self::NavigationTargetChanged => "导航目标索引变化次数",
+            Self::ImageSelectionPresented => "图片选择 Present 成功返回次数",
+            Self::ImageDecodeFailed => "WIC 解码失败（含预算拒绝）",
+            Self::ImageLoadFailed => "当前图片读取或解码失败提示",
         }
     }
 }
 
 impl Metric {
-    const ALL: [Self; 34] = [
+    const ALL: [Self; 43] = [
         Self::Startup,
         Self::D3dInitialization,
         Self::DeviceCreation,
@@ -150,6 +175,15 @@ impl Metric {
         Self::CpuCacheLookup,
         Self::CurrentGpuHitToPresent,
         Self::CurrentGpuMissToPresent,
+        Self::IdentityQueueWait,
+        Self::SourceIdentityRead,
+        Self::SourceIdentityVerify,
+        Self::ImageLayout,
+        Self::PixelAllocation,
+        Self::QueueBehindPreload,
+        Self::CurrentWicTotal,
+        Self::PreloadWicTotal,
+        Self::CurrentCpuHitToPresent,
     ];
 
     fn index(self) -> usize {
@@ -188,6 +222,15 @@ impl Metric {
             Self::CpuCacheLookup => 31,
             Self::CurrentGpuHitToPresent => 32,
             Self::CurrentGpuMissToPresent => 33,
+            Self::IdentityQueueWait => 34,
+            Self::SourceIdentityRead => 35,
+            Self::SourceIdentityVerify => 36,
+            Self::ImageLayout => 37,
+            Self::PixelAllocation => 38,
+            Self::QueueBehindPreload => 39,
+            Self::CurrentWicTotal => 40,
+            Self::PreloadWicTotal => 41,
+            Self::CurrentCpuHitToPresent => 42,
         }
     }
 
@@ -219,14 +262,25 @@ impl Metric {
             Self::ImageTextureUpload => "D3D11 图片纹理创建与上传提交",
             Self::ImageRequestToRender => "图片请求到渲染线程处理",
             Self::ImageFirstPresent => "首张图片 Present 调用返回",
-            Self::ImageDecodeTotal => "WIC 完整打开与解码耗时（含内部工作）",
+            Self::ImageDecodeTotal => "WIC 打开与解码耗时（含失败路径）",
             Self::PreloadDecode => "相邻图片预加载耗时",
             Self::ImageWorkerQueueWait => "当前图片请求在解码 Worker 队列中的等待时间",
             Self::ImageWorkerService => "解码 Worker 处理当前图片请求耗时（含缓存查询和 WIC）",
             Self::ImageRequestToWorker => "当前图片请求到解码线程结果",
-            Self::CpuCacheLookup => "文件身份检查与 CPU 缓存查询",
+            Self::CpuCacheLookup => "CPU 缓存查询（不含文件身份检查）",
             Self::CurrentGpuHitToPresent => "当前 GPU 命中选择到 Present 返回",
             Self::CurrentGpuMissToPresent => "当前 GPU 未命中选择到 Present 返回",
+            Self::IdentityQueueWait => "文件身份校验线程队列等待时间",
+            Self::SourceIdentityRead => "SourceIdentity 文件规范化与元数据读取",
+            Self::SourceIdentityVerify => "解码后 SourceIdentity 复核",
+            Self::ImageLayout => "WIC 方向转换与尺寸预算检查",
+            Self::PixelAllocation => "像素缓冲区分配与清零",
+            Self::QueueBehindPreload => "入队时已有预加载运行的当前请求队列等待",
+            Self::CurrentWicTotal => "当前图片 WIC 处理（含失败路径）",
+            Self::PreloadWicTotal => "预加载 WIC 处理（含失败路径）",
+            Self::CurrentCpuHitToPresent => {
+                "当前 CPU 命中选择到 Present 返回（含 Worker 和 GPU 处理）"
+            }
         }
     }
 }
@@ -280,11 +334,13 @@ struct Summary {
 /// 记录渲染与窗口生命周期中的计时样本。
 pub(crate) struct Metrics {
     samples: Vec<Samples>,
-    counters: [u64; 13],
+    counters: [u64; 17],
     cpu_cache_bytes: u64,
     gpu_cache_bytes: u64,
     peak_cpu_cache_bytes: u64,
     peak_gpu_cache_bytes: u64,
+    target_generation: u64,
+    presented_generation: u64,
 }
 
 impl Default for Metrics {
@@ -293,16 +349,35 @@ impl Default for Metrics {
             samples: std::iter::repeat_with(Samples::default)
                 .take(Metric::ALL.len())
                 .collect(),
-            counters: [0; 13],
+            counters: [0; 17],
             cpu_cache_bytes: 0,
             gpu_cache_bytes: 0,
             peak_cpu_cache_bytes: 0,
             peak_gpu_cache_bytes: 0,
+            target_generation: 0,
+            presented_generation: 0,
         }
     }
 }
 
 impl Metrics {
+    pub(crate) fn set_target_generation(&mut self, generation: u64) {
+        self.target_generation = generation;
+    }
+
+    pub(crate) fn record_presented_generation(&mut self, generation: u64) {
+        self.presented_generation = generation;
+        self.increment(Counter::ImageSelectionPresented);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn presented_generation(&self) -> u64 {
+        self.presented_generation
+    }
+    #[cfg(test)]
+    pub(crate) fn counter(&self, counter: Counter) -> u64 {
+        self.counters[counter.index()]
+    }
     pub(crate) fn record(&mut self, metric: Metric, duration: Duration) {
         self.samples[metric.index()].record(duration);
     }
@@ -350,6 +425,13 @@ impl Metrics {
             }
         }
         report.push_str("Cache counters and current resident bytes:\n");
+        let _ = std::fmt::Write::write_fmt(
+            &mut report,
+            format_args!(
+                "Latest target generation={}; last successful image Present generation={}\n",
+                self.target_generation, self.presented_generation
+            ),
+        );
         for counter in Counter::ALL {
             let _ = std::fmt::Write::write_fmt(
                 &mut report,

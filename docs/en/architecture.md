@@ -1,6 +1,6 @@
 [English](architecture.md) | [简体中文](../zh-CN/architecture.md)
 
-<!-- doc-id: architecture; revision: 5; status: implementation-review -->
+<!-- doc-id: architecture; revision: 6; status: implementation-review -->
 
 # Architecture scope and Stage A review
 
@@ -66,7 +66,9 @@ is shared with the UI thread, and this code does not justify arbitrary `unsafe i
 The UI thread owns the current `Generation` and directory selection. A single bounded MTA worker owns
 WIC, the CPU LRU, directory scanning, and adjacent preloads. It sends owned BGRA8 buffers through a
 channel; no WIC COM interface crosses threads. The render thread owns the D3D11 texture LRU and performs
-texture creation and drawing. See [Stage B implementation and limits](stage-b.md).
+texture creation and drawing. A separate bounded identity thread validates source metadata before a
+render-thread GPU-cache probe; hits bypass the WIC worker, and misses schedule decode. UI, identity,
+decode, and render stages use the same selection Generation to reject obsolete work. See [Stage B implementation and limits](stage-b.md).
 
 The [D3D11 thread rules](https://learn.microsoft.com/en-us/windows/win32/direct3d11/overviews-direct3d-11-render-multi-thread-intro)
 and [Present contract](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-present)
@@ -87,7 +89,7 @@ their latency benefit must be measured on an interactive target system.
 | Stage | Implement when that stage is approved | Reserve or defer |
 |---|---|---|
 | A | Win32 lifecycle, one render owner, latest snapshot, simple sequence/Device Epoch if needed, embedded test texture, QPC events, resize/shutdown/recovery tests. | No file navigation, decoder pool, CPU/GPU image cache, IPC, Job Object, Color Cache, or Tile scheduler. |
-| B | Local implementation covers WIC JPEG/PNG/BMP decoding, checked pixel layout, source identity, one bounded worker, CPU/GPU LRU caches, directory navigation, adjacent preloads, and stale-generation rejection. GUI acceptance is pending. | Keep one worker and a two-image preload window; defer a general priority framework, panning, and pooled Texture allocator until measured. |
+| B | Local implementation covers WIC JPEG/PNG/BMP decoding, checked pixel layout, source identity, one WIC worker plus one source-validation thread, CPU/GPU LRU caches, directory navigation, adjacent preloads, and stale-generation rejection. Basic GUI acceptance passed; rapid-navigation optimization needs renewed owner verification. | Keep one WIC worker, bounded source validation, and a two-image preload window; defer a general priority framework, panning, and pooled Texture allocator until measured. |
 | C | Sequential large-PNG prototype, preview, disk Tile Cache, Tile Pyramid, visible-region rendering and resource-failure tests. | Evaluate worker IPC and Job Object isolation after the row-decoding and cancellation prototype; no stable plugin or IPC ABI yet. |
 | D | Per-format capabilities, animation, basic ICC, configurable input and comic reading. | Add Color Key/derived caches only with a tested color path; HDR and complex filters remain later proposals. |
 

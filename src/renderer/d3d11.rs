@@ -44,7 +44,7 @@ use windows::{
 };
 
 use crate::{
-    app::{RenderSnapshot, RequestOrigin, Shared, ViewMode},
+    app::{GpuProbeReply, RenderSnapshot, RequestOrigin, Shared, ViewMode},
     diagnostics::Metric,
     image::{DecodedImage, ImageBudget, PixelFormat, SourceIdentity},
 };
@@ -81,10 +81,12 @@ struct Renderer {
     blend: ID3D11BlendState,
     rasterizer: ID3D11RasterizerState,
     textures: [ID3D11ShaderResourceView; 2],
-    image_cache: HashMap<SourceIdentity, (ID3D11ShaderResourceView, u64)>,
+    image_cache: HashMap<SourceIdentity, (ID3D11ShaderResourceView, u64, u32, u32)>,
     image_lru: VecDeque<SourceIdentity>,
     pending_preloads: VecDeque<Arc<DecodedImage>>,
     current_image: Option<SourceIdentity>,
+    selection_generation: Option<u64>,
+    presented_generation: Option<u64>,
     current_dimensions: (u32, u32),
     gpu_cache_bytes: u64,
     gpu_cache_budget: u64,
@@ -92,7 +94,7 @@ struct Renderer {
     height: u32,
     first_present_reported: bool,
     first_image_present_reported: bool,
-    pending_selection_present: Option<(Instant, bool)>,
+    pending_selection_present: Option<(Instant, bool, bool)>,
     render_thread_started: Instant,
 }
 
@@ -188,6 +190,8 @@ impl Renderer {
             image_lru: VecDeque::new(),
             pending_preloads: VecDeque::new(),
             current_image: None,
+            selection_generation: None,
+            presented_generation: None,
             current_dimensions: (TEST_TEXTURE_SIZE, TEST_TEXTURE_SIZE),
             gpu_cache_bytes: 0,
             gpu_cache_budget: ImageBudget::default().gpu_cache_bytes,
@@ -217,6 +221,14 @@ impl Renderer {
                 if work.shutdown {
                     break;
                 }
+                #[cfg(test)]
+                if work.clear_gpu_cache {
+                    let budget = self.gpu_cache_budget;
+                    self.gpu_cache_budget = 0;
+                    self.evict_gpu_cache();
+                    self.gpu_cache_budget = budget;
+                    shared.set_gpu_cache_bytes(self.gpu_cache_bytes);
+                }
                 if work.cancel_preloads {
                     self.pending_preloads.clear();
                 }
@@ -234,14 +246,19 @@ impl Renderer {
                     };
                     shared.record(metric, delay);
                 }
-                if let Some(image) = work.image {
+                if let Some((generation, image, cpu_cache_hit)) = work.image {
+                    if !shared.is_image_generation_current(generation) {
+                        continue;
+                    }
                     // 当前请求变更后，旧选择的 GPU 预加载不再有价值。
                     self.pending_preloads.clear();
                     self.pending_selection_present = Some((
                         work.snapshot.requested_at,
                         self.image_cache.contains_key(&image.source),
+                        cpu_cache_hit,
                     ));
                     self.upload_image(image, true, shared)?;
+                    self.selection_generation = Some(generation);
                 }
                 for image in work.preloads {
                     if !self
@@ -256,6 +273,36 @@ impl Renderer {
                     }
                 }
                 snapshot = work.snapshot;
+                let mut probe_hit = false;
+                if let Some(selection) = work.gpu_probe {
+                    if shared.is_image_generation_current(selection.generation) {
+                        if let Some((_, _, width, height)) =
+                            self.image_cache.get(&selection.identity)
+                        {
+                            let dimensions = (*width, *height);
+                            self.current_image = Some(selection.identity.clone());
+                            self.current_dimensions = dimensions;
+                            self.touch_gpu(&selection.identity);
+                            shared.increment(crate::diagnostics::Counter::GpuCacheHit);
+                            shared.increment(crate::diagnostics::Counter::GpuCurrentHit);
+                            self.pending_selection_present =
+                                Some((selection.requested_at, true, false));
+                            let delay = selection.requested_at.elapsed();
+                            shared.record(Metric::RequestToRender, delay);
+                            shared.record(Metric::ImageRequestToRender, delay);
+                            self.selection_generation = Some(selection.generation);
+                            snapshot.requested_at = selection.requested_at;
+                            snapshot.request_origin = RequestOrigin::ImageReady;
+                            shared.publish_gpu_probe_reply(GpuProbeReply::Hit {
+                                generation: selection.generation,
+                                path: selection.path,
+                            });
+                            probe_hit = true;
+                        } else {
+                            shared.publish_gpu_probe_reply(GpuProbeReply::Miss(selection));
+                        }
+                    }
+                }
 
                 if snapshot.width > 0
                     && snapshot.height > 0
@@ -263,8 +310,9 @@ impl Renderer {
                 {
                     self.resize_resources(snapshot.width, snapshot.height, true, shared)?;
                 }
-                needs_render =
-                    snapshot.width > 0 && snapshot.height > 0 && (needs_render || work.redraw);
+                needs_render = snapshot.width > 0
+                    && snapshot.height > 0
+                    && (needs_render || work.redraw || probe_hit);
                 if !needs_render {
                     self.upload_one_preload(shared)?;
                 }
@@ -272,7 +320,15 @@ impl Renderer {
             }
 
             if needs_render {
-                self.draw(&snapshot, shared)?;
+                // 上传或等待帧就绪期间 UI 可能发布新选择；不为已经过期、尚未提交的选择 Present。
+                // 已经提交给 DXGI 的帧无法撤回，最终最新选择仍由同一渲染线程顺序提交。
+                let stale_candidate = self.pending_selection_present.is_some()
+                    && self
+                        .selection_generation
+                        .is_some_and(|generation| !shared.is_image_generation_current(generation));
+                if !stale_candidate {
+                    self.draw(&snapshot, shared)?;
+                }
                 needs_render = false;
             }
             self.upload_one_preload(shared)?;
@@ -384,7 +440,7 @@ impl Renderer {
             [0.015, 0.025, 0.04, 1.0]
         };
         let (srv, image_width, image_height) = if let Some(key) = self.current_image.as_ref() {
-            let (srv, _) = self
+            let (srv, _, _, _) = self
                 .image_cache
                 .get(key)
                 .context("当前图片纹理不在 GPU 缓存中")?;
@@ -457,6 +513,13 @@ impl Renderer {
             shared.record(Metric::FirstPresent, self.render_thread_started.elapsed());
         }
         shared.record(Metric::Present, present_started.elapsed());
+        if let Some(generation) = self
+            .selection_generation
+            .filter(|generation| Some(*generation) != self.presented_generation)
+        {
+            shared.record_presented_generation(generation);
+            self.presented_generation = Some(generation);
+        }
         if self.current_image.is_some() && !self.first_image_present_reported {
             shared.record(Metric::ImageFirstPresent, snapshot.requested_at.elapsed());
             self.first_image_present_reported = true;
@@ -467,7 +530,12 @@ impl Renderer {
             );
             self.first_present_reported = true;
         }
-        if let Some((requested_at, gpu_cache_hit)) = self.pending_selection_present.take() {
+        if let Some((requested_at, gpu_cache_hit, cpu_cache_hit)) =
+            self.pending_selection_present.take()
+        {
+            if cpu_cache_hit {
+                shared.record(Metric::CurrentCpuHitToPresent, requested_at.elapsed());
+            }
             shared.record(
                 if gpu_cache_hit {
                     Metric::CurrentGpuHitToPresent
@@ -550,7 +618,8 @@ impl Renderer {
         .context("创建图片 Shader Resource View 失败")?;
         let view = view.context("D3D11 未返回图片 Shader Resource View")?;
         let key = image.source.clone();
-        self.image_cache.insert(key.clone(), (view, byte_cost));
+        self.image_cache
+            .insert(key.clone(), (view, byte_cost, image.width, image.height));
         self.image_lru.push_back(key.clone());
         self.gpu_cache_bytes = self.gpu_cache_bytes.saturating_add(byte_cost);
         if current {
@@ -594,7 +663,7 @@ impl Renderer {
                 continue;
             }
             skipped_current = false;
-            if let Some((_, cost)) = self.image_cache.remove(&key) {
+            if let Some((_, cost, _, _)) = self.image_cache.remove(&key) {
                 self.gpu_cache_bytes = self.gpu_cache_bytes.saturating_sub(cost);
             }
         }
