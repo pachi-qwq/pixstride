@@ -1,6 +1,7 @@
 //! 用独立的轻量身份校验线程和单个有界 WIC MTA 线程处理图片选择、目录扫描与预加载。
 
 use std::{
+    cell::RefCell,
     collections::VecDeque,
     path::{Path, PathBuf},
     sync::{
@@ -19,12 +20,12 @@ use windows::Win32::{
 
 use crate::{
     app::{ResolvedSelection, Shared},
-    diagnostics::{Counter, Metric},
+    diagnostics::{Counter, ImageTaskTrace, Metric},
 };
 
 use super::{
-    ComMta, DecodedImage, ImageBudget, SourceIdentity, cache::CpuCache, decode_wic,
-    navigation::ImageDirectory,
+    ComMta, DecodeCancelled, DecodedImage, ImageBudget, SourceIdentity, cache::CpuCache,
+    check_decode_current, decode_wic, navigation::ImageDirectory,
 };
 
 const PRELOAD_IDLE_DELAY: Duration = Duration::from_millis(120);
@@ -61,6 +62,7 @@ struct DecodeJob {
     requested_at: Instant,
     queued_at: Instant,
     queued_behind_preload: bool,
+    queued_behind_current: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -124,6 +126,7 @@ struct WorkState {
     generation: u64,
     selection_pending: bool,
     preload_running: bool,
+    active_current_generation: Option<u64>,
     current: Option<DecodeJob>,
     scan: Option<ScanJob>,
     preloads: VecDeque<DecodeJob>,
@@ -156,6 +159,7 @@ impl WorkerControl {
                 return Some(Work::TestGate(started, release));
             }
             if let Some(job) = state.current.take() {
+                state.active_current_generation = Some(job.generation);
                 return Some(Work::Current(job));
             }
             // 身份校验和 GPU 探测尚未结束时，保留 Worker 给当前选择，避免先进入大目录扫描或旧预加载。
@@ -453,6 +457,7 @@ impl ImageLoader {
             requested_at: selection.requested_at,
             queued_at: Instant::now(),
             queued_behind_preload: state.preload_running,
+            queued_behind_current: state.active_current_generation,
         });
         if state
             .scan
@@ -471,6 +476,7 @@ impl ImageLoader {
                 requested_at: selection.requested_at,
                 queued_at: Instant::now(),
                 queued_behind_preload: false,
+                queued_behind_current: None,
             })
             .collect();
         state.preload_not_before =
@@ -493,6 +499,7 @@ impl ImageLoader {
                 requested_at: Instant::now(),
                 queued_at: Instant::now(),
                 queued_behind_preload: false,
+                queued_behind_current: None,
             })
             .collect();
         state.preload_not_before =
@@ -578,19 +585,7 @@ fn worker_loop(
                 let _ = release.recv_timeout(Duration::from_secs(5));
             }
             Work::Current(job) => {
-                let service_started = Instant::now();
-                shared.record(
-                    Metric::ImageWorkerQueueWait,
-                    service_started.saturating_duration_since(job.queued_at),
-                );
-                if job.queued_behind_preload {
-                    shared.record(
-                        Metric::QueueBehindPreload,
-                        service_started.saturating_duration_since(job.queued_at),
-                    );
-                }
-                let result = load_with_cache(&mut cache, &job.path, budget, shared, true);
-                shared.record(Metric::ImageWorkerService, service_started.elapsed());
+                let result = service_image_job(&mut cache, &job, control, budget, shared, true);
                 shared.set_cpu_cache_bytes(cache.byte_cost());
                 shared.record(Metric::ImageRequestToWorker, job.requested_at.elapsed());
                 if control.is_current(job.generation) {
@@ -604,6 +599,7 @@ fn worker_loop(
                         },
                     );
                 }
+                control.lock().active_current_generation = None;
             }
             Work::Scan(job) => {
                 if !control.is_current(job.generation) {
@@ -629,7 +625,7 @@ fn worker_loop(
                     continue;
                 }
                 let preload_started = Instant::now();
-                match load_with_cache(&mut cache, &job.path, budget, shared, false) {
+                match service_image_job(&mut cache, &job, control, budget, shared, false) {
                     Ok((image, _)) if control.is_current(job.generation) => {
                         shared.increment(Counter::PreloadDecoded);
                         send(
@@ -650,6 +646,83 @@ fn worker_loop(
         }
     }
     shared.set_cpu_cache_bytes(0);
+}
+
+/// 为同一个请求关联所有分项。队列来源使用同一选择 Generation，不增加新的版本域。
+fn service_image_job(
+    cache: &mut CpuCache,
+    job: &DecodeJob,
+    control: &WorkerControl,
+    budget: ImageBudget,
+    shared: &Shared,
+    current: bool,
+) -> Result<(Arc<DecodedImage>, bool)> {
+    let started = Instant::now();
+    let queue = started.saturating_duration_since(job.queued_at);
+    if current {
+        shared.record(Metric::ImageWorkerQueueWait, queue);
+        if job.queued_behind_preload {
+            shared.record(Metric::QueueBehindPreload, queue);
+        }
+        if job.queued_behind_current.is_some() {
+            shared.record(Metric::QueueBehindCurrent, queue);
+        }
+    }
+    let stages = RefCell::new(Vec::with_capacity(16));
+    let result = load_with_cache(
+        cache,
+        &job.path,
+        budget,
+        shared,
+        current,
+        || control.is_current(job.generation),
+        |metric, elapsed| {
+            shared.record(metric, elapsed);
+            stages.borrow_mut().push((metric, elapsed));
+        },
+    );
+    let service = started.elapsed();
+    if current {
+        shared.record(Metric::ImageWorkerService, service);
+    }
+    let cancelled = result
+        .as_ref()
+        .err()
+        .is_some_and(|error| error.is::<DecodeCancelled>());
+    if cancelled {
+        shared.increment(Counter::DecodeCancelled);
+    }
+    if (current && queue >= Duration::from_millis(100))
+        || service >= Duration::from_millis(100)
+        || (result.is_err() && !cancelled)
+    {
+        shared.record_image_task(ImageTaskTrace {
+            generation: job.generation,
+            file_name: job
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            preload: !current,
+            queued_behind_current: job.queued_behind_current,
+            queued_behind_preload: job.queued_behind_preload,
+            queue,
+            service,
+            still_current: control.is_current(job.generation),
+            outcome: match &result {
+                Ok((_, true)) => "cpu-hit".to_owned(),
+                Ok((_, false)) => "decoded".to_owned(),
+                Err(_) if cancelled => "cancelled-stale".to_owned(),
+                Err(error) => format!("error: {}", error.root_cause())
+                    .chars()
+                    .take(512)
+                    .collect(),
+            },
+            stages: stages.into_inner(),
+        });
+    }
+    result
 }
 
 fn identity_loop(
@@ -689,16 +762,20 @@ fn load_with_cache(
     budget: ImageBudget,
     shared: &Shared,
     current: bool,
+    is_current: impl Fn() -> bool,
+    record: impl Fn(Metric, Duration),
 ) -> Result<(Arc<DecodedImage>, bool)> {
+    check_decode_current(&is_current)?;
     let identity_started = Instant::now();
     let identity = match SourceIdentity::read(path) {
         Ok(identity) => identity,
         Err(error) => {
-            shared.record(Metric::SourceIdentityRead, identity_started.elapsed());
+            record(Metric::SourceIdentityRead, identity_started.elapsed());
             return Err(error);
         }
     };
-    shared.record(Metric::SourceIdentityRead, identity_started.elapsed());
+    record(Metric::SourceIdentityRead, identity_started.elapsed());
+    check_decode_current(&is_current)?;
     let lookup_started = Instant::now();
     if let Some(image) = cache.get(&identity) {
         shared.increment(Counter::CpuCacheHit);
@@ -707,7 +784,7 @@ fn load_with_cache(
         } else {
             Counter::CpuPreloadHit
         });
-        shared.record(Metric::CpuCacheLookup, lookup_started.elapsed());
+        record(Metric::CpuCacheLookup, lookup_started.elapsed());
         return Ok((image, true));
     }
     shared.increment(Counter::CpuCacheMiss);
@@ -716,12 +793,10 @@ fn load_with_cache(
     } else {
         Counter::CpuPreloadMiss
     });
-    shared.record(Metric::CpuCacheLookup, lookup_started.elapsed());
+    record(Metric::CpuCacheLookup, lookup_started.elapsed());
     let decode_started = Instant::now();
-    let result = decode_wic(path, &identity, budget, |metric, elapsed| {
-        shared.record(metric, elapsed)
-    });
-    shared.record(
+    let result = decode_wic(path, &identity, budget, &record, is_current);
+    record(
         if current {
             Metric::CurrentWicTotal
         } else {
@@ -729,7 +804,11 @@ fn load_with_cache(
         },
         decode_started.elapsed(),
     );
-    if result.is_err() {
+    if result
+        .as_ref()
+        .err()
+        .is_some_and(|error| !error.is::<DecodeCancelled>())
+    {
         shared.increment(Counter::ImageDecodeFailed);
     }
     let decoded = result?;
@@ -769,6 +848,7 @@ mod tests {
                 requested_at: Instant::now(),
                 queued_at: Instant::now(),
                 queued_behind_preload: false,
+                queued_behind_current: None,
             });
             state.preloads.push_back(super::DecodeJob {
                 generation: 1,
@@ -776,6 +856,7 @@ mod tests {
                 requested_at: Instant::now(),
                 queued_at: Instant::now(),
                 queued_behind_preload: false,
+                queued_behind_current: None,
             });
             state.generation = 2;
             state.current = Some(super::DecodeJob {
@@ -784,6 +865,7 @@ mod tests {
                 requested_at: Instant::now(),
                 queued_at: Instant::now(),
                 queued_behind_preload: false,
+                queued_behind_current: None,
             });
             state.preloads.clear();
         }
@@ -808,6 +890,7 @@ mod tests {
                 requested_at: Instant::now(),
                 queued_at: Instant::now(),
                 queued_behind_preload: false,
+                queued_behind_current: None,
             });
         }
 
@@ -822,6 +905,7 @@ mod tests {
                 requested_at: Instant::now(),
                 queued_at: Instant::now(),
                 queued_behind_preload: false,
+                queued_behind_current: None,
             });
             state.preloads.clear();
         }
@@ -845,6 +929,7 @@ mod tests {
                 requested_at: Instant::now(),
                 queued_at: Instant::now(),
                 queued_behind_preload: false,
+                queued_behind_current: None,
             });
             state.preloads.push_back(super::DecodeJob {
                 generation: 3,
@@ -852,6 +937,7 @@ mod tests {
                 requested_at: Instant::now(),
                 queued_at: Instant::now(),
                 queued_behind_preload: false,
+                queued_behind_current: None,
             });
             state.preload_not_before = Some(Instant::now() + Duration::from_secs(5));
         }

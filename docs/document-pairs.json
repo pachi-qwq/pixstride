@@ -180,7 +180,7 @@
       "id": "stage-b",
       "en": "docs/en/stage-b.md",
       "zh-CN": "docs/zh-CN/stage-b.md",
-      "revision": 5,
+      "revision": 6,
       "shared_literals": [
         "WIC",
         "JPEG",

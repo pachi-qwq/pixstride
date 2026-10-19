@@ -17,7 +17,8 @@ use windows::{
                 DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, IDC_ARROW, LoadCursorW,
                 RegisterClassW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
                 ShowWindow, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN,
-                WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                WM_KEYUP, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSW,
+                WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -133,6 +134,13 @@ unsafe extern "system" fn window_proc(
             context
                 .shared
                 .record(Metric::InputHandling, input_started.elapsed());
+            LRESULT(0)
+        }
+        WM_KEYUP
+            if !context.close_started
+                && matches!(wparam.0 as u16, key if key == VK_LEFT.0 || key == VK_RIGHT.0) =>
+        {
+            context.shared.record_navigation_release();
             LRESULT(0)
         }
         WM_DPICHANGED if !context.close_started => {

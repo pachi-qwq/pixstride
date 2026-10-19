@@ -1,6 +1,6 @@
 [English](stage-b.md) | [简体中文](../zh-CN/stage-b.md)
 
-<!-- doc-id: stage-b; revision: 5; status: draft-pr-review -->
+<!-- doc-id: stage-b; revision: 6; status: draft-pr-review -->
 
 # Stage B: image browsing core
 
@@ -77,6 +77,37 @@ than opening a modal message box. Navigation can continue. Over-budget images ar
 rejected; this change does not raise either cache budget or the per-image limit.
 
 ## Diagnostics and limits
+
+The owner's subsequent run on `89bb029` verified fast individual presses but still observed pauses
+during key repeat and a delayed final update after releasing the key. The 56 GPU-hit samples were
+3.810 ms P50, 5.194 ms P95, and 5.375 ms maximum. The 24 worker requests had 132.920 ms queue-wait
+P95 and an 839.686 ms maximum; service P95 was 365.662 ms, maximum 1.273 s. The combined WIC-open
+stage reached 1.270 s, while `CopyPixels` reached 196.640 ms. The active-preload queue bucket contained
+one 23.270 ms sample, so these aggregates do not support blaming preloading for the longest wait.
+The final target and submitted Generation were both 125. A delayed final update may therefore be
+the latest valid selection completing, rather than a replay of queued selections; the aggregates do
+not correlate it with the reported key-release instant.
+
+The follow-up keeps the same threads and budgets. It checks selection validity between WIC stages,
+including after opening and before allocation/`CopyPixels`. An obsolete task returns a distinct
+cancellation result instead of continuing avoidable work; it is not counted as a corrupt-file error.
+A synchronous WIC call already in progress is still non-preemptible. This change cannot guarantee
+continuous frame updates during uncached key repeat or eliminate a blocked open.
+
+WIC open now has Factory creation, `CreateDecoderFromFilename`, and `GetFrame`/EXIF submetrics.
+The exit report retains at most 16 slow/error task records, with filename only, selection Generation,
+current/preload role, queue/service times, the active current Generation observed at enqueue, outcome,
+and that task's measured stages. The threshold is 100 ms for current-request queue wait or any service;
+actual errors are also retained. Intentional preload idle delay alone does not qualify. Stage-boundary
+cancellations have a separate counter. These records are collected in memory and printed only on exit;
+they are diagnostic evidence for the next real-directory run, not a claim that the long tail is fixed.
+
+On a navigation `WM_KEYUP`, the UI records that instant's target Generation. The report distinguishes
+an already-presented target, one presented after release, one still waiting, and one superseded by later
+input. The release-to-`Present` distribution contains only targets unfinished at release that later
+complete without being superseded. This does not cancel the final target on key release or change the
+navigation rate; it distinguishes delayed completion from subsequent navigation, using application
+events rather than display timing.
 
 On exit, the bounded timing collector reports directory scan, WIC open, converter setup,
 `CopyPixels`, total WIC processing including failed paths, texture upload, render-thread request delay, first image

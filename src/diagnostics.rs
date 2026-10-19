@@ -1,8 +1,34 @@
 //! 收集 Stage A 的低开销计时样本，并在程序退出时汇总。
 
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 const MAX_SAMPLES_PER_METRIC: usize = 4096;
+const MAX_SLOW_IMAGE_TASKS: usize = 16;
+
+/// 最多保留 16 个慢请求或错误的关联记录，只在退出时输出；不在解码热路径同步写日志。
+#[derive(Default)]
+pub(crate) struct ImageTaskTrace {
+    pub(crate) generation: u64,
+    pub(crate) file_name: String,
+    pub(crate) preload: bool,
+    pub(crate) queued_behind_current: Option<u64>,
+    pub(crate) queued_behind_preload: bool,
+    pub(crate) queue: Duration,
+    pub(crate) service: Duration,
+    pub(crate) still_current: bool,
+    pub(crate) outcome: String,
+    pub(crate) stages: Vec<(Metric, Duration)>,
+}
+
+struct NavigationRelease {
+    generation: u64,
+    at: Instant,
+    status: &'static str,
+    delay: Option<Duration>,
+}
 
 /// 可单独统计的 Stage A 计时边界。
 #[derive(Clone, Copy, Debug)]
@@ -50,6 +76,11 @@ pub(crate) enum Metric {
     CurrentWicTotal,
     PreloadWicTotal,
     CurrentCpuHitToPresent,
+    QueueBehindCurrent,
+    WicFactoryCreation,
+    WicDecoderOpen,
+    WicFrameMetadata,
+    KeyReleaseToPresent,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -71,10 +102,11 @@ pub(crate) enum Counter {
     ImageSelectionPresented,
     ImageDecodeFailed,
     ImageLoadFailed,
+    DecodeCancelled,
 }
 
 impl Counter {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 18] = [
         Self::CpuCacheHit,
         Self::CpuCacheMiss,
         Self::GpuCacheHit,
@@ -92,6 +124,7 @@ impl Counter {
         Self::ImageSelectionPresented,
         Self::ImageDecodeFailed,
         Self::ImageLoadFailed,
+        Self::DecodeCancelled,
     ];
 
     fn index(self) -> usize {
@@ -113,6 +146,7 @@ impl Counter {
             Self::ImageSelectionPresented => 14,
             Self::ImageDecodeFailed => 15,
             Self::ImageLoadFailed => 16,
+            Self::DecodeCancelled => 17,
         }
     }
 
@@ -135,12 +169,13 @@ impl Counter {
             Self::ImageSelectionPresented => "图片选择 Present 成功返回次数",
             Self::ImageDecodeFailed => "WIC 解码失败（含预算拒绝）",
             Self::ImageLoadFailed => "当前图片读取或解码失败提示",
+            Self::DecodeCancelled => "阶段间提前取消的过期图片任务",
         }
     }
 }
 
 impl Metric {
-    const ALL: [Self; 43] = [
+    const ALL: [Self; 48] = [
         Self::Startup,
         Self::D3dInitialization,
         Self::DeviceCreation,
@@ -184,6 +219,11 @@ impl Metric {
         Self::CurrentWicTotal,
         Self::PreloadWicTotal,
         Self::CurrentCpuHitToPresent,
+        Self::QueueBehindCurrent,
+        Self::WicFactoryCreation,
+        Self::WicDecoderOpen,
+        Self::WicFrameMetadata,
+        Self::KeyReleaseToPresent,
     ];
 
     fn index(self) -> usize {
@@ -231,6 +271,11 @@ impl Metric {
             Self::CurrentWicTotal => 40,
             Self::PreloadWicTotal => 41,
             Self::CurrentCpuHitToPresent => 42,
+            Self::QueueBehindCurrent => 43,
+            Self::WicFactoryCreation => 44,
+            Self::WicDecoderOpen => 45,
+            Self::WicFrameMetadata => 46,
+            Self::KeyReleaseToPresent => 47,
         }
     }
 
@@ -281,6 +326,11 @@ impl Metric {
             Self::CurrentCpuHitToPresent => {
                 "当前 CPU 命中选择到 Present 返回（含 Worker 和 GPU 处理）"
             }
+            Self::QueueBehindCurrent => "入队时已有当前图片运行的队列等待",
+            Self::WicFactoryCreation => "WIC Imaging Factory 创建",
+            Self::WicDecoderOpen => "WIC CreateDecoderFromFilename",
+            Self::WicFrameMetadata => "WIC GetFrame 与 EXIF 元数据查询",
+            Self::KeyReleaseToPresent => "方向键松开到该目标 Present 返回（仅松键时未完成的目标）",
         }
     }
 }
@@ -334,13 +384,15 @@ struct Summary {
 /// 记录渲染与窗口生命周期中的计时样本。
 pub(crate) struct Metrics {
     samples: Vec<Samples>,
-    counters: [u64; 17],
+    counters: [u64; 18],
+    slow_image_tasks: VecDeque<ImageTaskTrace>,
     cpu_cache_bytes: u64,
     gpu_cache_bytes: u64,
     peak_cpu_cache_bytes: u64,
     peak_gpu_cache_bytes: u64,
     target_generation: u64,
     presented_generation: u64,
+    last_navigation_release: Option<NavigationRelease>,
 }
 
 impl Default for Metrics {
@@ -349,25 +401,65 @@ impl Default for Metrics {
             samples: std::iter::repeat_with(Samples::default)
                 .take(Metric::ALL.len())
                 .collect(),
-            counters: [0; 17],
+            counters: [0; 18],
+            slow_image_tasks: VecDeque::new(),
             cpu_cache_bytes: 0,
             gpu_cache_bytes: 0,
             peak_cpu_cache_bytes: 0,
             peak_gpu_cache_bytes: 0,
             target_generation: 0,
             presented_generation: 0,
+            last_navigation_release: None,
         }
     }
 }
 
 impl Metrics {
+    /// 记录方向键松开时的目标；已经提交的图片不混入后续等待分布。
+    pub(crate) fn record_navigation_release(&mut self, generation: u64, at: Instant) {
+        self.last_navigation_release = Some(NavigationRelease {
+            generation,
+            at,
+            delay: None,
+            status: if self.presented_generation == generation {
+                "already-presented"
+            } else {
+                "awaiting-present"
+            },
+        });
+    }
+    /// 只保留最近的有界慢请求记录；调用者先筛选慢任务或真实错误。
+    pub(crate) fn record_image_task(&mut self, trace: ImageTaskTrace) {
+        if self.slow_image_tasks.len() == MAX_SLOW_IMAGE_TASKS {
+            self.slow_image_tasks.pop_front();
+        }
+        self.slow_image_tasks.push_back(trace);
+    }
     pub(crate) fn set_target_generation(&mut self, generation: u64) {
         self.target_generation = generation;
+        if let Some(release) = self.last_navigation_release.as_mut() {
+            if release.generation != generation && release.status == "awaiting-present" {
+                release.status = "superseded-by-new-selection";
+            }
+        }
     }
 
     pub(crate) fn record_presented_generation(&mut self, generation: u64) {
         self.presented_generation = generation;
         self.increment(Counter::ImageSelectionPresented);
+        let delay = self.last_navigation_release.as_mut().and_then(|release| {
+            if release.generation == generation && release.status == "awaiting-present" {
+                let delay = release.at.elapsed();
+                release.delay = Some(delay);
+                release.status = "presented-after-release";
+                Some(delay)
+            } else {
+                None
+            }
+        });
+        if let Some(delay) = delay {
+            self.record(Metric::KeyReleaseToPresent, delay);
+        }
     }
 
     #[cfg(test)]
@@ -425,6 +517,17 @@ impl Metrics {
             }
         }
         report.push_str("Cache counters and current resident bytes:\n");
+        if let Some(release) = &self.last_navigation_release {
+            let _ = std::fmt::Write::write_fmt(
+                &mut report,
+                format_args!(
+                    "Last navigation key release: generation={} status={} delay_us={:?}\n",
+                    release.generation,
+                    release.status,
+                    release.delay.map(|delay| delay.as_micros())
+                ),
+            );
+        }
         let _ = std::fmt::Write::write_fmt(
             &mut report,
             format_args!(
@@ -475,6 +578,30 @@ impl Metrics {
         report.push_str(
             "Present duration is not display latency or input-to-photon latency. Use PresentMon/ETW or an external display measurement for displayed-frame timing.\n",
         );
+        report.push_str("Recent slow/error image tasks (at most 16; microseconds):\n");
+        for trace in &self.slow_image_tasks {
+            let _ = std::fmt::Write::write_fmt(
+                &mut report,
+                format_args!(
+                    "generation={} role={} file={:?} queue={} service={} behind_current={:?} behind_preload={} current_at_finish={} outcome={}\n",
+                    trace.generation,
+                    if trace.preload { "preload" } else { "current" },
+                    trace.file_name,
+                    trace.queue.as_micros(),
+                    trace.service.as_micros(),
+                    trace.queued_behind_current,
+                    trace.queued_behind_preload,
+                    trace.still_current,
+                    trace.outcome
+                ),
+            );
+            for (metric, duration) in &trace.stages {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut report,
+                    format_args!("  {}: {}\n", metric.name(), duration.as_micros()),
+                );
+            }
+        }
         report
     }
 }
@@ -537,5 +664,73 @@ mod tests {
         assert!(report.contains("GPU texture cache current=0 peak=0 bytes"));
         assert!(report.contains("CPU 缓存命中: 0"));
         assert!(report.contains("当前选择 CPU 缓存命中率: n=0"));
+    }
+
+    #[test]
+    fn slow_task_records_are_bounded_and_keep_generation_stage_and_outcome() {
+        let mut metrics = Metrics::default();
+        for generation in 0..=super::MAX_SLOW_IMAGE_TASKS as u64 {
+            metrics.record_image_task(super::ImageTaskTrace {
+                generation,
+                outcome: "cancelled-stale".to_owned(),
+                stages: vec![(Metric::WicOpen, Duration::from_millis(1200))],
+                ..Default::default()
+            });
+        }
+        assert_eq!(metrics.slow_image_tasks.len(), super::MAX_SLOW_IMAGE_TASKS);
+        let report = metrics.report();
+        assert!(!report.contains("generation=0 role="));
+        assert!(report.contains("generation=16 role="));
+        assert!(report.contains("outcome=cancelled-stale"));
+        assert!(report.contains("WIC 打开源文件和读取元数据: 1200000"));
+    }
+
+    #[test]
+    fn key_release_correlates_only_its_target_and_ignores_superseded_selections() {
+        let mut metrics = Metrics::default();
+        metrics.set_target_generation(5);
+        metrics
+            .record_navigation_release(5, std::time::Instant::now() - Duration::from_millis(100));
+        metrics.record_presented_generation(4);
+        assert!(
+            metrics
+                .report()
+                .contains("generation=5 status=awaiting-present")
+        );
+        metrics.record_presented_generation(5);
+        assert!(
+            metrics
+                .report()
+                .contains("generation=5 status=presented-after-release")
+        );
+        assert_eq!(
+            metrics.samples[Metric::KeyReleaseToPresent.index()]
+                .summary()
+                .unwrap()
+                .count,
+            1
+        );
+        metrics.record_navigation_release(5, std::time::Instant::now());
+        assert!(
+            metrics
+                .report()
+                .contains("generation=5 status=already-presented")
+        );
+        metrics.set_target_generation(6);
+        metrics.record_navigation_release(6, std::time::Instant::now());
+        metrics.set_target_generation(7);
+        metrics.record_presented_generation(6);
+        assert!(
+            metrics
+                .report()
+                .contains("generation=6 status=superseded-by-new-selection")
+        );
+        assert_eq!(
+            metrics.samples[Metric::KeyReleaseToPresent.index()]
+                .summary()
+                .unwrap()
+                .count,
+            1
+        );
     }
 }

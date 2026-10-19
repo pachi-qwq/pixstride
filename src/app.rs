@@ -31,7 +31,7 @@ use windows::core::w;
 const IMAGE_WORKER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 use crate::{
-    diagnostics::{Counter, Metric, Metrics},
+    diagnostics::{Counter, ImageTaskTrace, Metric, Metrics},
     image::{
         DecodedImage, ImageBudget, SourceIdentity,
         navigation::{ImageDirectory, absolute_path},
@@ -178,6 +178,15 @@ impl Shared {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_presented_generation(generation);
+    }
+
+    /// 在 UI 线程收到真实 WM_KEYUP 时记录该时刻的目标，关联松键后的最终更新。
+    pub(crate) fn record_navigation_release(&self) {
+        let generation = self.pending().image_generation;
+        self.metrics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_navigation_release(generation, Instant::now());
     }
 
     /// 短暂持锁检查候选结果是否仍属于 UI 的最新选择。
@@ -390,6 +399,14 @@ impl Shared {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record(metric, elapsed);
+    }
+
+    /// 保存一条有界请求诊断，退出时再输出，避免 Worker 在关键路径写控制台。
+    pub(crate) fn record_image_task(&self, trace: ImageTaskTrace) {
+        self.metrics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_image_task(trace);
     }
 
     pub(crate) fn increment(&self, counter: Counter) {
@@ -1491,6 +1508,21 @@ mod tests {
                 })?;
             }
             assert_eq!(count(Counter::CpuCurrentHit), cpu_hits_before + 100);
+            // 真实 WIC 失败也必须留下关联分项，且不能弹框阻止后续有效请求。
+            let failures_before = count(Counter::ImageLoadFailed);
+            std::fs::write(root.join("broken.jpg"), [0xff, 0xd8])?;
+            super::schedule_selection(&mut context, &loader, root.join("broken.jpg"));
+            pump(&mut context, &loader, hwnd, || {
+                count(Counter::ImageLoadFailed) > failures_before
+            })?;
+            let report = shared.metrics_report();
+            assert!(report.contains("file=\"broken.jpg\""));
+            assert!(report.contains("outcome=error:"));
+            super::schedule_selection(&mut context, &loader, root.join("0.bmp"));
+            let recovered_generation = context.navigation.generation;
+            pump(&mut context, &loader, hwnd, || {
+                shared.metrics.lock().unwrap().presented_generation() == recovered_generation
+            })?;
             Ok(())
         })();
         shared.request_shutdown();
