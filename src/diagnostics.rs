@@ -35,6 +35,8 @@ pub(crate) enum Metric {
     ImageFirstPresent,
     ImageDecodeTotal,
     PreloadDecode,
+    ImageWorkerQueueWait,
+    ImageWorkerService,
     ImageRequestToWorker,
     CpuCacheLookup,
     CurrentGpuHitToPresent,
@@ -113,7 +115,7 @@ impl Counter {
 }
 
 impl Metric {
-    const ALL: [Self; 32] = [
+    const ALL: [Self; 34] = [
         Self::Startup,
         Self::D3dInitialization,
         Self::DeviceCreation,
@@ -142,6 +144,8 @@ impl Metric {
         Self::ImageFirstPresent,
         Self::ImageDecodeTotal,
         Self::PreloadDecode,
+        Self::ImageWorkerQueueWait,
+        Self::ImageWorkerService,
         Self::ImageRequestToWorker,
         Self::CpuCacheLookup,
         Self::CurrentGpuHitToPresent,
@@ -178,10 +182,12 @@ impl Metric {
             Self::ImageFirstPresent => 25,
             Self::ImageDecodeTotal => 26,
             Self::PreloadDecode => 27,
-            Self::ImageRequestToWorker => 28,
-            Self::CpuCacheLookup => 29,
-            Self::CurrentGpuHitToPresent => 30,
-            Self::CurrentGpuMissToPresent => 31,
+            Self::ImageWorkerQueueWait => 28,
+            Self::ImageWorkerService => 29,
+            Self::ImageRequestToWorker => 30,
+            Self::CpuCacheLookup => 31,
+            Self::CurrentGpuHitToPresent => 32,
+            Self::CurrentGpuMissToPresent => 33,
         }
     }
 
@@ -215,6 +221,8 @@ impl Metric {
             Self::ImageFirstPresent => "首张图片 Present 调用返回",
             Self::ImageDecodeTotal => "WIC 完整打开与解码耗时（含内部工作）",
             Self::PreloadDecode => "相邻图片预加载耗时",
+            Self::ImageWorkerQueueWait => "当前图片请求在解码 Worker 队列中的等待时间",
+            Self::ImageWorkerService => "解码 Worker 处理当前图片请求耗时（含缓存查询和 WIC）",
             Self::ImageRequestToWorker => "当前图片请求到解码线程结果",
             Self::CpuCacheLookup => "文件身份检查与 CPU 缓存查询",
             Self::CurrentGpuHitToPresent => "当前 GPU 命中选择到 Present 返回",
@@ -270,14 +278,28 @@ struct Summary {
 }
 
 /// 记录渲染与窗口生命周期中的计时样本。
-#[derive(Default)]
 pub(crate) struct Metrics {
-    samples: [Samples; 32],
+    samples: Vec<Samples>,
     counters: [u64; 13],
     cpu_cache_bytes: u64,
     gpu_cache_bytes: u64,
     peak_cpu_cache_bytes: u64,
     peak_gpu_cache_bytes: u64,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            samples: std::iter::repeat_with(Samples::default)
+                .take(Metric::ALL.len())
+                .collect(),
+            counters: [0; 13],
+            cpu_cache_bytes: 0,
+            gpu_cache_bytes: 0,
+            peak_cpu_cache_bytes: 0,
+            peak_gpu_cache_bytes: 0,
+        }
+    }
 }
 
 impl Metrics {

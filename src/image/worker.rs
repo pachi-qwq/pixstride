@@ -354,7 +354,13 @@ fn worker_loop(
     while let Some(work) = control.next() {
         match work {
             Work::Current(job) => {
+                let service_started = Instant::now();
+                shared.record(
+                    Metric::ImageWorkerQueueWait,
+                    service_started.saturating_duration_since(job.requested_at),
+                );
                 let result = load_with_cache(&mut cache, &job.path, budget, shared, true);
+                shared.record(Metric::ImageWorkerService, service_started.elapsed());
                 shared.set_cpu_cache_bytes(cache.byte_cost());
                 shared.record(Metric::ImageRequestToWorker, job.requested_at.elapsed());
                 if control.is_current(job.generation) {

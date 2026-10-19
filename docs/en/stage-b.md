@@ -1,6 +1,6 @@
 [English](stage-b.md) | [简体中文](../zh-CN/stage-b.md)
 
-<!-- doc-id: stage-b; revision: 3; status: draft-pr-review -->
+<!-- doc-id: stage-b; revision: 4; status: draft-pr-review -->
 
 # Stage B: image browsing core
 
@@ -71,7 +71,9 @@ measure when photons reach the display.
 
 The current diagnostic build also reports current-selection and preload CPU/GPU hit and miss counts,
 source identity plus CPU-cache lookup time, current request-to-worker-result time, and separate GPU-hit
-and GPU-miss selection-to-`Present`-return distributions. Hit rates use successful cache lookups as
+and GPU-miss selection-to-`Present`-return distributions. It separately measures time waiting in the
+single WIC worker queue and time spent servicing a current request, including source checks, cache
+lookup, and any decode. Hit rates use successful cache lookups as
 their denominator; file identity, decode, or upload errors are reported separately and do not count as
 cache misses. A GPU hit still requires the worker result described above. The previous owner run
 reported aggregate CPU hits/misses
@@ -88,6 +90,19 @@ selection to `Present` return took 3.456 ms P50 and 4.305 ms P95. A GPU miss too
 177.570 ms P95. WIC full decode took 48.462 ms P50 and 212.795 ms P95; preload decode reached
 1.205 s maximum. The CPU and GPU cache-owned peak bytes were each about 511.5 MiB, close to their
 512 MiB budgets; these values do not represent total process RAM or actual driver VRAM use.
+
+A rapid key-repeat run later recorded 233 input events, 146 current worker results, and 87 image
+requests handled by the render thread. Current request-to-worker-result latency had a 207.604 ms P95
+and a 1.200 s P99 (1.232 s maximum). Current GPU-hit selection-to-`Present` latency had a 10.267 ms
+P95. The difference points to work before rendering, but this run did not separate worker queue delay
+from request processing. Pixstride coalesces pending selection requests and discards stale generations;
+it prioritizes the latest choice and does not promise to display every intermediate image during key
+repeat. The new queue-wait and worker-service metrics separate those intervals for the next run.
+
+One selected image was rejected before allocation because its estimated BGRA buffer was 394,516,200
+bytes (about 376 MiB), above the 256 MiB per-image CPU budget. This is an intentional Stage B resource
+limit, not a decryption or file-corruption error. Supporting larger decoded images requires a revised
+memory budget or the later large-image path; the current limit has not been raised.
 
 The long request-to-worker tail, compared with the shorter cache-lookup time, is consistent with the
 single worker being occupied by a synchronous WIC read or decode. These aggregate measurements do
