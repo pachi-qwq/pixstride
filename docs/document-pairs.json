@@ -205,6 +205,19 @@
         "348.118 ms",
         "248.678 ms"
       ]
+    },
+    {
+      "id": "stage-c",
+      "en": "docs/en/stage-c.md",
+      "zh-CN": "docs/zh-CN/stage-c.md",
+      "revision": 1,
+      "shared_literals": [
+        "png 0.18.1",
+        "64 MiB",
+        "4 MiB",
+        "10,022,912",
+        "2 GiB"
+      ]
     }
   ],
   "bilingual_templates": [
