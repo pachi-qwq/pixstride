@@ -1,12 +1,12 @@
 [English](architecture.md) | [简体中文](../zh-CN/architecture.md)
 
-<!-- doc-id: architecture; revision: 4; status: implementation-review -->
+<!-- doc-id: architecture; revision: 5; status: implementation-review -->
 
 # Architecture scope and Stage A review
 
 Pixstride targets Windows 10/11 x64 with Rust Stable, Win32/windows-rs, D3D11, and DXGI Flip Model
-presentation. Stage A now has a local implementation. The later image-decoding, navigation, and cache
-designs remain proposals; this page does not reproduce the early internal design drafts.
+presentation. Stages A and B have local implementations under review. Later formats, tiling, and other
+features remain proposals; this page does not reproduce the early internal design drafts.
 
 ## Stage A implementation
 
@@ -61,11 +61,19 @@ is shared with the UI thread, and this code does not justify arbitrary `unsafe i
 | Device Removed | A failed `Present` queries `GetDeviceRemovedReason` and exits safely. Device recreation and injected removal tests are deferred. |
 | Resource synchronization | The Immediate Context and Swap Chain stay on the render thread. No image cache or resource reuse pool exists in Stage A. |
 
+## Stage B image path
+
+The UI thread owns the current `Generation` and directory selection. A single bounded MTA worker owns
+WIC, the CPU LRU, directory scanning, and adjacent preloads. It sends owned BGRA8 buffers through a
+channel; no WIC COM interface crosses threads. The render thread owns the D3D11 texture LRU and performs
+texture creation and drawing. See [Stage B implementation and limits](stage-b.md).
+
 The [D3D11 thread rules](https://learn.microsoft.com/en-us/windows/win32/direct3d11/overviews-direct3d-11-render-multi-thread-intro)
 and [Present contract](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-present)
 constrain the implementation. Rust COM wrappers manage reference counts; they do not prove apartment,
-buffer, or lifetime preconditions. UI COM services use STA; decoder COM objects later stay with their
-MTA workers unless explicitly marshalled. No arbitrary `unsafe impl Send` is justified by this design.
+buffer, or lifetime preconditions. The native common dialog runs on the UI thread; WIC COM objects stay
+on the image worker's MTA and never cross to the UI or render thread. No arbitrary `unsafe impl Send`
+is justified by this design.
 
 The implementation uses a two-buffer Flip Discard Swap Chain, maximum frame latency 1, and on-demand
 rendering. It waits for frame readiness before drawing, including the first frame. Idle rendering
@@ -79,7 +87,7 @@ their latency benefit must be measured on an interactive target system.
 | Stage | Implement when that stage is approved | Reserve or defer |
 |---|---|---|
 | A | Win32 lifecycle, one render owner, latest snapshot, simple sequence/Device Epoch if needed, embedded test texture, QPC events, resize/shutdown/recovery tests. | No file navigation, decoder pool, CPU/GPU image cache, IPC, Job Object, Color Cache, or Tile scheduler. |
-| B | WIC ordinary-image evaluation, pixel/stride contract, source validity, bounded decoding, CPU/GPU cache, navigation and stale-result rejection. | Start with simple bounded queues and an in-flight map; defer a general priority framework and pooled Texture allocator until measured. |
+| B | Local implementation covers WIC JPEG/PNG/BMP decoding, checked pixel layout, source identity, one bounded worker, CPU/GPU LRU caches, directory navigation, adjacent preloads, and stale-generation rejection. GUI acceptance is pending. | Keep one worker and a two-image preload window; defer a general priority framework, panning, and pooled Texture allocator until measured. |
 | C | Sequential large-PNG prototype, preview, disk Tile Cache, Tile Pyramid, visible-region rendering and resource-failure tests. | Evaluate worker IPC and Job Object isolation after the row-decoding and cancellation prototype; no stable plugin or IPC ABI yet. |
 | D | Per-format capabilities, animation, basic ICC, configurable input and comic reading. | Add Color Key/derived caches only with a tested color path; HDR and complex filters remain later proposals. |
 

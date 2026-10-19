@@ -1,13 +1,13 @@
 [English](../en/development.md) | [简体中文](development.md)
 
-<!-- doc-id: development; revision: 8; status: stage-a-development -->
+<!-- doc-id: development; revision: 9; status: stage-b-development -->
 
 # 开发状态与检查
 
-仓库现在包含阶段 A 的单 Cargo Package Win32/D3D11 测试程序，以及公开文档和 Python 文档工具。
-图片解码、目录导航和公开发行版尚未实现。
+仓库包含一个 Win32/D3D11 查看器 Cargo Package。阶段 B 初步加入 JPEG、PNG、BMP 的 WIC 解码、目录导航和有界
+CPU/GPU 缓存。当前实现仍在本地评审，尚未完成真实图片的图形界面验收。项目尚无公开发行版。
 
-## 构建和运行阶段 A
+## 构建和运行阶段 B
 
 需要 Windows 10/11 x64、Rust Stable 和 `x86_64-pc-windows-msvc` Target、MSVC C++ Build Tools、
 Windows SDK 及 `fxc.exe`。构建脚本会将 HLSL 编译为 DXBC 并写入 Cargo 的 `OUT_DIR`；如果 SDK 自动发现失败，
@@ -22,8 +22,9 @@ cargo doc --no-deps --locked
 cargo run --release
 ```
 
-程序使用内存生成的测试纹理，不打开图片文件。Left 和 Right 切换棋盘格与渐变图。退出时，stdout 会输出计时汇总。
-Release 可执行文件为 `target/release/pixstride.exe`。
+不带参数时，程序显示阶段 A 生成的测试纹理。传入一个图片路径可打开 JPEG、PNG 或 BMP；按 `Ctrl+O` 打开原生文件对话框，
+按 Left/Right 浏览当前目录，按 `F` 选择 Fit，按 `1` 选择 1:1 像素。退出时，stdout 输出有界计时样本和缓存计数。
+Release 可执行文件为 `target/release/pixstride.exe`。功能范围和限制见[阶段 B](stage-b.md)。
 
 ## 当前可执行的检查
 
@@ -83,10 +84,10 @@ Device Lost 压力测试和长期稳定性仍未验证。仅通过编译不能�
 ## CI 与性能验证
 
 `Rust` 工作流使用 Windows Runner，Job 名为 `rust`。它通过锁文件运行格式检查、Clippy、测试、Release 构建和 Rustdoc。
-当前 Draft PR 提交上的 docs 和 Rust Job 均已通过。工作流权限为只读，不发布 Release。Ruleset 仍只要求 `docs` 检查；
+工作流权限为只读，不发布 Release。Ruleset 仍只要求 `docs` 检查；
 本轮没有修改仓库保护设置。
 
 程序使用 `std::time::Instant` 计时，每类最多保留最近 4096 个样本，分位数采用最近秩法。启动范围结束于
 `CreateWindowExW` 返回，不代表首帧已显示；`Present` 耗时也不代表屏显延迟。可用 PresentMon/ETW 观察已显示帧，
-用外部方法测量 Input-to-Photon。当前实现与限制见[阶段 A 验证](stage-a.md)、[架构](architecture.md)
+用外部方法测量 Input-to-Photon。当前实现与限制见[阶段 A 验证](stage-a.md)、[阶段 B](stage-b.md)、[架构](architecture.md)
 和[维护说明](maintenance.md)。

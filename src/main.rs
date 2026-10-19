@@ -4,6 +4,7 @@
 
 mod app;
 mod diagnostics;
+mod image;
 mod renderer;
 mod window;
 

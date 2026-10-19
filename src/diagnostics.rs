@@ -26,10 +26,58 @@ pub(crate) enum Metric {
     Present,
     Resize,
     Shutdown,
+    DirectoryScan,
+    WicOpen,
+    PixelFormatConversion,
+    WicCopyPixels,
+    ImageTextureUpload,
+    ImageRequestToRender,
+    ImageFirstPresent,
+    ImageDecodeTotal,
+    PreloadDecode,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Counter {
+    CpuCacheHit,
+    CpuCacheMiss,
+    GpuCacheHit,
+    GpuCacheMiss,
+    PreloadDecoded,
+}
+
+impl Counter {
+    const ALL: [Self; 5] = [
+        Self::CpuCacheHit,
+        Self::CpuCacheMiss,
+        Self::GpuCacheHit,
+        Self::GpuCacheMiss,
+        Self::PreloadDecoded,
+    ];
+
+    fn index(self) -> usize {
+        match self {
+            Self::CpuCacheHit => 0,
+            Self::CpuCacheMiss => 1,
+            Self::GpuCacheHit => 2,
+            Self::GpuCacheMiss => 3,
+            Self::PreloadDecoded => 4,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::CpuCacheHit => "CPU 缓存命中",
+            Self::CpuCacheMiss => "CPU 缓存未命中",
+            Self::GpuCacheHit => "GPU 缓存命中",
+            Self::GpuCacheMiss => "GPU 缓存未命中",
+            Self::PreloadDecoded => "预加载完成",
+        }
+    }
 }
 
 impl Metric {
-    const ALL: [Self; 19] = [
+    const ALL: [Self; 28] = [
         Self::Startup,
         Self::D3dInitialization,
         Self::DeviceCreation,
@@ -49,6 +97,15 @@ impl Metric {
         Self::Present,
         Self::Resize,
         Self::Shutdown,
+        Self::DirectoryScan,
+        Self::WicOpen,
+        Self::PixelFormatConversion,
+        Self::WicCopyPixels,
+        Self::ImageTextureUpload,
+        Self::ImageRequestToRender,
+        Self::ImageFirstPresent,
+        Self::ImageDecodeTotal,
+        Self::PreloadDecode,
     ];
 
     fn index(self) -> usize {
@@ -72,6 +129,15 @@ impl Metric {
             Self::Present => 16,
             Self::Resize => 17,
             Self::Shutdown => 18,
+            Self::DirectoryScan => 19,
+            Self::WicOpen => 20,
+            Self::PixelFormatConversion => 21,
+            Self::WicCopyPixels => 22,
+            Self::ImageTextureUpload => 23,
+            Self::ImageRequestToRender => 24,
+            Self::ImageFirstPresent => 25,
+            Self::ImageDecodeTotal => 26,
+            Self::PreloadDecode => 27,
         }
     }
 
@@ -96,6 +162,15 @@ impl Metric {
             Self::Present => "Present 调用耗时",
             Self::Resize => "Swap Chain Resize 处理",
             Self::Shutdown => "关闭请求到渲染线程退出",
+            Self::DirectoryScan => "图片目录扫描",
+            Self::WicOpen => "WIC 打开源文件和读取元数据",
+            Self::PixelFormatConversion => "WIC Pixel Format Converter 初始化",
+            Self::WicCopyPixels => "WIC CopyPixels 解码与格式转换",
+            Self::ImageTextureUpload => "D3D11 图片纹理创建与上传提交",
+            Self::ImageRequestToRender => "图片请求到渲染线程处理",
+            Self::ImageFirstPresent => "首张图片 Present 调用返回",
+            Self::ImageDecodeTotal => "WIC 完整打开与解码耗时（含内部工作）",
+            Self::PreloadDecode => "相邻图片预加载耗时",
         }
     }
 }
@@ -149,7 +224,12 @@ struct Summary {
 /// 记录渲染与窗口生命周期中的计时样本。
 #[derive(Default)]
 pub(crate) struct Metrics {
-    samples: [Samples; 19],
+    samples: [Samples; 28],
+    counters: [u64; 5],
+    cpu_cache_bytes: u64,
+    gpu_cache_bytes: u64,
+    peak_cpu_cache_bytes: u64,
+    peak_gpu_cache_bytes: u64,
 }
 
 impl Metrics {
@@ -157,9 +237,21 @@ impl Metrics {
         self.samples[metric.index()].record(duration);
     }
 
+    pub(crate) fn increment(&mut self, counter: Counter) {
+        self.counters[counter.index()] = self.counters[counter.index()].saturating_add(1);
+    }
+
+    pub(crate) fn set_cpu_cache_bytes(&mut self, cpu: u64) {
+        self.cpu_cache_bytes = cpu;
+        self.peak_cpu_cache_bytes = self.peak_cpu_cache_bytes.max(cpu);
+    }
+    pub(crate) fn set_gpu_cache_bytes(&mut self, gpu: u64) {
+        self.gpu_cache_bytes = gpu;
+        self.peak_gpu_cache_bytes = self.peak_gpu_cache_bytes.max(gpu);
+    }
+
     pub(crate) fn report(&self) -> String {
-        let mut report =
-            String::from("Pixstride Stage A timings (microseconds; app-side events)\n");
+        let mut report = String::from("Pixstride timings (microseconds; app-side events)\n");
         for metric in Metric::ALL {
             if let Some(summary) = self.samples[metric.index()].summary() {
                 let _ = std::fmt::Write::write_fmt(
@@ -187,6 +279,23 @@ impl Metrics {
                 );
             }
         }
+        report.push_str("Cache counters and current resident bytes:\n");
+        for counter in Counter::ALL {
+            let _ = std::fmt::Write::write_fmt(
+                &mut report,
+                format_args!("{}: {}\n", counter.name(), self.counters[counter.index()]),
+            );
+        }
+        let _ = std::fmt::Write::write_fmt(
+            &mut report,
+            format_args!(
+                "CPU image cache current={} peak={} bytes; GPU texture cache current={} peak={} bytes\n",
+                self.cpu_cache_bytes,
+                self.peak_cpu_cache_bytes,
+                self.gpu_cache_bytes,
+                self.peak_gpu_cache_bytes
+            ),
+        );
         report.push_str(
             "Present duration is not display latency or input-to-photon latency. Use PresentMon/ETW or an external display measurement for displayed-frame timing.\n",
         );
@@ -236,5 +345,7 @@ mod tests {
         assert!(report.contains("Present 调用耗时: n=0 (not measured)"));
         assert!(report.contains("DXGI Swap Chain 创建和帧延迟设置: n=0 (not measured)"));
         assert!(report.contains("not display latency"));
+        assert!(report.contains("GPU texture cache current=0 peak=0 bytes"));
+        assert!(report.contains("CPU 缓存命中: 0"));
     }
 }
