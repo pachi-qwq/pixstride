@@ -1489,6 +1489,51 @@ mod tests {
     }
 
     #[test]
+    fn navigation_reversal_and_opposite_key_release_keep_the_latest_direction() -> Result<()> {
+        use crate::image::{ImageBudget, navigation::ImageDirectory, worker::ImageLoader};
+        let (shared, _event) = test_shared()?;
+        let mut loader = ImageLoader::start(ImageBudget::default(), Arc::clone(&shared))?;
+        // 只验证状态转换；不消费身份线程返回的不存在文件错误，不需要创建 HWND 或 GPU。
+        let files: Vec<_> = (0..3)
+            .map(|index| std::path::PathBuf::from(format!("navigation-{index}.bmp")))
+            .collect();
+        let mut context = super::WindowContext {
+            shared: Arc::clone(&shared),
+            close_started: false,
+            action: None,
+            navigation: super::UiNavigation {
+                generation: 10,
+                current_path: Some(files[0].clone()),
+                directory: Some(ImageDirectory { files, selected: 0 }),
+                ..Default::default()
+            },
+        };
+        super::navigate(&mut context, &loader, 1);
+        super::navigate(&mut context, &loader, 1);
+        assert_eq!(context.navigation.generation, 12);
+        assert_eq!(context.navigation.progress_floor, Some(11));
+        assert!(shared.can_present_image_generation(11));
+        super::navigate(&mut context, &loader, -1);
+        assert_eq!(context.navigation.generation, 13);
+        assert_eq!(context.navigation.progress_floor, Some(13));
+        assert!(!shared.can_present_image_generation(12));
+        context.navigation_key_released(1, Instant::now());
+        assert!(
+            context.action.is_none(),
+            "先前方向的松键不得结束新的反向导航"
+        );
+        assert_eq!(context.navigation.direction, Some(-1));
+        context.navigation_key_released(-1, Instant::now());
+        assert!(shared.pending().progress_floor.is_none());
+        super::process_window_action(&mut context, &loader, Default::default());
+        assert!(context.navigation.direction.is_none());
+        assert!(shared.can_present_image_generation(13));
+        loader.request_stop();
+        loader.join()?;
+        Ok(())
+    }
+
+    #[test]
     fn budget_rejection_skips_repeated_wic_work_but_rechecks_a_changed_file() -> Result<()> {
         use crate::image::{
             ImageBudget, SourceIdentity,
@@ -1850,9 +1895,15 @@ mod tests {
                 shared.metrics.lock().unwrap().presented_generation() == target_generation
             })?;
             assert!(shared.is_image_generation_current(target_generation));
-            // 对已缓存文件追加尾部字节，长度变化必须使 CPU/GPU 的旧修订都失效。
-            use std::io::Write;
+            // 修改实际像素并追加一个尾字节；长度变化使修订确定更新，不依赖文件时间戳的精度。
+            use std::io::{Seek, SeekFrom, Write};
             let misses_before = count(Counter::CpuCacheMiss);
+            let mut changed_file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(root.join("1.bmp"))?;
+            changed_file.seek(SeekFrom::Start(54))?;
+            changed_file.write_all(&[123])?;
+            drop(changed_file);
             std::fs::OpenOptions::new()
                 .append(true)
                 .open(root.join("1.bmp"))?
@@ -1905,6 +1956,87 @@ mod tests {
             pump(&mut context, &loader, hwnd, || {
                 shared.metrics.lock().unwrap().presented_generation() == recovered_generation
             })?;
+            // 先保证两个目标均已上传，随后用确定的暂停点检验忙 Worker 不能阻挡新 GPU 命中。
+            for name in ["2.bmp", "0.bmp"] {
+                super::schedule_selection(&mut context, &loader, root.join(name));
+                let generation = context.navigation.generation;
+                pump(&mut context, &loader, hwnd, || {
+                    shared.metrics.lock().unwrap().presented_generation() == generation
+                })?;
+            }
+            for action in ["gpu-hit", "release", "reverse", "focus-loss", "open-file"] {
+                let slow_path = root.join(format!("slow-{action}.bmp"));
+                std::fs::copy(root.join("0.bmp"), &slow_path)?;
+                context.navigation.directory = Some(crate::image::navigation::ImageDirectory {
+                    files: vec![root.join("0.bmp"), slow_path.clone(), root.join("2.bmp")],
+                    selected: 1,
+                });
+                context.navigation.direction = Some(1);
+                context.navigation.progress_floor = Some(context.navigation.generation + 1);
+                let cancelled_before = count(Counter::DecodeCancelled);
+                let hits_before = count(Counter::GpuCurrentHit);
+                let (copy_started, copy_release) = loader.hold_copy_for_test();
+                super::schedule_selection(&mut context, &loader, slow_path);
+                let old_generation = context.navigation.generation;
+                pump(&mut context, &loader, hwnd, || {
+                    copy_started.try_recv().is_ok()
+                })?;
+                if action == "reverse" {
+                    super::navigate(&mut context, &loader, -1);
+                } else if action == "open-file" {
+                    super::request_open(&mut context, &loader, hwnd, root.join("2.bmp"))?;
+                    assert!(context.navigation.direction.is_none());
+                } else {
+                    super::schedule_selection(&mut context, &loader, root.join("0.bmp"));
+                    if action == "release" || action == "focus-loss" {
+                        use windows::Win32::UI::{
+                            Input::KeyboardAndMouse::VK_RIGHT,
+                            WindowsAndMessaging::{SendMessageW, WM_KEYUP, WM_KILLFOCUS},
+                        };
+                        let (message, key) = if action == "release" {
+                            (WM_KEYUP, usize::from(VK_RIGHT.0))
+                        } else {
+                            (WM_KILLFOCUS, 0)
+                        };
+                        // SAFETY: 在 HWND 所属测试线程同步注入无指针消息，WindowContext 活到 DestroyWindow 之后。
+                        unsafe {
+                            SendMessageW(
+                                hwnd,
+                                message,
+                                Some(windows::Win32::Foundation::WPARAM(key)),
+                                Some(Default::default()),
+                            );
+                        }
+                        assert!(!shared.can_present_image_generation(old_generation));
+                        super::process_window_action(&mut context, &loader, hwnd);
+                        assert!(context.navigation.direction.is_none());
+                    }
+                }
+                let final_generation = context.navigation.generation;
+                let final_path = context.navigation.current_path.clone();
+                pump(&mut context, &loader, hwnd, || {
+                    shared.metrics.lock().unwrap().presented_generation() == final_generation
+                })?;
+                assert!(
+                    count(Counter::GpuCurrentHit) > hits_before,
+                    "{action}: WIC 尚未放行，新 GPU 目标应已完成"
+                );
+                assert!(!shared.can_present_image_generation(old_generation));
+                copy_release.send(())?;
+                pump(&mut context, &loader, hwnd, || {
+                    count(Counter::DecodeCancelled) > cancelled_before
+                })?;
+                assert_eq!(context.navigation.current_path, final_path);
+                assert_eq!(
+                    shared.metrics.lock().unwrap().presented_generation(),
+                    final_generation,
+                    "{action}: 旧解码结束后不得覆盖新图片"
+                );
+                println!(
+                    "in-flight boundary passed: {action}, old={old_generation}, final={final_generation}"
+                );
+                super::stop_navigation(&mut context, &loader);
+            }
             Ok(())
         })();
         shared.request_shutdown();

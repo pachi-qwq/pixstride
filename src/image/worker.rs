@@ -138,6 +138,8 @@ struct WorkState {
     test_gate: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
     #[cfg(test)]
     test_copy_delay: Duration,
+    #[cfg(test)]
+    test_copy_gate: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
 }
 
 struct WorkerControl {
@@ -260,6 +262,15 @@ impl ImageLoader {
         let (release_tx, release_rx) = mpsc::channel();
         self.control.lock().test_gate = Some((started_tx, release_rx));
         self.control.changed.notify_one();
+        (started_rx, release_tx)
+    }
+
+    /// 仅用于回归：暂停已进入 CopyPixels 的当前请求，验证旧结果完成前发生的新 UI 意图。
+    #[cfg(test)]
+    pub(crate) fn hold_copy_for_test(&self) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::channel();
+        self.control.lock().test_copy_gate = Some((started_tx, release_rx));
         (started_rx, release_tx)
     }
     pub(crate) fn start(budget: ImageBudget, shared: Arc<Shared>) -> Result<Self> {
@@ -718,6 +729,13 @@ fn service_image_job(
             #[cfg(test)]
             if matches!(metric, Metric::WicCopyPixels) {
                 // 在调用返回后模拟不可抢占工作，不持有队列锁，也不改变正式程序的等待机制。
+                if current {
+                    let gate = control.lock().test_copy_gate.take();
+                    if let Some((started, release)) = gate {
+                        let _ = started.send(());
+                        let _ = release.recv_timeout(Duration::from_secs(5));
+                    }
+                }
                 let delay = control.lock().test_copy_delay;
                 thread::sleep(delay);
             }

@@ -180,7 +180,7 @@
       "id": "stage-b",
       "en": "docs/en/stage-b.md",
       "zh-CN": "docs/zh-CN/stage-b.md",
-      "revision": 7,
+      "revision": 8,
       "shared_literals": [
         "WIC",
         "JPEG",
@@ -196,7 +196,14 @@
         "The cloud file provider is not running.",
         "120 ms",
         "394,516,200",
-        "1.200 s"
+        "1.200 s",
+        "3.426 ms",
+        "5.642 ms",
+        "50.803 ms",
+        "205.110 ms",
+        "200.713 ms",
+        "348.118 ms",
+        "248.678 ms"
       ]
     }
   ],

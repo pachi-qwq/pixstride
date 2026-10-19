@@ -1,14 +1,14 @@
 [English](stage-b.md) | [简体中文](../zh-CN/stage-b.md)
 
-<!-- doc-id: stage-b; revision: 7; status: draft-pr-review -->
+<!-- doc-id: stage-b; revision: 8; status: draft-pr-review -->
 
 # Stage B: image browsing core
 
 Stage B adds an initial implementation for opening JPEG, PNG, and BMP files, browsing the containing
 directory, and presenting decoded pixels through the existing D3D11 render thread. The project owner
 confirmed that an image displays, zoom controls work, Left/Right navigation changes images, `Ctrl+O`
-opens the native dialog, and window resize remains responsive. These checks do not cover every error
-path or establish performance percentiles.
+opens the native dialog, and window resize remains responsive. The owner also confirmed improved long-hold browsing on `ea23c91`; the acceptance record below
+preserves its measurements and gaps. These checks do not cover every error path.
 
 ## Opening and navigation
 
@@ -77,6 +77,74 @@ than opening a modal message box. Navigation can continue. Over-budget images ar
 rejected; this change does not raise either cache budget or the per-image limit.
 
 ## Diagnostics and limits
+
+### Latest owner-run acceptance record
+
+The owner retested Release commit `ea23c914b6166655f97a6c5bd95d6a174721f5e6` on a real Windows desktop,
+using Hardware D3D11, NVIDIA GeForce RTX 4080 SUPER, and Feature Level 11.1. The run used the owner's
+existing image directory. Storage type, cloud availability, file-cache state, and the complete input
+sequence were not controlled. The owner confirmed that long-hold browsing felt substantially better.
+The agent did not read or copy these images; private paths and filenames are omitted here.
+
+| Application boundary | Samples / counts | Result |
+|---|---|---|
+| Target index changes | 374 | Valid navigation continues to update the target. |
+| Image-selection `Present` returns | 229 | Includes 121 hold-progress submissions. |
+| GPU-hit selection to `Present` return | 81 | P50 3.426 ms; P95 5.642 ms |
+| GPU-miss selection to `Present` return | 148 | P50 50.803 ms; P95 205.110 ms |
+| Current Worker service, including checks/cache/WIC | 171 | P95 200.713 ms; maximum 348.118 ms |
+| Last released target to its `Present` return | One final release | 248.678 ms |
+| Final target / last submitted Generation | 375 / 375 | Final selection completed. |
+
+Seven unfinished-at-release targets entered the release distribution: P50 152.809 ms, maximum
+248.678 ms. The final target's trace records 185.022 ms waiting behind an active current decode,
+then 69.025 ms of service. These timers have different start events and cannot be added as an exact
+decomposition of release latency. No current request entered the active-preload queue bucket.
+
+The longest EXIF query was 170.110 ms; `CopyPixels` reached 250.129 ms. This identifies expensive
+stages in this run without proving the cause of the earlier 1.36-second outlier. No second-long Worker
+sample occurred here. Different inputs, timing, and cache states prevent a strict before/after
+comparison or a claim that all long tails are fixed. GPU-miss timings also include accepted progress
+images, measured from each candidate's own selection. `Present` return is an application event,
+not actual display latency or Input-to-Photon.
+
+Current GPU hits were 81/230 texture lookups (35.2%), not 81/374 target changes. Current CPU hits were
+0/171; GPU-only hits bypass that lookup. Different lookup denominators, evictions, and workloads do
+not establish a cache regression. CPU/GPU cache-owned peaks were 536,755,580/536,830,488 bytes, both
+below 512 MiB, and returned to zero on shutdown. These counters do not measure total RAM/VRAM or prove
+leak freedom. Two current errors rejected a 20,000 × 1,768 image at the 16,384 texture-side limit;
+budget rejection reuse counted two hits. Dimension and 256 MiB decoded-byte limits are independent.
+Stage C will investigate a separate large-image preview/tiling path; that path is not implemented or
+tested here. The per-image and CPU/GPU cache budgets remain unchanged.
+
+### Final regression coverage
+
+The ordinary suite has 47 passing tests and three opt-in diagnostics. A new state test calls the
+actual navigation functions to check same-direction range retention, sudden reversal, and release of
+the previous direction without ending the new direction. Existing tests cover monotonic progress,
+pending-result invalidation, budget rejection reuse, and Source Revision changes.
+
+The extended `release_navigation_cache_probe` pauses a current request after `CopyPixels`, before
+publishing its result. It then exercises five cases: a newer GPU hit, `WM_KEYUP`, reversal,
+`WM_KILLFOCUS`, and opening another file. Each GPU-cached target reaches `Present` before releasing
+the gate; afterward, the old decode is cancelled and cannot replace the target. The two messages are
+synchronously injected on the HWND's owning thread. File opening calls the accepted-path handler;
+it does not automate the native dialog.
+
+The probe also changes a generated BMP's pixel data and length, verifies cache invalidation, deletes
+a source and checks non-modal recovery, and rejects truncated JPEG data. The budget test verifies
+early rejection, skipping repeated WIC work, and retry after a source revision change. All fixtures
+are self-generated outside Git; no private image or unavailable cloud file is read.
+
+The cache/boundary, hold-progress, and JPEG probes passed separate Release reruns. Fmt, Clippy with
+warnings denied, unit tests, Release build, Rustdoc, the 52-file docs check, 41 docs-tool tests, and
+`git diff --check` passed. Code additions are test-only; production threading, scheduling, resource
+ownership, and the 256 MiB / 512 MiB / 512 MiB budgets are unchanged. Basic GUI and improved long-hold
+usability are owner-confirmed. Physical keyboard/Alt+Tab boundary stress, actual blocked-cloud shutdown,
+long-duration pressure, Device Lost injection, controlled startup, and displayed-frame timing remain
+unverified. Injected messages and worker gates do not replace that testing.
+
+### Earlier diagnostic runs
 
 The owner's subsequent run on `89bb029` verified fast individual presses but still observed pauses
 during key repeat and a delayed final update after releasing the key. The 56 GPU-hit samples were
@@ -221,8 +289,8 @@ The progress run's worker service P50 was 81.167 ms, including the injected dela
 decoding. Its only unfinished-at-release target completed after 108.739 ms; n = 1 cannot support
 release-latency percentiles. The strict run had two such samples, 94.205–119.231 ms. Progress counts
 compare the submitted image Generation with the target observed when recording the successful return.
-The result verifies that completed work can update the image during a hold; real-directory smoothness
-and second-long WIC stalls still need owner verification.
+The result verifies that completed work can update the image during a hold. The later owner retest
+above confirms improved real-directory usability; reproducible second-long WIC stalls still need investigation.
 
 The cache regression was rerun: GPU-hit selection-to-`Present`, n = 103, was P50 762 µs,
 P95 7,160 µs, P99 8,015 µs, maximum 9,988 µs. The 100 forced-GPU-eviction CPU hits were
@@ -251,10 +319,10 @@ Remove-Item Env:PIXSTRIDE_TEST_STRICT_GENERATION
 ```
 
 Keep `PIXSTRIDE_TEST_ROOT` set to a writable directory outside the repository. The ordinary test suite
-now has 46 passing tests and three opt-in diagnostics; the hold, cache, and JPEG probes were explicitly
+now has 47 passing tests and three opt-in diagnostics; the hold, cache, and JPEG probes were explicitly
 run. Regression coverage includes monotonic progress, unchanged targets, release/reversal rejection,
 newer GPU-hit precedence, budget preflight before EXIF, bounded rejection reuse/source changes, and
-retaining a worst task across repeated fast errors. Actual long-hold GUI acceptance remains pending.
+retaining a worst task across repeated fast errors. Latest owner-run acceptance is recorded above; the full physical-keyboard focus/reversal stress matrix remains incomplete.
 
 ### Release diagnostics on generated local samples
 
@@ -321,8 +389,9 @@ file only if its read/download behavior is acceptable to the owner.
 Compare source-validation time, active-preload queue waits, WIC current/preload service, GPU hit/miss
 selection-to-`Present`, target changes, presented selections, and cache peaks. A GPU-only hit skips WIC
 and CPU lookup; CPU-hit requests still wait for the single WIC worker and texture upload if the GPU
-entry was evicted. Cloud latency, real-directory GPU-eviction/CPU-hit distributions, sustained key repeat, shutdown
-during an actual long cloud/WIC call, and the 120 ms preload policy still need these manual runs.
+entry was evicted. Sustained key repeat has the owner-run evidence above. Controlled cloud latency, real-directory
+GPU-eviction/CPU-hit distributions, shutdown during an actual long cloud/WIC call, and a controlled
+comparison of the 120 ms preload policy still need further runs.
 `Present` return remains an application boundary; displayed-frame timing needs separate instrumentation.
 
 The automated suite includes path sorting and boundaries, checked image layout and budgets, EXIF
