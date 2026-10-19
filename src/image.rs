@@ -424,6 +424,23 @@ mod tests {
     }
 
     #[test]
+    fn wic_returns_an_error_for_truncated_image_data() {
+        let root = unique_test_dir("pixstride-wic-truncated");
+        let path = root.join("broken.jpg");
+        std::fs::write(&path, [0xff, 0xd8, 0xff, 0x00]).unwrap();
+
+        let thread_path = path.clone();
+        let result = std::thread::spawn(move || {
+            let _com = ComMta::initialize()?;
+            decode_wic(&thread_path, ImageBudget::default())
+        })
+        .join()
+        .unwrap();
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn wic_round_trips_generated_jpeg_and_png_samples() {
         use windows::{
             Win32::{

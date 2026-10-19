@@ -35,6 +35,10 @@ pub(crate) enum Metric {
     ImageFirstPresent,
     ImageDecodeTotal,
     PreloadDecode,
+    ImageRequestToWorker,
+    CpuCacheLookup,
+    CurrentGpuHitToPresent,
+    CurrentGpuMissToPresent,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -44,15 +48,31 @@ pub(crate) enum Counter {
     GpuCacheHit,
     GpuCacheMiss,
     PreloadDecoded,
+    CpuCurrentHit,
+    CpuCurrentMiss,
+    CpuPreloadHit,
+    CpuPreloadMiss,
+    GpuCurrentHit,
+    GpuCurrentMiss,
+    GpuPreloadHit,
+    GpuPreloadMiss,
 }
 
 impl Counter {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 13] = [
         Self::CpuCacheHit,
         Self::CpuCacheMiss,
         Self::GpuCacheHit,
         Self::GpuCacheMiss,
         Self::PreloadDecoded,
+        Self::CpuCurrentHit,
+        Self::CpuCurrentMiss,
+        Self::CpuPreloadHit,
+        Self::CpuPreloadMiss,
+        Self::GpuCurrentHit,
+        Self::GpuCurrentMiss,
+        Self::GpuPreloadHit,
+        Self::GpuPreloadMiss,
     ];
 
     fn index(self) -> usize {
@@ -62,6 +82,14 @@ impl Counter {
             Self::GpuCacheHit => 2,
             Self::GpuCacheMiss => 3,
             Self::PreloadDecoded => 4,
+            Self::CpuCurrentHit => 5,
+            Self::CpuCurrentMiss => 6,
+            Self::CpuPreloadHit => 7,
+            Self::CpuPreloadMiss => 8,
+            Self::GpuCurrentHit => 9,
+            Self::GpuCurrentMiss => 10,
+            Self::GpuPreloadHit => 11,
+            Self::GpuPreloadMiss => 12,
         }
     }
 
@@ -72,12 +100,20 @@ impl Counter {
             Self::GpuCacheHit => "GPU 缓存命中",
             Self::GpuCacheMiss => "GPU 缓存未命中",
             Self::PreloadDecoded => "预加载完成",
+            Self::CpuCurrentHit => "当前选择 CPU 缓存命中",
+            Self::CpuCurrentMiss => "当前选择 CPU 缓存未命中",
+            Self::CpuPreloadHit => "预加载 CPU 缓存命中",
+            Self::CpuPreloadMiss => "预加载 CPU 缓存未命中",
+            Self::GpuCurrentHit => "当前选择 GPU 缓存命中",
+            Self::GpuCurrentMiss => "当前选择 GPU 缓存未命中",
+            Self::GpuPreloadHit => "预加载 GPU 缓存命中",
+            Self::GpuPreloadMiss => "预加载 GPU 缓存未命中",
         }
     }
 }
 
 impl Metric {
-    const ALL: [Self; 28] = [
+    const ALL: [Self; 32] = [
         Self::Startup,
         Self::D3dInitialization,
         Self::DeviceCreation,
@@ -106,6 +142,10 @@ impl Metric {
         Self::ImageFirstPresent,
         Self::ImageDecodeTotal,
         Self::PreloadDecode,
+        Self::ImageRequestToWorker,
+        Self::CpuCacheLookup,
+        Self::CurrentGpuHitToPresent,
+        Self::CurrentGpuMissToPresent,
     ];
 
     fn index(self) -> usize {
@@ -138,6 +178,10 @@ impl Metric {
             Self::ImageFirstPresent => 25,
             Self::ImageDecodeTotal => 26,
             Self::PreloadDecode => 27,
+            Self::ImageRequestToWorker => 28,
+            Self::CpuCacheLookup => 29,
+            Self::CurrentGpuHitToPresent => 30,
+            Self::CurrentGpuMissToPresent => 31,
         }
     }
 
@@ -171,6 +215,10 @@ impl Metric {
             Self::ImageFirstPresent => "首张图片 Present 调用返回",
             Self::ImageDecodeTotal => "WIC 完整打开与解码耗时（含内部工作）",
             Self::PreloadDecode => "相邻图片预加载耗时",
+            Self::ImageRequestToWorker => "当前图片请求到解码线程结果",
+            Self::CpuCacheLookup => "文件身份检查与 CPU 缓存查询",
+            Self::CurrentGpuHitToPresent => "当前 GPU 命中选择到 Present 返回",
+            Self::CurrentGpuMissToPresent => "当前 GPU 未命中选择到 Present 返回",
         }
     }
 }
@@ -224,8 +272,8 @@ struct Summary {
 /// 记录渲染与窗口生命周期中的计时样本。
 #[derive(Default)]
 pub(crate) struct Metrics {
-    samples: [Samples; 28],
-    counters: [u64; 5],
+    samples: [Samples; 32],
+    counters: [u64; 13],
     cpu_cache_bytes: u64,
     gpu_cache_bytes: u64,
     peak_cpu_cache_bytes: u64,
@@ -286,6 +334,30 @@ impl Metrics {
                 format_args!("{}: {}\n", counter.name(), self.counters[counter.index()]),
             );
         }
+        report_cache_rate(
+            &mut report,
+            "当前选择 CPU 缓存命中率",
+            self.counters[Counter::CpuCurrentHit.index()],
+            self.counters[Counter::CpuCurrentMiss.index()],
+        );
+        report_cache_rate(
+            &mut report,
+            "预加载 CPU 缓存命中率",
+            self.counters[Counter::CpuPreloadHit.index()],
+            self.counters[Counter::CpuPreloadMiss.index()],
+        );
+        report_cache_rate(
+            &mut report,
+            "当前选择 GPU 缓存命中率",
+            self.counters[Counter::GpuCurrentHit.index()],
+            self.counters[Counter::GpuCurrentMiss.index()],
+        );
+        report_cache_rate(
+            &mut report,
+            "预加载 GPU 缓存命中率",
+            self.counters[Counter::GpuPreloadHit.index()],
+            self.counters[Counter::GpuPreloadMiss.index()],
+        );
         let _ = std::fmt::Write::write_fmt(
             &mut report,
             format_args!(
@@ -300,6 +372,19 @@ impl Metrics {
             "Present duration is not display latency or input-to-photon latency. Use PresentMon/ETW or an external display measurement for displayed-frame timing.\n",
         );
         report
+    }
+}
+
+fn report_cache_rate(report: &mut String, name: &str, hits: u64, misses: u64) {
+    let total = hits.saturating_add(misses);
+    if total == 0 {
+        let _ = std::fmt::Write::write_fmt(report, format_args!("{name}: n=0\n"));
+    } else {
+        let rate = hits as f64 * 100.0 / total as f64;
+        let _ = std::fmt::Write::write_fmt(
+            report,
+            format_args!("{name}: {rate:.1}% ({hits}/{total})\n"),
+        );
     }
 }
 
@@ -347,5 +432,6 @@ mod tests {
         assert!(report.contains("not display latency"));
         assert!(report.contains("GPU texture cache current=0 peak=0 bytes"));
         assert!(report.contains("CPU 缓存命中: 0"));
+        assert!(report.contains("当前选择 CPU 缓存命中率: n=0"));
     }
 }

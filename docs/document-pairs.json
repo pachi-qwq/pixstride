@@ -92,7 +92,7 @@
       "id": "development",
       "en": "docs/en/development.md",
       "zh-CN": "docs/zh-CN/development.md",
-      "revision": 9,
+      "revision": 10,
       "shared_literals": [
         "3.11",
         "1.96.0",
@@ -180,7 +180,7 @@
       "id": "stage-b",
       "en": "docs/en/stage-b.md",
       "zh-CN": "docs/zh-CN/stage-b.md",
-      "revision": 1,
+      "revision": 2,
       "shared_literals": [
         "WIC",
         "JPEG",
@@ -189,7 +189,11 @@
         "16,384",
         "256 MiB",
         "512 MiB",
-        "Present"
+        "Present",
+        "66.7%",
+        "83.9%",
+        "161.58 ms",
+        "The cloud file provider is not running."
       ]
     }
   ],

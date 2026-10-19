@@ -8,12 +8,12 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
 use windows::Win32::{
-    Foundation::{CloseHandle, HANDLE, WAIT_EVENT, WAIT_FAILED, WAIT_OBJECT_0},
+    Foundation::{CloseHandle, HANDLE, WAIT_EVENT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
     System::Threading::{CreateEventW, GetCurrentThreadId, INFINITE, SetEvent},
     UI::Controls::Dialogs::{
         CommDlgExtendedError, GetOpenFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR,
@@ -27,6 +27,8 @@ use windows::Win32::{
     UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW, SetWindowTextW},
 };
 use windows::core::w;
+
+const IMAGE_WORKER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 use crate::{
     diagnostics::{Counter, Metric, Metrics},
@@ -73,6 +75,17 @@ struct PendingState {
     shutdown_started: Option<Instant>,
     image_update: Option<Arc<DecodedImage>>,
     preload_uploads: VecDeque<Arc<DecodedImage>>,
+    cancel_preloads: bool,
+}
+
+/// 一次从 UI 状态中取出的有界渲染工作批次。
+pub(crate) struct PendingRenderWork {
+    pub(crate) snapshot: RenderSnapshot,
+    pub(crate) redraw: bool,
+    pub(crate) shutdown: bool,
+    pub(crate) image: Option<Arc<DecodedImage>>,
+    pub(crate) preloads: Vec<Arc<DecodedImage>>,
+    pub(crate) cancel_preloads: bool,
 }
 
 /// UI 与 Render Thread 共享的有界状态。
@@ -101,24 +114,17 @@ impl Shared {
             .report()
     }
 
-    pub(crate) fn take_pending(
-        &self,
-    ) -> (
-        RenderSnapshot,
-        bool,
-        bool,
-        Option<Arc<DecodedImage>>,
-        Vec<Arc<DecodedImage>>,
-    ) {
+    pub(crate) fn take_pending(&self) -> PendingRenderWork {
         let mut pending = self.pending();
         let redraw = std::mem::take(&mut pending.redraw);
-        (
-            pending.snapshot,
+        PendingRenderWork {
+            snapshot: pending.snapshot,
             redraw,
-            pending.shutdown,
-            pending.image_update.take(),
-            pending.preload_uploads.drain(..).collect(),
-        )
+            shutdown: pending.shutdown,
+            image: pending.image_update.take(),
+            preloads: pending.preload_uploads.drain(..).collect(),
+            cancel_preloads: std::mem::take(&mut pending.cancel_preloads),
+        }
     }
 
     pub(crate) fn current_snapshot(&self) -> RenderSnapshot {
@@ -186,6 +192,14 @@ impl Shared {
         self.publish(RequestOrigin::Paint, |_| {});
     }
 
+    /// 仅唤醒 Render Thread 继续处理有界的后台 GPU 上传，不请求重绘。
+    pub(crate) fn wake_render_thread(&self) {
+        // SAFETY: 事件由 UI 生命周期持有，且一定在 Render Thread join 后才关闭。
+        unsafe {
+            let _ = SetEvent(HANDLE(self.wake_event as _));
+        }
+    }
+
     pub(crate) fn set_image(&self, image: Arc<DecodedImage>, requested_at: Instant) {
         {
             let mut pending = self.pending();
@@ -223,6 +237,22 @@ impl Shared {
         }
         // 预加载只唤醒渲染线程处理资源，不要求提交一帧。
         // SAFETY: 与工作事件的其他调用相同，句柄由 UI 外层持有到渲染线程 join 后。
+        unsafe {
+            let _ = SetEvent(HANDLE(self.wake_event as _));
+        }
+    }
+
+    /// 新选择到来时丢弃渲染线程尚未上传的预加载项，并立即唤醒它处理取消标记。
+    pub(crate) fn cancel_pending_preloads(&self) {
+        {
+            let mut pending = self.pending();
+            if pending.shutdown {
+                return;
+            }
+            pending.preload_uploads.clear();
+            pending.cancel_preloads = true;
+        }
+        // SAFETY: wake_event 在渲染线程 join 前保持有效；此通知只用于让线程读取取消标记。
         unsafe {
             let _ = SetEvent(HANDLE(self.wake_event as _));
         }
@@ -426,6 +456,7 @@ pub(crate) fn run() -> Result<()> {
             shutdown_started: None,
             image_update: None,
             preload_uploads: VecDeque::new(),
+            cancel_preloads: false,
         }),
         wake_event: wake_event.0.0 as isize,
         metrics: Mutex::new(Metrics::default()),
@@ -502,6 +533,7 @@ pub(crate) fn run() -> Result<()> {
     let mut render_done = false;
     let mut loader_done = false;
     let mut loader_stop_sent = false;
+    let mut loader_shutdown_started = None;
     let mut render_join_error = None;
 
     while !render_done || !loader_done {
@@ -517,9 +549,12 @@ pub(crate) fn run() -> Result<()> {
         let render_index = (!render_done).then_some(0usize);
         let ready_index = usize::from(!render_done);
         let completed_index = ready_index + 1;
-        // SAFETY: 三个事件句柄在各自线程 join 前保持有效；同时等待当前 UI 消息队列，不轮询。
+        let timeout = loader_shutdown_started
+            .map(remaining_worker_shutdown_ms)
+            .unwrap_or(INFINITE);
+        // SAFETY: 事件句柄在所属线程停止前保持有效；运行时等待事件，关闭期只等待剩余宽限时间。
         let result =
-            unsafe { MsgWaitForMultipleObjects(Some(&handles), false, INFINITE, QS_ALLINPUT) };
+            unsafe { MsgWaitForMultipleObjects(Some(&handles), false, timeout, QS_ALLINPUT) };
         let render_signaled = render_index.is_some() && result == WAIT_OBJECT_0;
         if render_signaled {
             if let Some(thread) = render_thread.take() {
@@ -554,6 +589,13 @@ pub(crate) fn run() -> Result<()> {
                 }
                 process_window_action(&mut context, &loader, hwnd);
             }
+        } else if result == WAIT_TIMEOUT && loader_shutdown_started.is_some() && !loader_done {
+            eprintln!(
+                "WIC worker did not stop within {} ms; detaching it until process exit",
+                IMAGE_WORKER_SHUTDOWN_GRACE.as_millis()
+            );
+            loader.detach_for_process_exit();
+            loader_done = true;
         } else if result == WAIT_FAILED {
             loop_error = Some(
                 anyhow!(windows::core::Error::from_thread())
@@ -566,6 +608,7 @@ pub(crate) fn run() -> Result<()> {
         if context.close_started && !loader_stop_sent {
             loader.request_stop();
             loader_stop_sent = true;
+            loader_shutdown_started = Some(Instant::now());
         }
     }
 
@@ -575,7 +618,7 @@ pub(crate) fn run() -> Result<()> {
     if !loader_stop_sent {
         loader.request_stop();
     }
-    // SAFETY: 渲染线程和解码线程均已 join；HWND 仍由当前 UI 线程拥有。
+    // SAFETY: Render Thread 已 join；WIC Worker 已 join，或已分离且从未持有 HWND/WindowContext；HWND 仍由 UI 线程拥有。
     let destroy_result = unsafe { DestroyWindow(hwnd) };
 
     let report = shared.metrics_report();
@@ -595,6 +638,13 @@ pub(crate) fn run() -> Result<()> {
         return Err(anyhow!(error));
     }
     Ok(())
+}
+
+fn remaining_worker_shutdown_ms(started: Instant) -> u32 {
+    IMAGE_WORKER_SHUTDOWN_GRACE
+        .saturating_sub(started.elapsed())
+        .as_millis()
+        .min(u32::MAX as u128) as u32
 }
 
 fn request_open(
@@ -617,6 +667,7 @@ fn request_open(
     context.navigation.current_path = Some(path.clone());
     context.navigation.pending_steps = 0;
     context.navigation.requested_at = Some(Instant::now());
+    context.shared.cancel_pending_preloads();
     loader.request_open(context.navigation.generation, path.clone());
     set_window_title(hwnd, &format!("正在打开：{}", path.display()));
     Ok(())
@@ -669,6 +720,7 @@ fn navigate(context: &mut WindowContext, loader: &ImageLoader, delta: isize) {
 
 fn schedule_selection(context: &mut WindowContext, loader: &ImageLoader, path: PathBuf) {
     context.navigation.generation = context.navigation.generation.wrapping_add(1).max(1);
+    context.shared.cancel_pending_preloads();
     context.navigation.current_path = Some(path.clone());
     context.navigation.requested_at = Some(Instant::now());
     let preloads = context
@@ -846,7 +898,7 @@ mod tests {
     use std::{
         collections::VecDeque,
         sync::{Arc, Mutex},
-        time::Instant,
+        time::{Duration, Instant},
     };
     use windows::Win32::{
         Foundation::WAIT_OBJECT_0,
@@ -872,6 +924,7 @@ mod tests {
                 shutdown_started: None,
                 image_update: None,
                 preload_uploads: VecDeque::new(),
+                cancel_preloads: false,
             }),
             wake_event: event.0.0 as isize,
             metrics: Mutex::new(Metrics::default()),
@@ -898,8 +951,8 @@ mod tests {
             unsafe { WaitForSingleObject(completion.0, 0) },
             WAIT_OBJECT_0
         );
-        let (_, _, shutdown, _, _) = shared.take_pending();
-        assert!(shutdown);
+        let work = shared.take_pending();
+        assert!(work.shutdown);
         assert_eq!(
             shared.fatal_error().as_deref(),
             Some("渲染线程发生 panic；资源已在栈展开时释放")
@@ -919,13 +972,13 @@ mod tests {
         shared.resize(1200, 800);
         shared.select_texture(0);
 
-        let (snapshot, redraw, shutdown, _, _) = shared.take_pending();
-        assert_eq!(snapshot.sequence, 3);
-        assert_eq!(snapshot.texture_index, 0);
-        assert_eq!(snapshot.request_origin, super::RequestOrigin::KeyInput);
-        assert_eq!((snapshot.width, snapshot.height), (1200, 800));
-        assert!(redraw);
-        assert!(!shutdown);
+        let work = shared.take_pending();
+        assert_eq!(work.snapshot.sequence, 3);
+        assert_eq!(work.snapshot.texture_index, 0);
+        assert_eq!(work.snapshot.request_origin, super::RequestOrigin::KeyInput);
+        assert_eq!((work.snapshot.width, work.snapshot.height), (1200, 800));
+        assert!(work.redraw);
+        assert!(!work.shutdown);
         Ok(())
     }
 
@@ -964,11 +1017,31 @@ mod tests {
         shared.request_shutdown();
         shared.select_texture(1);
 
-        let (snapshot, redraw, shutdown, _, _) = shared.take_pending();
-        assert_eq!(snapshot.sequence, 0);
-        assert_eq!(snapshot.texture_index, 0);
-        assert!(!redraw);
-        assert!(shutdown);
+        let work = shared.take_pending();
+        assert_eq!(work.snapshot.sequence, 0);
+        assert_eq!(work.snapshot.texture_index, 0);
+        assert!(!work.redraw);
+        assert!(work.shutdown);
         Ok(())
+    }
+
+    #[test]
+    fn cancel_preloads_wakes_renderer_without_requesting_redraw() -> Result<()> {
+        let (shared, _event) = test_shared()?;
+        shared.cancel_pending_preloads();
+
+        let work = shared.take_pending();
+        assert!(!work.redraw);
+        assert!(!work.shutdown);
+        assert!(work.preloads.is_empty());
+        assert!(work.cancel_preloads);
+        assert!(!shared.take_pending().cancel_preloads);
+        Ok(())
+    }
+
+    #[test]
+    fn worker_shutdown_timeout_reaches_zero_after_grace_period() {
+        let started = Instant::now() - Duration::from_secs(3);
+        assert_eq!(super::remaining_worker_shutdown_ms(started), 0);
     }
 }

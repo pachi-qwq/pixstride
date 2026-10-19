@@ -49,6 +49,7 @@ pub(crate) enum LoaderMessage {
 struct DecodeJob {
     generation: u64,
     path: PathBuf,
+    requested_at: Instant,
 }
 
 #[derive(Clone)]
@@ -124,6 +125,7 @@ pub(crate) struct ImageLoader {
     ready_event: HANDLE,
     completed_event: HANDLE,
     thread: Option<JoinHandle<()>>,
+    detached_for_process_exit: bool,
 }
 
 impl ImageLoader {
@@ -187,6 +189,7 @@ impl ImageLoader {
             ready_event,
             completed_event,
             thread: Some(thread),
+            detached_for_process_exit: false,
         })
     }
 
@@ -209,6 +212,7 @@ impl ImageLoader {
         state.current = Some(DecodeJob {
             generation,
             path: path.clone(),
+            requested_at: Instant::now(),
         });
         state.scan = Some(ScanJob {
             generation,
@@ -222,12 +226,20 @@ impl ImageLoader {
     pub(crate) fn request_selection(&self, generation: u64, path: PathBuf, preloads: Vec<PathBuf>) {
         let mut state = self.control.lock();
         state.generation = generation;
-        state.current = Some(DecodeJob { generation, path });
+        state.current = Some(DecodeJob {
+            generation,
+            path,
+            requested_at: Instant::now(),
+        });
         state.scan = None;
         state.preloads = preloads
             .into_iter()
             .take(2)
-            .map(|path| DecodeJob { generation, path })
+            .map(|path| DecodeJob {
+                generation,
+                path,
+                requested_at: Instant::now(),
+            })
             .collect();
         self.control.changed.notify_one();
     }
@@ -240,7 +252,11 @@ impl ImageLoader {
         state.preloads = paths
             .into_iter()
             .take(2)
-            .map(|path| DecodeJob { generation, path })
+            .map(|path| DecodeJob {
+                generation,
+                path,
+                requested_at: Instant::now(),
+            })
             .collect();
         self.control.changed.notify_one();
     }
@@ -252,6 +268,14 @@ impl ImageLoader {
         state.scan = None;
         state.preloads.clear();
         self.control.changed.notify_all();
+    }
+
+    /// 超过关闭等待期限后分离线程；进程即将退出，Windows 会回收其仍持有的句柄和资源。
+    pub(crate) fn detach_for_process_exit(&mut self) {
+        self.request_stop();
+        // 丢弃 JoinHandle 会分离线程。不能在 WIC 调用仍运行时关闭它可能使用的通知句柄。
+        self.thread.take();
+        self.detached_for_process_exit = true;
     }
 
     pub(crate) fn join(&mut self) -> Result<()> {
@@ -266,6 +290,9 @@ impl ImageLoader {
 
 impl Drop for ImageLoader {
     fn drop(&mut self) {
+        if self.detached_for_process_exit {
+            return;
+        }
         self.request_stop();
         let _ = self.join();
         // SAFETY: Drop 先停止并 join worker；线程不再使用这两个 UI 持有的事件句柄。
@@ -296,8 +323,9 @@ fn worker_loop(
     while let Some(work) = control.next() {
         match work {
             Work::Current(job) => {
-                let result = load_with_cache(&mut cache, &job.path, budget, shared);
+                let result = load_with_cache(&mut cache, &job.path, budget, shared, true);
                 shared.set_cpu_cache_bytes(cache.byte_cost());
+                shared.record(Metric::ImageRequestToWorker, job.requested_at.elapsed());
                 if control.is_current(job.generation) {
                     send(
                         sender,
@@ -333,7 +361,7 @@ fn worker_loop(
                     continue;
                 }
                 let preload_started = Instant::now();
-                match load_with_cache(&mut cache, &job.path, budget, shared) {
+                match load_with_cache(&mut cache, &job.path, budget, shared, false) {
                     Ok(image) if control.is_current(job.generation) => {
                         shared.increment(Counter::PreloadDecoded);
                         send(
@@ -360,13 +388,33 @@ fn load_with_cache(
     path: &Path,
     budget: ImageBudget,
     shared: &Shared,
+    current: bool,
 ) -> Result<Arc<DecodedImage>> {
-    let identity = SourceIdentity::read(path)?;
+    let lookup_started = Instant::now();
+    let identity = match SourceIdentity::read(path) {
+        Ok(identity) => identity,
+        Err(error) => {
+            shared.record(Metric::CpuCacheLookup, lookup_started.elapsed());
+            return Err(error);
+        }
+    };
     if let Some(image) = cache.get(&identity) {
         shared.increment(Counter::CpuCacheHit);
+        shared.increment(if current {
+            Counter::CpuCurrentHit
+        } else {
+            Counter::CpuPreloadHit
+        });
+        shared.record(Metric::CpuCacheLookup, lookup_started.elapsed());
         return Ok(image);
     }
     shared.increment(Counter::CpuCacheMiss);
+    shared.increment(if current {
+        Counter::CpuCurrentMiss
+    } else {
+        Counter::CpuPreloadMiss
+    });
+    shared.record(Metric::CpuCacheLookup, lookup_started.elapsed());
     let started = Instant::now();
     let (decoded, timings) = decode_wic(path, budget)?;
     shared.record(Metric::ImageDecodeTotal, started.elapsed());
@@ -391,6 +439,7 @@ mod tests {
     use std::{
         path::{Path, PathBuf},
         sync::{Condvar, Mutex},
+        time::Instant,
     };
 
     #[test]
@@ -405,15 +454,18 @@ mod tests {
             state.current = Some(super::DecodeJob {
                 generation: 1,
                 path: PathBuf::from("old.jpg"),
+                requested_at: Instant::now(),
             });
             state.preloads.push_back(super::DecodeJob {
                 generation: 1,
                 path: PathBuf::from("older.jpg"),
+                requested_at: Instant::now(),
             });
             state.generation = 2;
             state.current = Some(super::DecodeJob {
                 generation: 2,
                 path: PathBuf::from("latest.png"),
+                requested_at: Instant::now(),
             });
             state.preloads.clear();
         }
@@ -421,5 +473,38 @@ mod tests {
             matches!(control.next(), Some(Work::Current(job)) if job.generation == 2 && job.path == Path::new("latest.png"))
         );
         assert!(!control.is_current(1));
+    }
+
+    #[test]
+    fn a_running_old_preload_becomes_stale_and_current_work_runs_next() {
+        let control = WorkerControl {
+            state: Mutex::new(WorkState::default()),
+            changed: Condvar::new(),
+        };
+        {
+            let mut state = control.lock();
+            state.generation = 1;
+            state.preloads.push_back(super::DecodeJob {
+                generation: 1,
+                path: PathBuf::from("slow-preload.jpg"),
+                requested_at: Instant::now(),
+            });
+        }
+
+        let active = control.next().expect("预加载任务已取出");
+        assert!(matches!(active, Work::Preload(_)));
+        {
+            let mut state = control.lock();
+            state.generation = 2;
+            state.current = Some(super::DecodeJob {
+                generation: 2,
+                path: PathBuf::from("latest.png"),
+                requested_at: Instant::now(),
+            });
+            state.preloads.clear();
+        }
+
+        assert!(!control.is_current(1));
+        assert!(matches!(control.next(), Some(Work::Current(job)) if job.generation == 2));
     }
 }

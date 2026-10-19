@@ -83,6 +83,7 @@ struct Renderer {
     textures: [ID3D11ShaderResourceView; 2],
     image_cache: HashMap<SourceIdentity, (ID3D11ShaderResourceView, u64)>,
     image_lru: VecDeque<SourceIdentity>,
+    pending_preloads: VecDeque<Arc<DecodedImage>>,
     current_image: Option<SourceIdentity>,
     current_dimensions: (u32, u32),
     gpu_cache_bytes: u64,
@@ -91,6 +92,7 @@ struct Renderer {
     height: u32,
     first_present_reported: bool,
     first_image_present_reported: bool,
+    pending_selection_present: Option<(Instant, bool)>,
     render_thread_started: Instant,
 }
 
@@ -184,6 +186,7 @@ impl Renderer {
             textures,
             image_cache: HashMap::new(),
             image_lru: VecDeque::new(),
+            pending_preloads: VecDeque::new(),
             current_image: None,
             current_dimensions: (TEST_TEXTURE_SIZE, TEST_TEXTURE_SIZE),
             gpu_cache_bytes: 0,
@@ -192,6 +195,7 @@ impl Renderer {
             height: 0,
             first_present_reported: false,
             first_image_present_reported: false,
+            pending_selection_present: None,
             render_thread_started,
         };
 
@@ -209,14 +213,17 @@ impl Renderer {
         loop {
             let wait_result = self.wait_for_work(shared, needs_render)?;
             if wait_result == WaitResult::Work {
-                let (latest, redraw, shutdown, image, preloads) = shared.take_pending();
-                if shutdown {
+                let work = shared.take_pending();
+                if work.shutdown {
                     break;
                 }
-                if redraw {
-                    let delay = latest.requested_at.elapsed();
+                if work.cancel_preloads {
+                    self.pending_preloads.clear();
+                }
+                if work.redraw {
+                    let delay = work.snapshot.requested_at.elapsed();
                     shared.record(Metric::RequestToRender, delay);
-                    let metric = match latest.request_origin {
+                    let metric = match work.snapshot.request_origin {
                         RequestOrigin::InitialWindowSize => Metric::RequestToRenderInitial,
                         RequestOrigin::KeyInput => Metric::RequestToRenderInput,
                         RequestOrigin::Resize => Metric::RequestToRenderResize,
@@ -227,13 +234,28 @@ impl Renderer {
                     };
                     shared.record(metric, delay);
                 }
-                if let Some(image) = image {
+                if let Some(image) = work.image {
+                    // 当前请求变更后，旧选择的 GPU 预加载不再有价值。
+                    self.pending_preloads.clear();
+                    self.pending_selection_present = Some((
+                        work.snapshot.requested_at,
+                        self.image_cache.contains_key(&image.source),
+                    ));
                     self.upload_image(image, true, shared)?;
                 }
-                for image in preloads {
-                    self.upload_image(image, false, shared)?;
+                for image in work.preloads {
+                    if !self
+                        .pending_preloads
+                        .iter()
+                        .any(|queued| queued.source == image.source)
+                    {
+                        if self.pending_preloads.len() == 2 {
+                            self.pending_preloads.pop_front();
+                        }
+                        self.pending_preloads.push_back(image);
+                    }
                 }
-                snapshot = latest;
+                snapshot = work.snapshot;
 
                 if snapshot.width > 0
                     && snapshot.height > 0
@@ -242,7 +264,10 @@ impl Renderer {
                     self.resize_resources(snapshot.width, snapshot.height, true, shared)?;
                 }
                 needs_render =
-                    snapshot.width > 0 && snapshot.height > 0 && (needs_render || redraw);
+                    snapshot.width > 0 && snapshot.height > 0 && (needs_render || work.redraw);
+                if !needs_render {
+                    self.upload_one_preload(shared)?;
+                }
                 continue;
             }
 
@@ -250,6 +275,7 @@ impl Renderer {
                 self.draw(&snapshot, shared)?;
                 needs_render = false;
             }
+            self.upload_one_preload(shared)?;
         }
 
         // SAFETY: Immediate Context 只有当前 Render Thread 一个所有者；退出时先 ClearState 释放命令引用，再释放 Render Target。
@@ -441,6 +467,16 @@ impl Renderer {
             );
             self.first_present_reported = true;
         }
+        if let Some((requested_at, gpu_cache_hit)) = self.pending_selection_present.take() {
+            shared.record(
+                if gpu_cache_hit {
+                    Metric::CurrentGpuHitToPresent
+                } else {
+                    Metric::CurrentGpuMissToPresent
+                },
+                requested_at.elapsed(),
+            );
+        }
         Ok(())
     }
 
@@ -452,6 +488,11 @@ impl Renderer {
     ) -> Result<()> {
         if self.image_cache.contains_key(&image.source) {
             shared.increment(crate::diagnostics::Counter::GpuCacheHit);
+            shared.increment(if current {
+                crate::diagnostics::Counter::GpuCurrentHit
+            } else {
+                crate::diagnostics::Counter::GpuPreloadHit
+            });
             if current {
                 self.current_image = Some(image.source.clone());
                 self.current_dimensions = (image.width, image.height);
@@ -462,6 +503,11 @@ impl Renderer {
             return Ok(());
         }
         shared.increment(crate::diagnostics::Counter::GpuCacheMiss);
+        shared.increment(if current {
+            crate::diagnostics::Counter::GpuCurrentMiss
+        } else {
+            crate::diagnostics::Counter::GpuPreloadMiss
+        });
         if image.format != PixelFormat::Bgra8Premultiplied {
             bail!("Renderer 收到不支持的像素格式");
         }
@@ -514,6 +560,17 @@ impl Renderer {
         self.evict_gpu_cache();
         shared.set_gpu_cache_bytes(self.gpu_cache_bytes);
         shared.record(Metric::ImageTextureUpload, started.elapsed());
+        Ok(())
+    }
+
+    /// 每次最多上传一个预加载纹理；当前帧先 Present，随后再服务其余预加载。
+    fn upload_one_preload(&mut self, shared: &Shared) -> Result<()> {
+        if let Some(image) = self.pending_preloads.pop_front() {
+            self.upload_image(image, false, shared)?;
+            if !self.pending_preloads.is_empty() {
+                shared.wake_render_thread();
+            }
+        }
         Ok(())
     }
 

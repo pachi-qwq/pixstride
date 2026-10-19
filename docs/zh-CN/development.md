@@ -1,11 +1,12 @@
 [English](../en/development.md) | [简体中文](development.md)
 
-<!-- doc-id: development; revision: 9; status: stage-b-development -->
+<!-- doc-id: development; revision: 10; status: stage-b-development -->
 
 # 开发状态与检查
 
-仓库包含一个 Win32/D3D11 查看器 Cargo Package。阶段 B 初步加入 JPEG、PNG、BMP 的 WIC 解码、目录导航和有界
-CPU/GPU 缓存。当前实现仍在本地评审，尚未完成真实图片的图形界面验收。项目尚无公开发行版。
+仓库包含一个 Win32/D3D11 查看器 Cargo Package。阶段 B 加入 JPEG、PNG、BMP 的 WIC 解码、目录导航和有界
+CPU/GPU 缓存。负责人已确认真实图片显示、缩放、键盘导航、原生文件对话框和窗口 Resize 正常。目前正在评审缓存路径延迟与
+预加载调度。项目尚无公开发行版。
 
 ## 构建和运行阶段 B
 

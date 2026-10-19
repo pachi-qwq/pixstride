@@ -1,12 +1,13 @@
 [English](development.md) | [简体中文](../zh-CN/development.md)
 
-<!-- doc-id: development; revision: 9; status: stage-b-development -->
+<!-- doc-id: development; revision: 10; status: stage-b-development -->
 
 # Development status and checks
 
-The repository contains a single Cargo package for a Win32/D3D11 viewer. Stage B adds initial WIC
-decoding for JPEG, PNG, and BMP, directory navigation, and bounded CPU/GPU caches. The implementation
-is under local review; real-image GUI acceptance has not yet been completed. There is no public release.
+The repository contains a single Cargo package for a Win32/D3D11 viewer. Stage B adds WIC decoding for
+JPEG, PNG, and BMP, directory navigation, and bounded CPU/GPU caches. The project owner has confirmed
+real-image display, zoom, keyboard navigation, the native file dialog, and window resizing. Review of
+cache-path latency and preload scheduling is in progress. There is no public release.
 
 ## Build and run Stage B
 
