@@ -17,7 +17,7 @@ use windows::{
                 DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, IDC_ARROW, LoadCursorW,
                 RegisterClassW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
                 ShowWindow, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN,
-                WM_KEYUP, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSW,
+                WM_KEYUP, WM_KILLFOCUS, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSW,
                 WS_OVERLAPPEDWINDOW,
             },
         },
@@ -140,7 +140,13 @@ unsafe extern "system" fn window_proc(
             if !context.close_started
                 && matches!(wparam.0 as u16, key if key == VK_LEFT.0 || key == VK_RIGHT.0) =>
         {
-            context.shared.record_navigation_release();
+            let direction = if wparam.0 as u16 == VK_LEFT.0 { -1 } else { 1 };
+            context.navigation_key_released(direction, Instant::now());
+            LRESULT(0)
+        }
+        WM_KILLFOCUS if !context.close_started => {
+            context.shared.end_navigation_progress();
+            context.action = Some(WindowAction::StopNavigation);
             LRESULT(0)
         }
         WM_DPICHANGED if !context.close_started => {

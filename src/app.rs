@@ -71,6 +71,10 @@ pub(crate) enum RequestOrigin {
 struct PendingState {
     snapshot: RenderSnapshot,
     image_generation: u64,
+    // UI 设置同方向长按的首个选择代际；松键、反向、失焦或打开文件时清除。
+    progress_floor: Option<u64>,
+    // 已接受图片的最大选择代际，是同一个 Generation 的水位，不独立递增。
+    accepted_image_generation: u64,
     redraw: bool,
     shutdown: bool,
     shutdown_started: Option<Instant>,
@@ -161,9 +165,21 @@ impl Shared {
 
     /// 发布 UI 的最新选择代际，并清除尚未消费的旧像素和缓存探测。
     pub(crate) fn set_image_generation(&self, generation: u64) {
+        self.set_navigation_generation(generation, None);
+    }
+
+    /// 长按进度使用同一选择代际的下界，不增加另一套版本计数；最新目标仍由 UI 独占。
+    pub(crate) fn set_navigation_generation(&self, generation: u64, progress_floor: Option<u64>) {
         let mut pending = self.pending();
         pending.image_generation = generation;
-        pending.image_update = None;
+        pending.progress_floor = progress_floor;
+        if pending
+            .image_update
+            .as_ref()
+            .is_some_and(|(candidate, _, _)| !candidate_allowed(&pending, *candidate))
+        {
+            pending.image_update = None;
+        }
         pending.gpu_probe = None;
         drop(pending);
         self.metrics
@@ -172,21 +188,61 @@ impl Shared {
             .set_target_generation(generation);
     }
 
+    /// 松键、反向或失焦时立即停止旧进度；当前最新目标继续加载。
+    pub(crate) fn end_navigation_progress(&self) {
+        let mut pending = self.pending();
+        let changed = pending.progress_floor.take().is_some();
+        if pending
+            .image_update
+            .as_ref()
+            .is_some_and(|(generation, _, _)| *generation != pending.image_generation)
+        {
+            pending.image_update = None;
+        }
+        drop(pending);
+        if changed {
+            self.wake_render_thread();
+        }
+    }
+
+    /// 新候选不能覆盖已接受的更新代际，长按进度也必须落在当前方向的有效区间。
+    pub(crate) fn can_present_image_generation(&self, generation: u64) -> bool {
+        let pending = self.pending();
+        candidate_allowed(&pending, generation) && generation >= pending.accepted_image_generation
+    }
+
+    /// GPU 命中激活前原子认领代际，防止稍后到达的旧解码覆盖已接受的新纹理。
+    pub(crate) fn claim_image_generation(&self, generation: u64) -> bool {
+        let mut pending = self.pending();
+        if !candidate_allowed(&pending, generation)
+            || generation < pending.accepted_image_generation
+        {
+            return false;
+        }
+        pending.accepted_image_generation = generation;
+        true
+    }
+
     /// 记录成功返回的图片 Present 所对应的选择，不代表该帧已经显示。
     pub(crate) fn record_presented_generation(&self, generation: u64) {
-        self.metrics
+        let progress = self.pending().image_generation != generation;
+        let mut metrics = self
+            .metrics
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_presented_generation(generation);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        metrics.record_presented_generation(generation);
+        if progress {
+            metrics.increment(Counter::NavigationProgressPresented);
+        }
     }
 
     /// 在 UI 线程收到真实 WM_KEYUP 时记录该时刻的目标，关联松键后的最终更新。
-    pub(crate) fn record_navigation_release(&self) {
+    pub(crate) fn record_navigation_release_at(&self, at: Instant) {
         let generation = self.pending().image_generation;
         self.metrics
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_navigation_release(generation, Instant::now());
+            .record_navigation_release(generation, at);
     }
 
     /// 短暂持锁检查候选结果是否仍属于 UI 的最新选择。
@@ -317,9 +373,12 @@ impl Shared {
     ) {
         {
             let mut pending = self.pending();
-            if pending.shutdown || pending.image_generation != generation {
+            if !candidate_allowed(&pending, generation)
+                || generation < pending.accepted_image_generation
+            {
                 return;
             }
+            pending.accepted_image_generation = generation;
             pending.snapshot.sequence = pending.snapshot.sequence.wrapping_add(1);
             pending.snapshot.requested_at = requested_at;
             pending.snapshot.request_origin = RequestOrigin::ImageReady;
@@ -452,6 +511,15 @@ impl Shared {
     }
 }
 
+fn candidate_allowed(pending: &PendingState, generation: u64) -> bool {
+    !pending.shutdown
+        && generation <= pending.image_generation
+        && (generation == pending.image_generation
+            || pending
+                .progress_floor
+                .is_some_and(|floor| generation >= floor))
+}
+
 pub(crate) struct WindowContext {
     pub(crate) shared: Arc<Shared>,
     pub(crate) close_started: bool,
@@ -466,6 +534,18 @@ pub(crate) enum WindowAction {
     Next,
     Fit,
     NativePixels,
+    NavigationReleased { direction: isize, at: Instant },
+    StopNavigation,
+}
+
+impl WindowContext {
+    /// UI 在 WM_KEYUP 回调内立即关闭进度窗口，再交给消息循环更新 Worker 与松键诊断。
+    pub(crate) fn navigation_key_released(&mut self, direction: isize, at: Instant) {
+        if self.navigation.direction == Some(direction) {
+            self.shared.end_navigation_progress();
+            self.action = Some(WindowAction::NavigationReleased { direction, at });
+        }
+    }
 }
 
 #[derive(Default)]
@@ -476,6 +556,8 @@ struct UiNavigation {
     pending_steps: i32,
     requested_at: Option<Instant>,
     fallback: Option<(Option<PathBuf>, Option<ImageDirectory>)>,
+    direction: Option<isize>,
+    progress_floor: Option<u64>,
 }
 
 struct WakeEvent(HANDLE);
@@ -574,6 +656,8 @@ pub(crate) fn run() -> Result<()> {
         pending: Mutex::new(PendingState {
             snapshot: initial_snapshot,
             image_generation: 0,
+            progress_floor: None,
+            accepted_image_generation: 0,
             redraw: true,
             shutdown: false,
             shutdown_started: None,
@@ -825,6 +909,7 @@ fn request_open(
         bail!("只支持 JPEG、PNG 和 BMP 图片：{}", path.display());
     }
     let path = absolute_path(&path)?;
+    stop_navigation(context, loader);
     context.navigation.generation = context.navigation.generation.wrapping_add(1).max(1);
     if context.navigation.fallback.is_none() {
         context.navigation.fallback = Some((
@@ -857,23 +942,39 @@ fn process_window_action(
         return;
     };
     match action {
-        WindowAction::Open => match choose_image(hwnd) {
-            Ok(Some(path)) => {
-                if let Err(error) = request_open(context, loader, hwnd, path) {
-                    show_error(hwnd, &format!("无法打开图片：{error:#}"));
+        WindowAction::Open => {
+            stop_navigation(context, loader);
+            match choose_image(hwnd) {
+                Ok(Some(path)) => {
+                    if let Err(error) = request_open(context, loader, hwnd, path) {
+                        show_error(hwnd, &format!("无法打开图片：{error:#}"));
+                    }
                 }
+                Ok(None) => {}
+                Err(error) => show_error(hwnd, &format!("文件选择失败：{error:#}")),
             }
-            Ok(None) => {}
-            Err(error) => show_error(hwnd, &format!("文件选择失败：{error:#}")),
-        },
+        }
         WindowAction::Previous => navigate(context, loader, -1),
         WindowAction::Next => navigate(context, loader, 1),
         WindowAction::Fit => context.shared.set_view_mode(ViewMode::Fit),
         WindowAction::NativePixels => context.shared.set_view_mode(ViewMode::NativePixels),
+        WindowAction::NavigationReleased { direction, at } => {
+            if context.navigation.direction == Some(direction) {
+                stop_navigation(context, loader);
+                context.shared.record_navigation_release_at(at);
+            }
+        }
+        WindowAction::StopNavigation => stop_navigation(context, loader),
     }
 }
 
 fn navigate(context: &mut WindowContext, loader: &ImageLoader, delta: isize) {
+    if context.navigation.direction != Some(delta) {
+        stop_navigation(context, loader);
+        context.navigation.direction = Some(delta);
+        context.navigation.progress_floor =
+            Some(context.navigation.generation.wrapping_add(1).max(1));
+    }
     if let Some(directory) = context.navigation.directory.as_mut() {
         if directory.step(delta) {
             let path = directory.current().to_owned();
@@ -893,6 +994,13 @@ fn navigate(context: &mut WindowContext, loader: &ImageLoader, delta: isize) {
     }
 }
 
+fn stop_navigation(context: &mut WindowContext, loader: &ImageLoader) {
+    context.navigation.direction = None;
+    context.navigation.progress_floor = None;
+    context.shared.end_navigation_progress();
+    loader.end_navigation_progress();
+}
+
 fn schedule_selection(context: &mut WindowContext, loader: &ImageLoader, path: PathBuf) {
     if context.navigation.current_path.as_ref() != Some(&path) {
         context.shared.increment(Counter::NavigationTargetChanged);
@@ -901,9 +1009,10 @@ fn schedule_selection(context: &mut WindowContext, loader: &ImageLoader, path: P
     context.shared.cancel_pending_preloads();
     context.navigation.current_path = Some(path.clone());
     context.navigation.requested_at = Some(Instant::now());
-    context
-        .shared
-        .set_image_generation(context.navigation.generation);
+    context.shared.set_navigation_generation(
+        context.navigation.generation,
+        context.navigation.progress_floor,
+    );
     let preloads = context
         .navigation
         .directory
@@ -915,6 +1024,7 @@ fn schedule_selection(context: &mut WindowContext, loader: &ImageLoader, path: P
         path,
         context.navigation.requested_at.unwrap_or_else(Instant::now),
         preloads,
+        context.navigation.progress_floor,
     );
 }
 
@@ -991,11 +1101,15 @@ fn process_loader_messages(
             LoaderMessage::Current {
                 generation,
                 path,
+                requested_at,
                 result,
             } => {
-                if generation != context.navigation.generation
-                    || context.navigation.current_path.as_deref() != Some(path.as_path())
-                {
+                let target = generation == context.navigation.generation
+                    && context.navigation.current_path.as_deref() == Some(path.as_path());
+                let progress = !target
+                    && context.navigation.direction.is_some()
+                    && context.shared.can_present_image_generation(generation);
+                if !target && !progress {
                     continue;
                 }
                 match result {
@@ -1003,16 +1117,32 @@ fn process_loader_messages(
                         if context.navigation.pending_steps != 0 {
                             continue;
                         }
-                        context.navigation.fallback = None;
-                        context.shared.set_image(
-                            generation,
-                            image,
-                            context.navigation.requested_at.unwrap_or_else(Instant::now),
-                            cpu_cache_hit,
-                        );
-                        set_window_title(hwnd, &path.display().to_string());
+                        if target {
+                            context.navigation.fallback = None;
+                        }
+                        context
+                            .shared
+                            .set_image(generation, image, requested_at, cpu_cache_hit);
+                        if target {
+                            set_window_title(hwnd, &path.display().to_string());
+                        } else if let Some(target_path) = context.navigation.current_path.as_ref() {
+                            set_window_title(
+                                hwnd,
+                                &format!(
+                                    "{} | 正在加载：{}",
+                                    path.display(),
+                                    target_path
+                                        .file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                ),
+                            );
+                        }
                     }
                     Err(error) => {
+                        if !target {
+                            continue;
+                        }
                         if context.navigation.pending_steps != 0 {
                             continue;
                         }
@@ -1180,6 +1310,8 @@ mod tests {
                     view_mode: super::ViewMode::Fit,
                 },
                 image_generation: 0,
+                progress_floor: None,
+                accepted_image_generation: 0,
                 redraw: false,
                 shutdown: false,
                 shutdown_started: None,
@@ -1305,6 +1437,150 @@ mod tests {
     }
 
     #[test]
+    fn hold_progress_is_monotonic_and_does_not_change_the_target() -> Result<()> {
+        let (shared, _event) = test_shared()?;
+        shared.set_navigation_generation(8, Some(3));
+        assert!(shared.claim_image_generation(4));
+        assert_eq!(shared.pending().image_generation, 8);
+        assert!(!shared.can_present_image_generation(3));
+        assert!(shared.claim_image_generation(7));
+        assert!(!shared.claim_image_generation(6));
+        assert!(!shared.claim_image_generation(9));
+        assert!(shared.can_present_image_generation(8));
+        Ok(())
+    }
+
+    #[test]
+    fn release_reverse_and_newer_gpu_hit_reject_old_progress() -> Result<()> {
+        let (shared, _event) = test_shared()?;
+        shared.set_navigation_generation(8, Some(3));
+        shared.end_navigation_progress();
+        assert!(!shared.can_present_image_generation(7));
+        assert!(shared.can_present_image_generation(8));
+        shared.set_navigation_generation(10, Some(9));
+        assert!(!shared.can_present_image_generation(8));
+        assert!(shared.claim_image_generation(10));
+        assert!(!shared.claim_image_generation(9));
+        shared.request_shutdown();
+        assert!(!shared.can_present_image_generation(10));
+        Ok(())
+    }
+
+    #[test]
+    fn release_discards_pending_progress_but_keeps_the_final_target() -> Result<()> {
+        let (shared, _event) = test_shared()?;
+        let image = Arc::new(crate::image::DecodedImage {
+            source: crate::image::SourceIdentity::read(std::path::Path::new("Cargo.toml"))?,
+            width: 1,
+            height: 1,
+            format: crate::image::PixelFormat::Bgra8Premultiplied,
+            stride: 4,
+            pixels: vec![0; 4],
+        });
+        shared.set_navigation_generation(8, Some(3));
+        shared.set_image(5, Arc::clone(&image), Instant::now(), false);
+        assert!(shared.pending().image_update.is_some());
+        shared.end_navigation_progress();
+        assert!(shared.take_pending().image.is_none());
+        shared.set_image(8, image, Instant::now(), false);
+        shared.end_navigation_progress();
+        assert_eq!(shared.take_pending().image.unwrap().0, 8);
+        Ok(())
+    }
+
+    #[test]
+    fn budget_rejection_skips_repeated_wic_work_but_rechecks_a_changed_file() -> Result<()> {
+        use crate::image::{
+            ImageBudget, SourceIdentity,
+            worker::{ImageLoader, LoaderMessage},
+        };
+        use std::io::Write;
+        let root = std::env::var_os("PIXSTRIDE_TEST_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("pixstride-rejection-{}", std::process::id()));
+        std::fs::create_dir_all(&root)?;
+        let path = root.join("small.bmp");
+        let mut bmp = vec![0u8; 62];
+        bmp[..2].copy_from_slice(b"BM");
+        bmp[2..6].copy_from_slice(&62u32.to_le_bytes());
+        bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+        bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bmp[18..22].copy_from_slice(&2i32.to_le_bytes());
+        bmp[22..26].copy_from_slice(&1i32.to_le_bytes());
+        bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bmp[28..30].copy_from_slice(&32u16.to_le_bytes());
+        std::fs::write(&path, bmp)?;
+        let (shared, _event) = test_shared()?;
+        let mut loader = ImageLoader::start(
+            ImageBudget {
+                max_decoded_bytes: 4,
+                ..ImageBudget::default()
+            },
+            Arc::clone(&shared),
+        )?;
+        let result = (|| -> Result<()> {
+            for generation in 1..=3 {
+                if generation == 3 {
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&path)?
+                        .write_all(&[0])?;
+                }
+                shared.set_image_generation(generation);
+                loader.request_identity(generation, path.clone(), Instant::now(), Vec::new(), None);
+                loader.request_decode(super::ResolvedSelection {
+                    generation,
+                    path: path.clone(),
+                    identity: SourceIdentity::read(&path)?,
+                    requested_at: Instant::now(),
+                    preloads: Vec::new(),
+                });
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    if Instant::now() > deadline {
+                        anyhow::bail!("预算拒绝测试超时");
+                    }
+                    // SAFETY: loader 在循环及其后台线程结束前独占事件，等待不会关闭或转移句柄。
+                    unsafe {
+                        let _ = WaitForSingleObject(loader.ready_handle(), 100);
+                    }
+                    let mut finished = false;
+                    while let Some(message) = loader.try_receive() {
+                        if let LoaderMessage::Current {
+                            generation: received,
+                            result,
+                            ..
+                        } = message
+                        {
+                            assert_eq!(received, generation);
+                            assert!(result.unwrap_err().contains("超过当前单图 CPU 预算"));
+                            finished = true;
+                        }
+                    }
+                    if finished {
+                        break;
+                    }
+                }
+            }
+            assert_eq!(
+                shared
+                    .metrics
+                    .lock()
+                    .unwrap()
+                    .counter(crate::diagnostics::Counter::BudgetRejectionHit),
+                1
+            );
+            assert!(shared.metrics_report().contains("WIC GetFrame: n=2"));
+            Ok(())
+        })();
+        loader.request_stop();
+        loader.join()?;
+        std::fs::remove_dir_all(root)?;
+        result
+    }
+
+    #[test]
     fn worker_shutdown_timeout_reaches_zero_after_grace_period() {
         let started = Instant::now() - Duration::from_secs(3);
         assert_eq!(super::remaining_worker_shutdown_ms(started), 0);
@@ -1343,6 +1619,146 @@ mod tests {
         Ok(())
     }
 
+    fn pump(
+        context: &mut super::WindowContext,
+        loader: &crate::image::worker::ImageLoader,
+        hwnd: windows::Win32::Foundation::HWND,
+        until: impl Fn() -> bool,
+    ) -> Result<()> {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !until() {
+            if Instant::now() >= deadline {
+                anyhow::bail!("诊断等待超时");
+            }
+            // SAFETY: 当前测试持有 ImageLoader，等待的事件在测试收尾 join 后才关闭；20 ms 超时只用于检查诊断期限。
+            unsafe {
+                let _ = WaitForSingleObject(loader.ready_handle(), 20);
+            }
+            let mut message = MSG::default();
+            // SAFETY: 测试线程拥有 HWND 并独占其消息队列；只分发当前线程取出的有效消息。
+            unsafe {
+                while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                    let _ = TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            }
+            super::process_loader_messages(context, loader, hwnd);
+            super::process_gpu_probe_reply(context, loader, hwnd);
+        }
+        Ok(())
+    }
+
+    /// 通过注入慢 CopyPixels 工作模拟长按，验证持续进度、反向和松键；不声称完成实际键盘或视觉验收。
+    #[test]
+    #[ignore = "需要 HWND 和 D3D11，显式运行 Release 长按诊断"]
+    fn release_hold_navigation_probe() -> Result<()> {
+        use crate::{
+            diagnostics::Counter,
+            image::{ImageBudget, worker::ImageLoader},
+            window,
+        };
+        // 仅诊断构建可禁用进度区间，复现此前“所有过期结果丢弃”的策略作为同负载参照。
+        let strict_reference = std::env::var_os("PIXSTRIDE_TEST_STRICT_GENERATION").is_some();
+        let root = std::env::var_os("PIXSTRIDE_TEST_ROOT")
+            .map(std::path::PathBuf::from)
+            .context("设置 PIXSTRIDE_TEST_ROOT 指向仓库外诊断目录")?
+            .join(format!("hold-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&root)?;
+        for index in 0..40u8 {
+            let size = 54 + 64 * 64 * 4;
+            let mut bmp = vec![index.saturating_mul(5); size];
+            bmp[..54].fill(0);
+            bmp[..2].copy_from_slice(b"BM");
+            bmp[2..6].copy_from_slice(&(size as u32).to_le_bytes());
+            bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+            bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+            bmp[18..22].copy_from_slice(&64i32.to_le_bytes());
+            bmp[22..26].copy_from_slice(&64i32.to_le_bytes());
+            bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+            bmp[28..30].copy_from_slice(&32u16.to_le_bytes());
+            std::fs::write(root.join(format!("{index:02}.bmp")), bmp)?;
+        }
+        let (shared, _event) = test_shared()?;
+        let mut loader = ImageLoader::start(ImageBudget::default(), Arc::clone(&shared))?;
+        shared.set_ui_ready_event(loader.ready_handle());
+        let mut context = Box::new(super::WindowContext {
+            shared: Arc::clone(&shared),
+            close_started: false,
+            action: None,
+            navigation: super::UiNavigation::default(),
+        });
+        let hwnd = window::create_main_window(&mut context)?;
+        window::show_main_window(hwnd);
+        let render_shared = Arc::clone(&shared);
+        let raw_hwnd = hwnd.0 as isize;
+        let render_thread =
+            std::thread::spawn(move || crate::renderer::render_thread(raw_hwnd, render_shared));
+        let count = |counter| shared.metrics.lock().unwrap().counter(counter);
+        let result = (|| -> Result<()> {
+            super::request_open(&mut context, &loader, hwnd, root.join("00.bmp"))?;
+            pump(&mut context, &loader, hwnd, || {
+                count(Counter::ImageSelectionPresented) > 0
+            })?;
+            loader.set_copy_delay_for_test(Duration::from_millis(80));
+            for direction in [1, -1] {
+                context.navigation.direction = Some(direction);
+                context.navigation.progress_floor =
+                    (!strict_reference).then_some(context.navigation.generation + 1);
+                let progress_before = count(Counter::NavigationProgressPresented);
+                for index in 1..=30 {
+                    let file_index = if direction == 1 { index } else { 39 - index };
+                    let target = root.join(format!("{file_index:02}.bmp"));
+                    super::schedule_selection(&mut context, &loader, target.clone());
+                    let deadline = Instant::now() + Duration::from_millis(20);
+                    pump(&mut context, &loader, hwnd, || Instant::now() >= deadline)?;
+                    assert_eq!(
+                        context.navigation.current_path.as_ref(),
+                        Some(&target),
+                        "进度帧不得修改目标路径"
+                    );
+                }
+                if strict_reference {
+                    assert_eq!(count(Counter::NavigationProgressPresented), progress_before);
+                } else {
+                    assert!(
+                        count(Counter::NavigationProgressPresented) > progress_before,
+                        "慢解码期间必须显示同方向进度，不能把所有已完成画面丢弃"
+                    );
+                }
+                let target_generation = context.navigation.generation;
+                context.navigation_key_released(direction, Instant::now());
+                super::process_window_action(&mut context, &loader, hwnd);
+                assert!(shared.pending().progress_floor.is_none());
+                assert!(!shared.can_present_image_generation(target_generation - 1));
+                pump(&mut context, &loader, hwnd, || {
+                    shared.metrics.lock().unwrap().presented_generation() == target_generation
+                })?;
+                assert_eq!(context.navigation.generation, target_generation);
+            }
+            Ok(())
+        })();
+        shared.request_shutdown();
+        loader.request_stop();
+        let render_result = render_thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("诊断渲染线程 panic"))?;
+        loader.join()?;
+        // SAFETY: 两个后台文件线程与渲染线程均已退出，当前 UI 线程仍拥有 HWND 和 WindowContext。
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd)?;
+        }
+        println!(
+            "strict_generation_reference={strict_reference}\n{}",
+            shared.metrics_report()
+        );
+        std::fs::remove_dir_all(root)?;
+        result?;
+        render_result
+    }
+
     /// 使用自行生成的 BMP 和真实 D3D11 验证命中路径；不替代桌面人工验收或显示延迟测量。
     #[test]
     #[ignore = "需要可创建 HWND 的 Windows 会话和 D3D11；手动运行 Release 诊断"]
@@ -1352,41 +1768,7 @@ mod tests {
             image::{ImageBudget, worker::ImageLoader},
             window,
         };
-        use windows::Win32::{
-            Foundation::HWND,
-            UI::WindowsAndMessaging::{
-                DestroyWindow, DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
-            },
-        };
-
-        fn pump(
-            context: &mut super::WindowContext,
-            loader: &ImageLoader,
-            hwnd: HWND,
-            until: impl Fn() -> bool,
-        ) -> Result<()> {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while !until() {
-                if Instant::now() >= deadline {
-                    anyhow::bail!("诊断等待超时");
-                }
-                // SAFETY: 当前测试持有 ImageLoader，等待的事件在测试收尾 join 后才关闭；20 ms 超时只用于检查诊断期限。
-                unsafe {
-                    let _ = WaitForSingleObject(loader.ready_handle(), 20);
-                }
-                let mut message = MSG::default();
-                // SAFETY: 测试线程拥有 HWND 并独占其消息队列；只分发当前线程取出的有效消息。
-                unsafe {
-                    while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
-                        let _ = TranslateMessage(&message);
-                        DispatchMessageW(&message);
-                    }
-                }
-                super::process_loader_messages(context, loader, hwnd);
-                super::process_gpu_probe_reply(context, loader, hwnd);
-            }
-            Ok(())
-        }
+        use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
 
         let root = std::env::var_os("PIXSTRIDE_TEST_ROOT")
             .map(std::path::PathBuf::from)

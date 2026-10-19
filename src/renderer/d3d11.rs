@@ -247,7 +247,7 @@ impl Renderer {
                     shared.record(metric, delay);
                 }
                 if let Some((generation, image, cpu_cache_hit)) = work.image {
-                    if !shared.is_image_generation_current(generation) {
+                    if !shared.can_present_image_generation(generation) {
                         continue;
                     }
                     // 当前请求变更后，旧选择的 GPU 预加载不再有价值。
@@ -280,6 +280,9 @@ impl Renderer {
                             self.image_cache.get(&selection.identity)
                         {
                             let dimensions = (*width, *height);
+                            if !shared.claim_image_generation(selection.generation) {
+                                continue;
+                            }
                             self.current_image = Some(selection.identity.clone());
                             self.current_dimensions = dimensions;
                             self.touch_gpu(&selection.identity);
@@ -325,7 +328,7 @@ impl Renderer {
                 let stale_candidate = self.pending_selection_present.is_some()
                     && self
                         .selection_generation
-                        .is_some_and(|generation| !shared.is_image_generation_current(generation));
+                        .is_some_and(|generation| !shared.can_present_image_generation(generation));
                 if !stale_candidate {
                     self.draw(&snapshot, shared)?;
                 }

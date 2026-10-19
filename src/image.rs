@@ -125,6 +125,34 @@ impl Drop for StageTimer<'_> {
 #[derive(Debug)]
 pub(crate) struct DecodeCancelled;
 
+/// 可由源修订与固定预算重复确定的拒绝；临时读取或解码错误不使用此类型。
+#[derive(Clone, Debug)]
+pub(crate) enum BudgetRejection {
+    Dimension { width: u32, height: u32, limit: u32 },
+    DecodedBytes { bytes: u64, limit: u64 },
+}
+
+impl std::fmt::Display for BudgetRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dimension {
+                width,
+                height,
+                limit,
+            } => write!(
+                f,
+                "图片尺寸 {width}×{height} 超过单张纹理边长上限 {limit}；超大图片路径尚未实现"
+            ),
+            Self::DecodedBytes { bytes, limit } => write!(
+                f,
+                "图片解码需要 {bytes} 字节，超过当前单图 CPU 预算 {limit} 字节"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BudgetRejection {}
+
 impl std::fmt::Display for DecodeCancelled {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("图片任务已过期或正在退出")
@@ -158,10 +186,12 @@ pub(crate) fn checked_layout(
         bail!("图片尺寸不能为零");
     }
     if width > budget.max_dimension || height > budget.max_dimension {
-        bail!(
-            "图片尺寸 {width}×{height} 超过单张纹理边长上限 {}；超大图片路径尚未实现",
-            budget.max_dimension
-        );
+        return Err(BudgetRejection::Dimension {
+            width,
+            height,
+            limit: budget.max_dimension,
+        }
+        .into());
     }
     let stride = u64::from(width)
         .checked_mul(4)
@@ -170,10 +200,11 @@ pub(crate) fn checked_layout(
         .checked_mul(u64::from(height))
         .context("图片像素缓冲区大小计算溢出")?;
     if bytes > budget.max_decoded_bytes {
-        bail!(
-            "图片解码需要 {bytes} 字节，超过当前单图 CPU 预算 {} 字节",
-            budget.max_decoded_bytes
-        );
+        return Err(BudgetRejection::DecodedBytes {
+            bytes,
+            limit: budget.max_decoded_bytes,
+        }
+        .into());
     }
     let stride = u32::try_from(stride).context("图片行跨度超过 WIC 支持范围")?;
     let allocation = usize::try_from(bytes).context("图片缓冲区超过当前进程地址范围")?;
@@ -262,9 +293,22 @@ pub(crate) fn decode_wic(
     drop(decoder_timer);
     check_decode_current(&is_current)?;
     let frame_timer = timer(Metric::WicFrameMetadata);
+    let get_frame_timer = timer(Metric::WicGetFrame);
     // SAFETY: 当前支持格式按单帧静态图处理；索引 0 从 Decoder 的有效帧范围读取。
     let frame = unsafe { decoder.GetFrame(0) }.context("读取图片首帧失败")?;
+    drop(get_frame_timer);
+    check_decode_current(&is_current)?;
+    // 先检查原始尺寸；旋转不改变总像素字节，也不会改变两个边长均须合规的结论。
+    let source_budget_timer = timer(Metric::ImageSourceBudget);
+    let (mut source_width, mut source_height) = (0, 0);
+    // SAFETY: 两个输出槽是有效 u32，frame 始终由当前 MTA 线程持有。
+    unsafe { frame.GetSize(&mut source_width, &mut source_height) }
+        .context("读取图片原始尺寸失败")?;
+    checked_layout(source_width, source_height, budget)?;
+    drop(source_budget_timer);
+    let exif_timer = timer(Metric::WicExif);
     let orientation = exif_orientation(&frame);
+    drop(exif_timer);
     let transform = orientation_transform(orientation);
     drop(frame_timer);
     drop(open_timer);
@@ -418,6 +462,138 @@ mod tests {
         path
     }
 
+    /// 对自行生成的 JPEG 比较原尺寸与解码器原生缩小，不读取用户图片。
+    #[test]
+    #[ignore = "显式运行的 Release JPEG 解码诊断"]
+    fn release_jpeg_native_scale_probe() -> Result<()> {
+        use std::time::Instant;
+        use windows::Win32::{
+            Foundation::GENERIC_WRITE,
+            Graphics::Imaging::{
+                GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR,
+                GUID_WICPixelFormat32bppBGRA, IWICBitmapSourceTransform, WICBitmapEncoderNoCache,
+            },
+            System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
+        };
+        use windows::core::{Interface, PCWSTR};
+        let root = unique_test_dir("pixstride-jpeg-native");
+        let path = root.join("generated.jpg");
+        let thread_path = path.clone();
+        std::thread::spawn(move || -> Result<()> {
+            let _com = ComMta::initialize()?;
+            // SAFETY: 此测试线程已初始化 MTA；所有 WIC 对象在该线程创建和释放。
+            let factory: IWICImagingFactory =
+                unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }?;
+            let wide = wide_nul(&thread_path);
+            {
+                // SAFETY: 路径以 NUL 结尾且始终存活；输出位于测试独占目录，非用户原图。
+                let stream = unsafe { factory.CreateStream()? };
+                // SAFETY: UTF-16 缓冲区有效；此测试独占新文件的写入。
+                unsafe { stream.InitializeFromFilename(PCWSTR(wide.as_ptr()), GENERIC_WRITE.0) }?;
+                // SAFETY: JPEG GUID 是静态常量；编码接口只在当前 MTA 使用。
+                let encoder =
+                    unsafe { factory.CreateEncoder(&GUID_ContainerFormatJpeg, std::ptr::null()) }?;
+                // SAFETY: 流活到 Commit，编码器尚未初始化。
+                unsafe { encoder.Initialize(&stream, WICBitmapEncoderNoCache) }?;
+                let (mut frame, mut options) = (None, None);
+                // SAFETY: 输出槽是可写的栈变量，编码器在当前线程存活。
+                unsafe { encoder.CreateNewFrame(&mut frame, &mut options) }?;
+                let frame = frame.context("JPEG 编码器未返回帧")?;
+                // SAFETY: 帧只在当前 MTA 使用，默认属性有效。
+                unsafe { frame.Initialize(None) }?;
+                // SAFETY: 固定的 4096×3072 测试图，尺寸不超过当前预算。
+                unsafe { frame.SetSize(4096, 3072) }?;
+                let mut format = GUID_WICPixelFormat24bppBGR;
+                // SAFETY: format 是可写 GUID，成功后检查实际格式以保证行布局。
+                unsafe { frame.SetPixelFormat(&mut format) }?;
+                assert_eq!(format, GUID_WICPixelFormat24bppBGR);
+                let mut row = vec![0u8; 4096 * 3];
+                let mut seed = 1u32;
+                for _ in 0..3072 {
+                    for value in &mut row {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 17;
+                        seed ^= seed << 5;
+                        *value = seed as u8;
+                    }
+                    // SAFETY: 单行 BGR24 切片恰好有 4096×3 字节，stride 与帧宽一致。
+                    unsafe { frame.WritePixels(1, 4096 * 3, &row) }?;
+                }
+                // SAFETY: 顺序提交帧和编码器，流在作用域退出前保持存活。
+                unsafe {
+                    frame.Commit()?;
+                    encoder.Commit()?;
+                }
+            }
+            let identity = SourceIdentity::read(&thread_path)?;
+            for round in 0..8 {
+                let full_started = Instant::now();
+                let full = decode_wic(
+                    &thread_path,
+                    &identity,
+                    ImageBudget::default(),
+                    |_, _| {},
+                    || true,
+                )?;
+                let full_time = full_started.elapsed();
+                drop(full);
+                let reduced_started = Instant::now();
+                // SAFETY: 路径有效且只读；Decoder 与 Frame 都归当前 MTA 线程所有。
+                let decoder = unsafe {
+                    factory.CreateDecoderFromFilename(
+                        PCWSTR(wide.as_ptr()),
+                        None,
+                        super::GENERIC_READ,
+                        super::WICDecodeMetadataCacheOnDemand,
+                    )
+                }?;
+                // SAFETY: 测试文件有一帧；接口保留到像素复制完成。
+                let frame = unsafe { decoder.GetFrame(0) }?;
+                let transform: IWICBitmapSourceTransform = frame.cast()?;
+                let (mut width, mut height) = (1024, 768);
+                let mut format = GUID_WICPixelFormat32bppBGRA;
+                // SAFETY: 两个尺寸与 GUID 输出槽有效，返回值直接用于 CopyPixels。
+                unsafe {
+                    transform.GetClosestSize(&mut width, &mut height)?;
+                    transform.GetClosestPixelFormat(&mut format)?;
+                }
+                assert_eq!(format, GUID_WICPixelFormat32bppBGRA);
+                // SAFETY: 变换选项来自静态 WIC 常量，无外部指针。
+                assert!(
+                    unsafe { transform.DoesSupportTransform(WICBitmapTransformRotate0) }?.as_bool()
+                );
+                let (stride, allocation, _) =
+                    checked_layout(width, height, ImageBudget::default())?;
+                let mut pixels = vec![0u8; allocation];
+                // SAFETY: 尺寸和格式已协商，切片长度为 stride×height，输出为 BGRA8；只读取整个测试图。
+                unsafe {
+                    transform.CopyPixels(
+                        std::ptr::null(),
+                        width,
+                        height,
+                        &format,
+                        WICBitmapTransformRotate0,
+                        stride,
+                        &mut pixels,
+                    )
+                }?;
+                println!(
+                    "jpeg-scale round={round} full_us={} reduced_us={} reduced={}x{} bytes={}",
+                    full_time.as_micros(),
+                    reduced_started.elapsed().as_micros(),
+                    width,
+                    height,
+                    pixels.len()
+                );
+                assert!(pixels.chunks_exact(4).all(|pixel| pixel[3] == 255));
+            }
+            Ok(())
+        })
+        .join()
+        .unwrap()?;
+        Ok(())
+    }
+
     fn write_test_bmp(path: &Path) {
         let mut bmp = vec![0u8; 62];
         bmp[0..2].copy_from_slice(b"BM");
@@ -515,6 +691,45 @@ mod tests {
         .join()
         .unwrap();
         assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_budget_rejection_precedes_exif_and_pixel_allocation() {
+        use crate::diagnostics::Metric;
+        let root = unique_test_dir("pixstride-budget-preflight");
+        let path = root.join("small.bmp");
+        write_test_bmp(&path);
+        std::thread::spawn(move || {
+            let _com = ComMta::initialize().unwrap();
+            let identity = SourceIdentity::read(&path).unwrap();
+            let stages = std::cell::RefCell::new(Vec::new());
+            let budget = ImageBudget {
+                max_decoded_bytes: 4,
+                ..ImageBudget::default()
+            };
+            let error = decode_wic(
+                &path,
+                &identity,
+                budget,
+                |metric, _| stages.borrow_mut().push(metric),
+                || true,
+            )
+            .unwrap_err();
+            assert!(error.is::<super::BudgetRejection>());
+            let stages = stages.into_inner();
+            assert!(
+                stages
+                    .iter()
+                    .any(|metric| matches!(metric, Metric::ImageSourceBudget))
+            );
+            assert!(!stages.iter().any(|metric| matches!(
+                metric,
+                Metric::WicExif | Metric::PixelAllocation | Metric::WicCopyPixels
+            )));
+        })
+        .join()
+        .unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
 

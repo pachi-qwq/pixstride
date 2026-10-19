@@ -6,7 +6,9 @@ use std::{
     sync::Arc,
 };
 
-use super::{DecodedImage, SourceIdentity};
+use super::{BudgetRejection, DecodedImage, SourceIdentity};
+
+const MAX_BUDGET_REJECTIONS: usize = 32;
 
 /// 按解码像素字节计费的 CPU 缓存。
 pub(crate) struct CpuCache {
@@ -14,6 +16,7 @@ pub(crate) struct CpuCache {
     bytes: u64,
     entries: HashMap<SourceIdentity, Arc<DecodedImage>>,
     lru: VecDeque<SourceIdentity>,
+    rejections: VecDeque<(SourceIdentity, BudgetRejection)>,
 }
 
 impl CpuCache {
@@ -23,6 +26,7 @@ impl CpuCache {
             bytes: 0,
             entries: HashMap::new(),
             lru: VecDeque::new(),
+            rejections: VecDeque::new(),
         }
     }
 
@@ -51,6 +55,23 @@ impl CpuCache {
 
     pub(crate) fn byte_cost(&self) -> u64 {
         self.bytes
+    }
+
+    /// 预算拒绝最多保留 32 条，不把失败冒充像素缓存成功；不用于临时 I/O 错误。
+    pub(crate) fn remember_rejection(&mut self, source: SourceIdentity, error: BudgetRejection) {
+        self.rejections.retain(|(key, _)| key.path != source.path);
+        if self.rejections.len() == MAX_BUDGET_REJECTIONS {
+            self.rejections.pop_front();
+        }
+        self.rejections.push_back((source, error));
+    }
+
+    /// 完整源修订必须匹配；文件变化后允许重新尝试。
+    pub(crate) fn rejection(&self, source: &SourceIdentity) -> Option<BudgetRejection> {
+        self.rejections
+            .iter()
+            .find(|(key, _)| key == source)
+            .map(|(_, error)| error.clone())
     }
 
     fn remove_older_revision(&mut self, path: &Path) {
@@ -141,6 +162,29 @@ mod tests {
     fn oversized_entry_is_not_cached() {
         let mut cache = CpuCache::new(0);
         cache.insert(image("large.png", 1, 0));
+        assert_eq!(cache.byte_cost(), 0);
+    }
+
+    #[test]
+    fn budget_rejections_are_bounded_and_expire_when_the_source_revision_changes() {
+        let mut cache = CpuCache::new(8);
+        let old = image("same.png", 1, 0);
+        let new = image("same.png", 2, 0);
+        let rejection = super::BudgetRejection::DecodedBytes {
+            bytes: 100,
+            limit: 8,
+        };
+        cache.remember_rejection(old.source.clone(), rejection.clone());
+        assert!(cache.rejection(&old.source).is_some());
+        assert!(cache.rejection(&new.source).is_none());
+        for number in 0..super::MAX_BUDGET_REJECTIONS {
+            cache.remember_rejection(
+                image(&format!("{number}.png"), 1, 0).source.clone(),
+                rejection.clone(),
+            );
+        }
+        assert_eq!(cache.rejections.len(), super::MAX_BUDGET_REJECTIONS);
+        assert!(cache.rejection(&old.source).is_none());
         assert_eq!(cache.byte_cost(), 0);
     }
 

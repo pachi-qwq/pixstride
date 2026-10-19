@@ -1,6 +1,6 @@
 [English](stage-b.md) | [简体中文](../zh-CN/stage-b.md)
 
-<!-- doc-id: stage-b; revision: 6; status: draft-pr-review -->
+<!-- doc-id: stage-b; revision: 7; status: draft-pr-review -->
 
 # Stage B: image browsing core
 
@@ -40,8 +40,8 @@ the full pixel buffer. The 48,000 × 32,000 stress PNG is outside this path and 
 
 The UI owns one monotonically increasing `generation` for selection changes. The worker keeps one
 pending current request, one directory scan, and at most two adjacent preloads. New selections replace
-pending work; a WIC call already in progress is allowed to finish, then its result is discarded if its
-generation is stale. The CPU LRU is owned by the worker and keyed by canonical path, file length, and
+pending work; an active WIC call can finish. Results outside the approved same-direction hold interval
+are discarded when their Generation is stale. The CPU LRU is owned by the worker and keyed by canonical path, file length, and
 last-write timestamp. This identity detects common replacements but is not a content hash.
 
 The render thread owns the D3D11 texture LRU and the Immediate Context. It reuses an uploaded texture
@@ -58,8 +58,8 @@ Metadata validation is a snapshot: a change after the check may be visible on th
 same-length content changes with unchanged timestamps can still collide. There is no file watcher.
 
 Each stage checks the UI-owned selection Generation. The identity thread and WIC worker each keep
-only the latest pending selection, and a newer Generation clears old pending image updates and GPU
-probes. The renderer checks the Generation again before submitting an unpresented candidate. Work
+only the latest pending selection. A newer Generation clears old GPU probes and pending image updates
+except eligible same-direction progress images. The renderer checks the Generation again before submitting an unpresented candidate. Work
 already submitted to DXGI cannot be recalled. Directory scanning waits until the current selection's
 GPU hit or decode scheduling decision, so it does not start ahead of that decision.
 
@@ -88,14 +88,15 @@ The final target and submitted Generation were both 125. A delayed final update 
 the latest valid selection completing, rather than a replay of queued selections; the aggregates do
 not correlate it with the reported key-release instant.
 
-The follow-up keeps the same threads and budgets. It checks selection validity between WIC stages,
+The stage-cancellation follow-up kept the same threads and budgets. It checks selection validity between WIC stages,
 including after opening and before allocation/`CopyPixels`. An obsolete task returns a distinct
 cancellation result instead of continuing avoidable work; it is not counted as a corrupt-file error.
 A synchronous WIC call already in progress is still non-preemptible. This change cannot guarantee
 continuous frame updates during uncached key repeat or eliminate a blocked open.
 
 WIC open now has Factory creation, `CreateDecoderFromFilename`, and `GetFrame`/EXIF submetrics.
-The exit report retains at most 16 slow/error task records, with filename only, selection Generation,
+The exit report retains at most 16 slow/error task records, keeping eight recent and up to eight slower
+older records, with filename only, selection Generation,
 current/preload role, queue/service times, the active current Generation observed at enqueue, outcome,
 and that task's measured stages. The threshold is 100 ms for current-request queue wait or any service;
 actual errors are also retained. Intentional preload idle delay alone does not qualify. Stage-boundary
@@ -143,7 +144,7 @@ A rapid key-repeat run later recorded 233 input events, 146 current worker resul
 requests handled by the render thread. Current request-to-worker-result latency had a 207.604 ms P95
 and a 1.200 s P99 (1.232 s maximum). Current GPU-hit selection-to-`Present` latency had a 10.267 ms
 P95. The difference points to work before rendering, but this run did not separate worker queue delay
-from request processing. Pixstride coalesces pending selection requests and discards stale generations;
+from request processing. That build coalesced pending selection requests and discarded stale generations;
 it prioritizes the latest choice and does not promise to display every intermediate image during key
 repeat. The subsequent run below separates those intervals.
 
@@ -166,6 +167,94 @@ distributions. A conditional queue metric marks requests enqueued while a preloa
 it is not an exact decomposition of every scheduler delay. Navigation target changes and successful
 image-selection `Present` returns are counted, and the report prints the latest target and last
 presented Generation. A GPU-only hit produces no current CPU-cache sample; its absence is intentional.
+
+### Approved progress display during a hold
+
+The owner's `e5c3a2a` retest still found visible pauses. There were 223 target changes but only
+73 image-selection `Present` returns; 77 obsolete tasks stopped between stages. Worker queue wait
+was 8 µs P50, 24.804 ms P95, and 86.586 ms maximum. Service was 31.129 ms P50,
+189.628 ms P95, and 1.371 s maximum. The grouped `GetFrame`/EXIF stage reached 1.358 s,
+while `CreateDecoderFromFilename` reached 31.134 ms and `CopyPixels` reached 303.545 ms.
+This narrows one long tail to frame/metadata handling; it does not establish its underlying cause.
+The old recent-only trace buffer lost that early task, so the report cannot identify its file.
+GPU hits remained fast in that run: n = 54, P50 3.475 ms, P95 4.263 ms, maximum 4.413 ms.
+The five unfinished-at-release targets completed within 128.485 ms; final target/submitted
+Generation both reached 224. Those samples do not explain every perceived pause during the hold.
+
+The owner approved a bounded exception to stale-result rejection: while the same navigation direction
+remains active, an already-running current decode may produce a progress image. The UI maintains the
+first allowed Generation for that direction and the latest target using the existing counter. The
+renderer accepts only nondecreasing Generations in that interval. A progress image changes displayed
+pixels and the title, never the target index/path. The title identifies the displayed path and pending
+target. Pending requests still coalesce; there is no queue of every skipped image or input throttling.
+
+Key release, reversal, focus loss, and file opening close the previous interval. The latest target keeps
+loading; older results cannot subsequently be accepted as progress. A newer GPU-cache activation also
+prevents an older decode from replacing it. All GPU resources remain on the render thread. Frames
+already submitted to DXGI cannot be withdrawn. Errors for obsolete progress candidates are suppressed;
+errors for the current target remain non-modal. Uncached final targets may still wait for synchronous
+WIC work, and a target rejected by the budget reports an error rather than displaying new pixels.
+
+Raw dimensions are now checked immediately after `GetFrame`, before EXIF lookup. `GetFrame`, EXIF
+lookup, and this budget preflight have separate timers. A worker-owned cache retains at most 32 typed
+budget rejections by validated Source Revision, so selecting an unchanged rejected source skips WIC.
+A changed length or timestamp retries decoding. Cloud/read failures and corrupt-image errors are not
+cached as budget rejections; the weak metadata-key limitation remains. The 16 task records now retain
+the newest eight and up to eight slower older records, rather than losing a long tail to fast errors.
+
+The Release test `release_hold_navigation_probe` uses 40 generated 64 × 64 BMPs and hardware D3D11.
+It injects 80 ms of non-preemptible worker work after `CopyPixels`, changes targets every approximately
+20 ms in each direction, and verifies progress and final completion after release. A test-only strict
+Generation mode disables the progress interval to reproduce the earlier discard policy. Each variant
+was run once; startup, OS scheduling, and cache effects are uncontrolled. No real keyboard events,
+private images, or cloud files were used.
+
+| Same injected workload | Strict Generation reference | Progress display |
+|---|---|---|
+| Target changes | 60 | 60 |
+| Image-selection `Present` returns, including first/final images | 4 | 23 |
+| Progress `Present` returns | 0 | 13 |
+| Final target / submitted Generation | 61 / 61 | 61 / 61 |
+| CPU / GPU cache-owned peak bytes | 49,152 / 49,152 | 245,760 / 245,760 |
+
+The progress run's worker service P50 was 81.167 ms, including the injected delay; this is not faster
+decoding. Its only unfinished-at-release target completed after 108.739 ms; n = 1 cannot support
+release-latency percentiles. The strict run had two such samples, 94.205–119.231 ms. Progress counts
+compare the submitted image Generation with the target observed when recording the successful return.
+The result verifies that completed work can update the image during a hold; real-directory smoothness
+and second-long WIC stalls still need owner verification.
+
+The cache regression was rerun: GPU-hit selection-to-`Present`, n = 103, was P50 762 µs,
+P95 7,160 µs, P99 8,015 µs, maximum 9,988 µs. The 100 forced-GPU-eviction CPU hits were
+P50 799 µs, P95 5,999 µs, P99 7,818 µs, maximum 7,869 µs. CPU hits were 100/103 (97.1%);
+GPU hits were 103/205 (50.2%), including deliberate evictions. Worker queue P50/P95/P99/max
+was 10/67/1,052/1,546 µs, and service was 117/429/4,529/5,817 µs. Cache peaks remained
+786,432 CPU bytes and 1,048,576 GPU bytes. The two successful uncached WIC selections remain too
+few for meaningful miss percentiles. These are application-side fixture results, not display latency.
+
+A separate eight-pair probe on a generated 4096 × 3072 noisy JPEG compared full decode with a native
+1024 × 768 decode. Full-decode P50 was 115.921 ms; native-scale P50 was 100.128 ms. This small
+experiment does not justify a new preview/quality lifecycle, so native shrinking is not used in the
+viewer. WIC's [closest-size contract](https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmapsourcetransform-getclosestsize)
+and [native copy contract](https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmapsourcetransform-copypixels)
+require decoder-negotiated size and format. The probe does not establish performance for other images. A second eight-pair run had P50 values
+of 136.405 ms full and 121.634 ms scaled; this variation reinforces the limited conclusion.
+
+Reproduce the progress test after the existing cache probe:
+
+```powershell
+cargo test --release --locked release_hold_navigation_probe -- --ignored --nocapture
+# Test-only reference mode; remove it before the progress run.
+$env:PIXSTRIDE_TEST_STRICT_GENERATION = "1"
+cargo test --release --locked release_hold_navigation_probe -- --ignored --nocapture
+Remove-Item Env:PIXSTRIDE_TEST_STRICT_GENERATION
+```
+
+Keep `PIXSTRIDE_TEST_ROOT` set to a writable directory outside the repository. The ordinary test suite
+now has 46 passing tests and three opt-in diagnostics; the hold, cache, and JPEG probes were explicitly
+run. Regression coverage includes monotonic progress, unchanged targets, release/reversal rejection,
+newer GPU-hit precedence, budget preflight before EXIF, bounded rejection reuse/source changes, and
+retaining a worst task across repeated fast errors. Actual long-hold GUI acceptance remains pending.
 
 ### Release diagnostics on generated local samples
 
@@ -223,7 +312,9 @@ OneDrive directory. Record cloud availability and storage location; do not infer
 drive letter. Run the Release executable, wait for the first image and neighbors, and perform these
 separate runs: 30 short alternating presses, a 3-second hold in each direction, and rapid reverse
 navigation. After each run release the key, record the target filename, verify the final image, wait,
-then close normally to collect timings. Include a budget-rejected image and verify that the title-bar
+then close normally to collect timings. During a hold, check that progress images advance in the same
+direction; after release/reversal/focus loss, check that no older progress candidate replaces the latest
+selection. Compare the new progress counter as well. Include a budget-rejected image and verify that the title-bar
 error allows further navigation without dismissing a dialog. Repeat with a known unavailable cloud
 file only if its read/download behavior is acceptable to the owner.
 

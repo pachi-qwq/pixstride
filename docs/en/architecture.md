@@ -1,6 +1,6 @@
 [English](architecture.md) | [简体中文](../zh-CN/architecture.md)
 
-<!-- doc-id: architecture; revision: 6; status: implementation-review -->
+<!-- doc-id: architecture; revision: 7; status: implementation-review -->
 
 # Architecture scope and Stage A review
 
@@ -68,7 +68,14 @@ WIC, the CPU LRU, directory scanning, and adjacent preloads. It sends owned BGRA
 channel; no WIC COM interface crosses threads. The render thread owns the D3D11 texture LRU and performs
 texture creation and drawing. A separate bounded identity thread validates source metadata before a
 render-thread GPU-cache probe; hits bypass the WIC worker, and misses schedule decode. UI, identity,
-decode, and render stages use the same selection Generation to reject obsolete work. See [Stage B implementation and limits](stage-b.md).
+decode, and render stages use the same selection Generation to reject obsolete work. The owner approved
+same-direction progress during a hold: the UI keeps a lower bound in that existing Generation range,
+and the renderer accepts only nondecreasing completed images without changing the target. Release,
+reversal, focus loss, and file opening close the interval; the final latest target continues loading.
+A newer GPU hit prevents older decoded pixels from replacing it. This adds no input throttling, worker,
+or unbounded request queue. Submitted DXGI frames cannot be withdrawn. Raw dimension budgets are
+checked before EXIF; the worker retains at most 32 budget rejections by validated Source Revision,
+separately from pixel caches and transient read errors. See [Stage B implementation and limits](stage-b.md).
 
 The [D3D11 thread rules](https://learn.microsoft.com/en-us/windows/win32/direct3d11/overviews-direct3d-11-render-multi-thread-intro)
 and [Present contract](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-present)

@@ -8,7 +8,7 @@ use std::{
 const MAX_SAMPLES_PER_METRIC: usize = 4096;
 const MAX_SLOW_IMAGE_TASKS: usize = 16;
 
-/// 最多保留 16 个慢请求或错误的关联记录，只在退出时输出；不在解码热路径同步写日志。
+/// 最多保留 16 条关联记录，包含最近 8 条及更早记录中最慢的 8 条；只在退出时输出。
 #[derive(Default)]
 pub(crate) struct ImageTaskTrace {
     pub(crate) generation: u64,
@@ -81,6 +81,9 @@ pub(crate) enum Metric {
     WicDecoderOpen,
     WicFrameMetadata,
     KeyReleaseToPresent,
+    WicGetFrame,
+    WicExif,
+    ImageSourceBudget,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -103,10 +106,12 @@ pub(crate) enum Counter {
     ImageDecodeFailed,
     ImageLoadFailed,
     DecodeCancelled,
+    BudgetRejectionHit,
+    NavigationProgressPresented,
 }
 
 impl Counter {
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 20] = [
         Self::CpuCacheHit,
         Self::CpuCacheMiss,
         Self::GpuCacheHit,
@@ -125,6 +130,8 @@ impl Counter {
         Self::ImageDecodeFailed,
         Self::ImageLoadFailed,
         Self::DecodeCancelled,
+        Self::BudgetRejectionHit,
+        Self::NavigationProgressPresented,
     ];
 
     fn index(self) -> usize {
@@ -147,6 +154,8 @@ impl Counter {
             Self::ImageDecodeFailed => 15,
             Self::ImageLoadFailed => 16,
             Self::DecodeCancelled => 17,
+            Self::BudgetRejectionHit => 18,
+            Self::NavigationProgressPresented => 19,
         }
     }
 
@@ -170,12 +179,14 @@ impl Counter {
             Self::ImageDecodeFailed => "WIC 解码失败（含预算拒绝）",
             Self::ImageLoadFailed => "当前图片读取或解码失败提示",
             Self::DecodeCancelled => "阶段间提前取消的过期图片任务",
+            Self::BudgetRejectionHit => "同一源修订的预算拒绝命中",
+            Self::NavigationProgressPresented => "长按进度图片 Present 成功返回次数",
         }
     }
 }
 
 impl Metric {
-    const ALL: [Self; 48] = [
+    const ALL: [Self; 51] = [
         Self::Startup,
         Self::D3dInitialization,
         Self::DeviceCreation,
@@ -224,6 +235,9 @@ impl Metric {
         Self::WicDecoderOpen,
         Self::WicFrameMetadata,
         Self::KeyReleaseToPresent,
+        Self::WicGetFrame,
+        Self::WicExif,
+        Self::ImageSourceBudget,
     ];
 
     fn index(self) -> usize {
@@ -276,6 +290,9 @@ impl Metric {
             Self::WicDecoderOpen => 45,
             Self::WicFrameMetadata => 46,
             Self::KeyReleaseToPresent => 47,
+            Self::WicGetFrame => 48,
+            Self::WicExif => 49,
+            Self::ImageSourceBudget => 50,
         }
     }
 
@@ -331,6 +348,9 @@ impl Metric {
             Self::WicDecoderOpen => "WIC CreateDecoderFromFilename",
             Self::WicFrameMetadata => "WIC GetFrame 与 EXIF 元数据查询",
             Self::KeyReleaseToPresent => "方向键松开到该目标 Present 返回（仅松键时未完成的目标）",
+            Self::WicGetFrame => "WIC GetFrame",
+            Self::WicExif => "EXIF Orientation 查询",
+            Self::ImageSourceBudget => "原始尺寸预算预检（EXIF 前）",
         }
     }
 }
@@ -384,7 +404,7 @@ struct Summary {
 /// 记录渲染与窗口生命周期中的计时样本。
 pub(crate) struct Metrics {
     samples: Vec<Samples>,
-    counters: [u64; 18],
+    counters: [u64; 20],
     slow_image_tasks: VecDeque<ImageTaskTrace>,
     cpu_cache_bytes: u64,
     gpu_cache_bytes: u64,
@@ -401,7 +421,7 @@ impl Default for Metrics {
             samples: std::iter::repeat_with(Samples::default)
                 .take(Metric::ALL.len())
                 .collect(),
-            counters: [0; 18],
+            counters: [0; 20],
             slow_image_tasks: VecDeque::new(),
             cpu_cache_bytes: 0,
             gpu_cache_bytes: 0,
@@ -428,12 +448,28 @@ impl Metrics {
             },
         });
     }
-    /// 只保留最近的有界慢请求记录；调用者先筛选慢任务或真实错误。
+    /// 有界保留最近记录和更早的最慢记录；调用者先筛选慢任务或真实错误。
     pub(crate) fn record_image_task(&mut self, trace: ImageTaskTrace) {
-        if self.slow_image_tasks.len() == MAX_SLOW_IMAGE_TASKS {
-            self.slow_image_tasks.pop_front();
-        }
         self.slow_image_tasks.push_back(trace);
+        if self.slow_image_tasks.len() > MAX_SLOW_IMAGE_TASKS {
+            // 重复的快速预算拒绝不能挤掉最有价值的秒级长尾。最近一半无条件保留，其余按工作/等待总耗时保留。
+            let older = self.slow_image_tasks.len() - MAX_SLOW_IMAGE_TASKS / 2;
+            let least_useful = self
+                .slow_image_tasks
+                .iter()
+                .take(older)
+                .enumerate()
+                .min_by_key(|(_, task)| {
+                    task.service.saturating_add(if task.preload {
+                        Duration::ZERO
+                    } else {
+                        task.queue
+                    })
+                })
+                .map(|(index, _)| index)
+                .unwrap_or(0);
+            self.slow_image_tasks.remove(least_useful);
+        }
     }
     pub(crate) fn set_target_generation(&mut self, generation: u64) {
         self.target_generation = generation;
@@ -578,7 +614,9 @@ impl Metrics {
         report.push_str(
             "Present duration is not display latency or input-to-photon latency. Use PresentMon/ETW or an external display measurement for displayed-frame timing.\n",
         );
-        report.push_str("Recent slow/error image tasks (at most 16; microseconds):\n");
+        report.push_str(
+            "Slow/error image tasks (at most 16: recent 8 plus slowest older 8; microseconds):\n",
+        );
         for trace in &self.slow_image_tasks {
             let _ = std::fmt::Write::write_fmt(
                 &mut report,
@@ -683,6 +721,38 @@ mod tests {
         assert!(report.contains("generation=16 role="));
         assert!(report.contains("outcome=cancelled-stale"));
         assert!(report.contains("WIC 打开源文件和读取元数据: 1200000"));
+    }
+
+    #[test]
+    fn repeated_fast_errors_do_not_evict_the_worst_task() {
+        let mut metrics = Metrics::default();
+        metrics.record_image_task(super::ImageTaskTrace {
+            generation: 1,
+            service: Duration::from_secs(2),
+            ..Default::default()
+        });
+        for generation in 2..=60 {
+            metrics.record_image_task(super::ImageTaskTrace {
+                generation,
+                service: Duration::from_millis(1),
+                ..Default::default()
+            });
+        }
+        assert_eq!(metrics.slow_image_tasks.len(), super::MAX_SLOW_IMAGE_TASKS);
+        assert!(
+            metrics
+                .slow_image_tasks
+                .iter()
+                .any(|task| task.generation == 1)
+        );
+        for generation in 53..=60 {
+            assert!(
+                metrics
+                    .slow_image_tasks
+                    .iter()
+                    .any(|task| task.generation == generation)
+            );
+        }
     }
 
     #[test]

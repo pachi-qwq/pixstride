@@ -1,6 +1,6 @@
 [English](../en/architecture.md) | [简体中文](architecture.md)
 
-<!-- doc-id: architecture; revision: 6; status: implementation-review -->
+<!-- doc-id: architecture; revision: 7; status: implementation-review -->
 
 # 架构范围与阶段 A 评审
 
@@ -58,7 +58,10 @@ Rust COM 包装器管理引用计数，但不保证 apartment、缓冲区和生�
 UI 线程维护当前 `Generation` 和目录选择。一个有界 MTA 工作线程独占 WIC、CPU LRU、目录扫描和相邻预加载。
 线程通过 Channel 发送自有 BGRA8 缓冲区，WIC COM 接口不会跨线程传递。渲染线程独占 D3D11 Texture LRU，负责创建纹理和绘制。
 另外一个有界身份线程校验源元数据，再交给渲染线程探测 GPU 缓存；命中绕过 WIC Worker，未命中才调度解码。
-UI、身份、解码和渲染阶段使用同一选择 Generation 拒绝过期工作。实现范围和限制见[阶段 B 说明](stage-b.md)。
+UI、身份、解码和渲染阶段使用同一选择 Generation 拒绝过期工作。负责人批准同方向长按进度显示：UI 在已有 Generation
+区间内维护下界，渲染器只接受代际不倒退的已完成图片，不修改目标。松键、反向、失焦或打开文件时关闭区间，最新目标继续加载。
+较新 GPU 命中禁止旧解码覆盖；没有降低输入频率、增加线程或引入无界请求队列。已提交 DXGI 的帧不能撤回。原始尺寸预算在
+EXIF 前检查；Worker 按已校验的源修订最多保留 32 条预算拒绝，与像素缓存和暂时读取错误分开。实现范围和限制见[阶段 B 说明](stage-b.md)。
 
 [D3D11 线程规则](https://learn.microsoft.com/en-us/windows/win32/direct3d11/overviews-direct3d-11-render-multi-thread-intro)
 和 [Present 契约](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-present)

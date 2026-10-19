@@ -24,8 +24,8 @@ use crate::{
 };
 
 use super::{
-    ComMta, DecodeCancelled, DecodedImage, ImageBudget, SourceIdentity, cache::CpuCache,
-    check_decode_current, decode_wic, navigation::ImageDirectory,
+    BudgetRejection, ComMta, DecodeCancelled, DecodedImage, ImageBudget, SourceIdentity,
+    cache::CpuCache, check_decode_current, decode_wic, navigation::ImageDirectory,
 };
 
 const PRELOAD_IDLE_DELAY: Duration = Duration::from_millis(120);
@@ -42,6 +42,7 @@ pub(crate) enum LoaderMessage {
     Current {
         generation: u64,
         path: PathBuf,
+        requested_at: Instant,
         result: std::result::Result<(Arc<DecodedImage>, bool), String>,
     },
     Directory {
@@ -124,6 +125,7 @@ struct ScanJob {
 #[derive(Default)]
 struct WorkState {
     generation: u64,
+    progress_floor: Option<u64>,
     selection_pending: bool,
     preload_running: bool,
     active_current_generation: Option<u64>,
@@ -134,6 +136,8 @@ struct WorkState {
     stopping: bool,
     #[cfg(test)]
     test_gate: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
+    #[cfg(test)]
+    test_copy_delay: Duration,
 }
 
 struct WorkerControl {
@@ -142,6 +146,17 @@ struct WorkerControl {
 }
 
 impl WorkerControl {
+    // 身份校验、扫描和预加载仍只处理最新选择；只有当前图片解码可在同方向长按区间内完成。
+    fn can_finish_current(&self, generation: u64) -> bool {
+        let state = self.lock();
+        !state.stopping
+            && generation <= state.generation
+            && (generation == state.generation
+                || state
+                    .progress_floor
+                    .is_some_and(|floor| generation >= floor))
+    }
+
     fn lock(&self) -> MutexGuard<'_, WorkState> {
         self.state
             .lock()
@@ -402,16 +417,17 @@ impl ImageLoader {
         state.preload_not_before = None;
         self.control.changed.notify_one();
         drop(state);
-        self.request_identity(generation, path, requested_at, Vec::new());
+        self.request_identity(generation, path, requested_at, Vec::new(), None);
     }
 
-    /// 替换待处理的身份校验，立即使旧解码结果和排队预加载失效；不在调用线程读文件。
+    /// 替换待处理身份校验和预加载；同方向长按中的活动解码可按进度下界完成，不在调用线程读文件。
     pub(crate) fn request_identity(
         &self,
         generation: u64,
         path: PathBuf,
         requested_at: Instant,
         preloads: Vec<PathBuf>,
+        progress_floor: Option<u64>,
     ) {
         {
             let mut decode = self.control.lock();
@@ -419,6 +435,7 @@ impl ImageLoader {
                 return;
             }
             decode.generation = generation;
+            decode.progress_floor = progress_floor;
             decode.selection_pending = true;
             decode.current = None;
             if decode
@@ -441,6 +458,17 @@ impl ImageLoader {
             preloads: preloads.into_iter().take(2).collect(),
         });
         self.identity_control.changed.notify_one();
+    }
+
+    /// 松键或反向后禁止旧任务作为进度帧完成，最新目标及其单槽请求不受影响。
+    pub(crate) fn end_navigation_progress(&self) {
+        self.control.lock().progress_floor = None;
+        self.control.changed.notify_one();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_copy_delay_for_test(&self, delay: Duration) {
+        self.control.lock().test_copy_delay = delay;
     }
 
     /// GPU 未命中后提交一次解码；调用者和 Worker 都必须使用同一选择代际。
@@ -588,13 +616,16 @@ fn worker_loop(
                 let result = service_image_job(&mut cache, &job, control, budget, shared, true);
                 shared.set_cpu_cache_bytes(cache.byte_cost());
                 shared.record(Metric::ImageRequestToWorker, job.requested_at.elapsed());
-                if control.is_current(job.generation) {
+                if control.can_finish_current(job.generation)
+                    && shared.can_present_image_generation(job.generation)
+                {
                     send(
                         sender,
                         ready,
                         LoaderMessage::Current {
                             generation: job.generation,
                             path: job.path,
+                            requested_at: job.requested_at,
                             result: result.map_err(|error| format!("{error:#}")),
                         },
                     );
@@ -675,8 +706,21 @@ fn service_image_job(
         budget,
         shared,
         current,
-        || control.is_current(job.generation),
+        || {
+            if current {
+                control.can_finish_current(job.generation)
+                    && shared.can_present_image_generation(job.generation)
+            } else {
+                control.is_current(job.generation)
+            }
+        },
         |metric, elapsed| {
+            #[cfg(test)]
+            if matches!(metric, Metric::WicCopyPixels) {
+                // 在调用返回后模拟不可抢占工作，不持有队列锁，也不改变正式程序的等待机制。
+                let delay = control.lock().test_copy_delay;
+                thread::sleep(delay);
+            }
             shared.record(metric, elapsed);
             stages.borrow_mut().push((metric, elapsed));
         },
@@ -794,6 +838,10 @@ fn load_with_cache(
         Counter::CpuPreloadMiss
     });
     record(Metric::CpuCacheLookup, lookup_started.elapsed());
+    if let Some(error) = cache.rejection(&identity) {
+        shared.increment(Counter::BudgetRejectionHit);
+        return Err(error.into());
+    }
     let decode_started = Instant::now();
     let result = decode_wic(path, &identity, budget, &record, is_current);
     record(
@@ -810,6 +858,13 @@ fn load_with_cache(
         .is_some_and(|error| !error.is::<DecodeCancelled>())
     {
         shared.increment(Counter::ImageDecodeFailed);
+    }
+    if let Some(error) = result
+        .as_ref()
+        .err()
+        .and_then(|error| error.downcast_ref::<BudgetRejection>())
+    {
+        cache.remember_rejection(identity, error.clone());
     }
     let decoded = result?;
     let image = Arc::new(decoded);
@@ -945,6 +1000,28 @@ mod tests {
         assert!(
             matches!(control.next(), Some(Work::Current(job)) if job.path == Path::new("selected.jpg"))
         );
+    }
+
+    #[test]
+    fn progress_range_applies_only_to_current_work_and_closes_on_release() {
+        let control = WorkerControl {
+            state: Mutex::new(WorkState::default()),
+            changed: Condvar::new(),
+        };
+        {
+            let mut state = control.lock();
+            state.generation = 8;
+            state.progress_floor = Some(3);
+        }
+        assert!(control.can_finish_current(4));
+        assert!(!control.is_current(4));
+        assert!(!control.can_finish_current(2));
+        assert!(!control.can_finish_current(9));
+        control.lock().progress_floor = None;
+        assert!(!control.can_finish_current(7));
+        assert!(control.can_finish_current(8));
+        control.lock().stopping = true;
+        assert!(!control.can_finish_current(8));
     }
 
     #[test]
