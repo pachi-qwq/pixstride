@@ -1,10 +1,10 @@
 [English](stage-b.md) | [简体中文](../zh-CN/stage-b.md)
 
-<!-- doc-id: stage-b; revision: 8; status: draft-pr-review -->
+<!-- doc-id: stage-b; revision: 9; status: merged -->
 
 # Stage B: image browsing core
 
-Stage B adds an initial implementation for opening JPEG, PNG, and BMP files, browsing the containing
+Stage B merged through [PR #3](https://github.com/pachi-qwq/pixstride/pull/3). It provides JPEG, PNG, and BMP opening, browsing the containing
 directory, and presenting decoded pixels through the existing D3D11 render thread. The project owner
 confirmed that an image displays, zoom controls work, Left/Right navigation changes images, `Ctrl+O`
 opens the native dialog, and window resize remains responsive. The owner also confirmed improved long-hold browsing on `ea23c91`; the acceptance record below
@@ -16,7 +16,8 @@ Pixstride accepts one optional image path on the command line, including Unicode
 spaces. `Ctrl+O` opens the native Windows file dialog. Left and Right move through supported files in
 the current directory; navigation stops at either directory boundary. `F` selects Fit to Window and
 `1` selects native pixel size. Fit preserves aspect ratio and centers the image. Native pixel mode
-centers the image at 1:1 scale and clips portions outside the client area; panning is not implemented.
+centers the image at 1:1 scale and clips portions outside the client area; ordinary-image panning is not
+implemented. Large-PNG zoom/pan is available through the separate merged [Stage C](stage-c.md) path.
 
 Directory entries are filtered to regular files with `.jpg`, `.jpeg`, `.png`, or `.bmp` extensions.
 Sorting compares Unicode lowercase filenames and then the original filename as a deterministic tie
@@ -114,8 +115,9 @@ not establish a cache regression. CPU/GPU cache-owned peaks were 536,755,580/536
 below 512 MiB, and returned to zero on shutdown. These counters do not measure total RAM/VRAM or prove
 leak freedom. Two current errors rejected a 20,000 × 1,768 image at the 16,384 texture-side limit;
 budget rejection reuse counted two hits. Dimension and 256 MiB decoded-byte limits are independent.
-Stage C will investigate a separate large-image preview/tiling path; that path is not implemented or
-tested here. The per-image and CPU/GPU cache budgets remain unchanged.
+Those rejections describe the Stage B build under test. The separate large-PNG preview/tiling path
+has since merged in [Stage C](stage-c.md); unsupported formats still reject over-budget images.
+The ordinary per-image and CPU/GPU cache budgets remain unchanged.
 
 ### Final regression coverage
 

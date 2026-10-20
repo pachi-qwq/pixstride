@@ -1,13 +1,13 @@
 [English](AGENTS.md) | [简体中文](AGENTS.zh-CN.md)
 
-<!-- doc-id: agents; revision: 5; status: active -->
+<!-- doc-id: agents; revision: 6; status: active -->
 
 # Agent instructions
 
 ## Current scope
 
-Pixstride is under active development. Stay within the scope approved for the current task; Stage B
-is merged; Stage C covers static large-PNG streaming and Tile rendering. Do not add later-stage features without
+Pixstride has merged Stages A–C, including static large-PNG streaming and Tile rendering. Stay within
+the scope approved for the current task. Stage D is planned; do not add its features without
 approval. Before each task,
 inspect Git status, the current branch, history, and upstream. Preserve untracked work before
 switching branches or reorganizing files. Do not develop features directly on `main`.

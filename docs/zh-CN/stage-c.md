@@ -1,10 +1,14 @@
 [English](../en/stage-c.md) | [简体中文](stage-c.md)
 
-<!-- doc-id: stage-c; revision: 7; status: implementation-review -->
+<!-- doc-id: stage-c; revision: 8; status: merged -->
 
 # Stage C：超大 PNG 路径
 
-Stage A、Stage B 已合并。Stage C 已对私人 48000 × 32000 PNG 完成完整缓存构建和程序化 D3D11 视口验证，
+阶段 A–C 已合并。[阶段 C PR #4](https://github.com/pachi-qwq/pixstride/pull/4) 的 Squash 提交为
+`3a1b6b251bf70a07d5c9906bcfd3da13980b18c8`，该 main 提交的
+[Rust](https://github.com/pachi-qwq/pixstride/actions/runs/39442403113) 和
+[Documentation](https://github.com/pachi-qwq/pixstride/actions/runs/39442402998) CI 均通过。
+Stage C 已对私人 48000 × 32000 PNG 完成完整缓存构建和程序化 D3D11 视口验证，
 负责人也已确认 Windows 桌面上的缓存命中运行正常，随后报告最终六项人工验收全部通过。其余性能和压力测试限制保留在下文。
 
 ## C1 行解码原型
@@ -20,7 +24,7 @@ CPU 转换对编码值四舍五入，不做线性光颜色处理。
 生成的小型 RGBA 图片逐行结果与 WIC 对比，预乘舍入差异不超过一个通道值。CRC 损坏、截断、超量元数据、取消和算术
 限制测试通过。显式 Release 诊断分别用独立进程扫描生成的 8192 × 256、8192 × 8192 PNG：两者输入与输出行容量均为
 65,536 字节，峰值工作集均为 10,022,912 字节；扫描分别耗时 13.698 ms、422.538 ms。这只验证高度增加 32 倍的样本，
-不覆盖所有 PNG 编码和异常输入分配模式，没有读取私人极限图片。
+不覆盖所有 PNG 编码和异常输入分配模式；在该 C1 检查点尚未读取私人极限图片。
 
 ## C2 磁盘金字塔
 
@@ -139,7 +143,7 @@ Worker。GPU 命中 P50/P95 为 0.241/6.457 ms，CPU 命中为 0.454/5.097 ms。
 JPEG/PNG/BMP 正确性测试也已通过。
 
 后续在没有大图 Builder 运行时，交替对比同一个生成 BMP 的 Release 导航诊断，每版三轮。阶段 B 使用提交
-`0e39b64`，阶段 C 使用当前本地构建，主机和工具链相同。每轮包含 110 次 GPU 命中、100 次强制 CPU 命中及错误/过期
+`0e39b64`，阶段 C 使用该检查点合并前的测试构建，主机和工具链相同。每轮包含 110 次 GPU 命中、100 次强制 CPU 命中及错误/过期
 结果断言，六轮均通过：
 
 | 轮次 | 版本 | GPU P50 µs | GPU P95 µs | CPU P50 µs | CPU P95 µs |
@@ -184,7 +188,7 @@ EXIF Orientation、ICC/HDR、APNG、Adam7 和 16-bit 超大 PNG 不在当前路�
 方向元数据不会应用。
 
 首次 C4 检查点为 58 项 Rust 测试通过，10 项显式诊断默认不运行；文档工具回归 41 项通过。格式、Clippy、Release 构建、
-Rustdoc、文档检查和 diff 空白检查已通过。这些是本地结果，GitHub CI 需在发布分支后单独核对。
+Rustdoc、文档检查和 diff 空白检查已通过。这些是当时的本地检查点结果，合并提交的 CI 记录见页首。
 
 真实缓存诊断仅在批准后运行：
 
@@ -352,5 +356,5 @@ $env:PIXSTRIDE_TILE_CACHE_GIB = '2'
 cargo test --release --locked release_streaming_memory_probe -- --ignored --nocapture
 ```
 
-C2 必须先验证有界磁盘金字塔，再做 C3 集成。C4 还要检查原图驻留状态、可用空间；首次生成超过 2 GiB 临时缓存前，
+C4 实验已在 C1、C2、C3 验证通过后完成。后续私人原图实验仍需检查驻留状态及可用空间；生成超过 2 GiB 临时缓存前，
 必须得到负责人明确批准。

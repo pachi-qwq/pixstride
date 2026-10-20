@@ -1,11 +1,12 @@
 [English](../en/stage-a.md) | [简体中文](stage-a.md)
 
-<!-- doc-id: stage-a; revision: 8; status: implementation-review -->
+<!-- doc-id: stage-a; revision: 9; status: merged -->
 
 # 阶段 A：Win32 窗口与 D3D11 渲染
 
-阶段 A 是 Pixstride 的第一个可运行切片，用来检查 Win32 原生窗口、独立 D3D11 渲染线程和按需 DXGI
-呈现路径是否适合项目。它不读取图片文件，也不实现图片导航。
+阶段 A 已通过 [PR #2](https://github.com/pachi-qwq/pixstride/pull/2) 合并。本页保留第一个可运行切片的记录：
+Win32 原生窗口、独立 D3D11 渲染线程和按需 DXGI 呈现。当时尚不读取图片文件或实现导航，相关能力已在
+[阶段 B](stage-b.md) 合并，随后 [阶段 C](stage-c.md) 加入超大 PNG 支持。
 
 ## 线程职责与事件流
 

@@ -1,11 +1,11 @@
 [English](TERMINOLOGY.md) | [简体中文](TERMINOLOGY.zh-CN.md)
 
-<!-- doc-id: terminology; revision: 1; status: active -->
+<!-- doc-id: terminology; revision: 2; status: active -->
 
 # Terminology
 
-Use these names consistently. The owners below describe proposed module boundaries; they do not imply
-that the viewer modules exist. Preserve API identifiers verbatim.
+Use these names consistently. Stages A–C implement some of the boundaries below; deferred concepts
+remain vocabulary, not support claims. Consult the architecture for implementation scope and preserve API identifiers verbatim.
 
 ## Platform and image terms
 
@@ -44,8 +44,8 @@ that the viewer modules exist. Preserve API identifiers verbatim.
 | Budget Reservation | A token that accounts for an allocation before it happens. | Resource-budget owner. | Reserved before allocation, committed on success, released on failure or the last allocation owner. Multiple references are charged once. |
 | In-flight Task | A pending/running task whose output may still be used by multiple requests. | Task scheduler, stage B onward. | Created on a miss, reused for the same key, completed/cancelled once. A stale result must not change the current target. |
 | Cache Lease | A claim that a cache generation is actively being built or read. | Disk Cache, stage C. | Acquired before use and released on completion/cancellation; crash recovery validates stale claims. It is not a general file lock guarantee. |
-| Tile Builder | A proposed bounded decoder/downsampler that writes a Tile Pyramid. | Large-image path, stage C. | Starts only for an eligible source; ends on verified completion, cancellation, or failure. It is absent from the ordinary-image path. |
+| Tile Builder | The bounded decoder/downsampler that writes a Tile Pyramid in merged Stage C. | Large-image path, stage C. | Starts only for an eligible source; ends on verified completion, cancellation, or failure. It is absent from the ordinary-image path. |
 
-Stage A needs Snapshot Sequence and Device Epoch only where their tests require them. The remaining
+Only introduce version domains required by the approved implementation and its tests. Deferred
 concepts are vocabulary for later work, not permission to implement all counters, caches, or processes now.
 Use `RenderSnapshot`, `DeviceEpoch`, and similar code spellings only when referring to actual identifiers.

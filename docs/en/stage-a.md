@@ -1,12 +1,13 @@
 [English](stage-a.md) | [简体中文](../zh-CN/stage-a.md)
 
-<!-- doc-id: stage-a; revision: 8; status: implementation-review -->
+<!-- doc-id: stage-a; revision: 9; status: merged -->
 
 # Stage A: Win32 window and D3D11 rendering
 
-Stage A is the first runnable Pixstride application slice. It checks whether a native Win32 window,
-a dedicated D3D11 render thread, and an on-demand DXGI presentation path fit the project. It does not
-load image files or implement viewer navigation.
+Stage A merged through [PR #2](https://github.com/pachi-qwq/pixstride/pull/2). This page preserves its
+first runnable slice: a native Win32 window, dedicated D3D11 render thread, and on-demand DXGI presentation.
+That slice did not load image files or implement navigation. Those capabilities were added in merged
+[Stage B](stage-b.md), followed by large-PNG support in [Stage C](stage-c.md).
 
 ## Runtime ownership and event flow
 
