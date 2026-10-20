@@ -1,12 +1,13 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 6; status: implementation-review -->
+<!-- doc-id: stage-c; revision: 7; status: implementation-review -->
 
 # Stage C: large PNG path
 
 Stages A and B are merged. Stage C has a locally tested streaming cache and Tile renderer. The private
 48000 × 32000 PNG passed full cache construction and programmatic D3D11 viewport tests. The owner also
-confirmed normal cache-hit operation on the Windows desktop. Detailed visual and stress gates remain open.
+confirmed normal cache-hit operation on the Windows desktop and subsequently reported all six final
+manual acceptance scenarios passed. Remaining performance and stress limits are recorded below.
 
 ## C1 row prototype
 
@@ -125,8 +126,8 @@ cargo test --release --locked release_tile_gpu_readback -- --ignored --nocapture
 Set both path variables outside Git. Default cache: `%LOCALAPPDATA%/Pixstride/tiles-v1`. Use a dedicated
 root, never a source folder. `PIXSTRIDE_TILE_CACHE_GIB` accepts 1–10, defaults to 2; values above 2 require
 separate owner approval. The real experiment has approval for 10 GiB after C3 passes; the C4 results
-below record its execution. Manual checks still need real-image seams, alpha, gestures, arbitrary regions,
-cancellation, and repeated open/close.
+below record its execution. The owner's final six-scenario manual acceptance is recorded below;
+it does not replace the remaining stress tests or extend format/color support.
 
 ## C4 real-sample results
 
@@ -215,15 +216,16 @@ Target and last successful Present Generation both ended at 1. Two adjacent-file
 The ordinary-worker trace labels the large-image routing rejection as `error`, although the Tile path
 then succeeds. This diagnostic label does not indicate a failure to display the current image.
 
-This confirms normal manual cache-hit operation, without certifying every seam, gesture, cancellation,
-or repeated-open scenario. The viewport tail remains a follow-up item. Filesystem cache state and the
+At this checkpoint, the report confirmed normal cache-hit operation without certifying every seam,
+gesture, cancellation, or repeated-open scenario. The later final acceptance is recorded separately.
+The viewport tail remains a follow-up item. Filesystem cache state and the
 interaction sequence were not controlled, so these figures are not a strict comparison with the
 scripted warm-cache run. High request/Present counts alone do not establish idle rendering activity.
 
 All timings above stop at application/API boundaries. They do not measure displayed-frame completion
 or input-to-photon latency. First build n=1 and the small reopen/viewport sample counts cannot establish
 stable P95/P99. Controlled cold/warm startup, Device Lost injection/recovery, disk exhaustion, forced
-allocation failure, driver-stalled shutdown, long-duration stability, and detailed manual visual gates remain
+allocation failure, driver-stalled shutdown, and long-duration stability remain
 unverified. EXIF Orientation, ICC/HDR, APNG, Adam7, and 16-bit large-PNG handling are outside this path;
 large PNG orientation metadata is not applied.
 
@@ -360,8 +362,9 @@ $env:PIXSTRIDE_TILE_CACHE_GIB = '2'
 ```
 
 The generator leaves ordinary, wide, slower-build, and invalid PNGs for inspection; delete only that
-generated sample directory and its dedicated cache after closing all instances. The following are
-human acceptance steps, not assertions that this review performed them:
+generated sample directory and its dedicated cache after closing all instances. The following remains
+a repeatable checklist. The owner's final acceptance below identifies the six confirmed scenarios;
+it does not mark every additional checklist row as manually tested:
 
 | Check | Action and expected result |
 | --- | --- |
@@ -380,9 +383,33 @@ human acceptance steps, not assertions that this review performed them:
 
 Space shortage, write failure, CRC corruption, and unowned-directory preservation use automated
 injection tests; do not fill the real disk or damage a personal cache for manual acceptance. Existing
-real-image cache-hit acceptance remains recorded above. Detailed visual checks, real Device Lost,
-disk exhaustion, and long-duration stability remain open. Do not repeat the private first build for
+real-image cache-hit acceptance remains recorded above. Real Device Lost, disk exhaustion, allocation
+failure, and long-duration stability remain open. Do not repeat the private first build for
 this checklist. All timing still ends at API return, not at a physical display event.
+
+## Final owner-reported Windows manual acceptance
+
+The project owner reported that all six Stage C acceptance scenarios passed on a real Windows desktop.
+These are the owner's manual test results, separate from agent-run automated probes:
+
+| Scenario | Result |
+| --- | --- |
+| Fit, 100%, all four corners, center, and Tile seams | Passed |
+| Continuous wheel zoom, mouse dragging, and rapid reversal | Passed |
+| Switching JPG/PNG and large PNG in both directions | Passed |
+| Resize, minimize/restore, and Alt+Tab | Passed |
+| Closing during loading and repeated open/close, without hangs or residual processes | Passed |
+| Switching images, cancellation, and closing during construction of a small uncached PNG | Passed |
+
+This is qualitative functional acceptance and adds no new performance samples. The small uncached
+construction test does not establish responsiveness or cancellation throughout the private source's
+full initial build. All earlier performance measurements and their limits remain unchanged.
+
+Cold-cache full construction remains slow and has no progressive preview. The historical viewport
+tail has not been attributed in the real environment. Device Lost, actual disk exhaustion, allocation
+failure, and long-duration stability have not been comprehensively validated. Large-image formats,
+EXIF Orientation, and ICC/HDR remain limited as documented above. A successful Present return does
+not establish completion on the physical display or input-to-photon latency.
 
 ## Dependencies and evidence
 
