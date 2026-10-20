@@ -1,13 +1,15 @@
 [English](stress-testing.md) | [简体中文](../zh-CN/stress-testing.md)
 
-<!-- doc-id: stress; revision: 2; status: proposal -->
+<!-- doc-id: stress; revision: 3; status: proposal -->
 
 # Cross-format stress test plan
 
 This plan covers compatibility, large images, resource exhaustion, and malformed input. A planned
 case is not a supported feature or a completed test. The only existing extreme sample is a private
 non-interlaced RGBA8 PNG, 48000 × 32000 pixels, with a file length of 2,071,102,933 bytes.
-Only its local residency and 33-byte header were checked; no full decode has run.
+Stage C completed its full streaming scan, disk Tile Pyramid, viewport tests, and six owner-run Windows
+manual acceptance scenarios. Results and remaining stress gaps are in [Stage C](stage-c.md); this does
+not mark every planned case below as passed.
 
 ## Four independent limit layers
 

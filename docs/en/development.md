@@ -1,15 +1,16 @@
 [English](development.md) | [简体中文](../zh-CN/development.md)
 
-<!-- doc-id: development; revision: 12; status: stage-c-development -->
+<!-- doc-id: development; revision: 13; status: stages-a-c-merged -->
 
 # Development status and checks
 
-The repository contains a single Cargo package for a Win32/D3D11 viewer. Stage B adds WIC decoding for
+The repository contains a single Cargo package for a Win32/D3D11 viewer. Merged Stage B provides WIC decoding for
 JPEG, PNG, and BMP, directory navigation, and bounded CPU/GPU caches. The project owner has confirmed
 real-image display, zoom, keyboard navigation, the native file dialog, and window resizing.
-Stage B is complete. Stage C adds a separately budgeted streaming PNG/Tile path in Draft PR review.
+Stages A–C are merged. Stage C provides separately budgeted PNG streaming, disk Tile Pyramid construction,
+and viewport rendering with zoom/pan. Its six owner-run Windows manual acceptance scenarios passed.
 See [Stage C](stage-c.md) for cache variables, build measurements, supported encodings, and manual checks.
-There is no public release.
+There is no public release. Stage D is the next planned phase; its candidate scope remains subject to approval.
 
 ## Build and run
 
@@ -28,9 +29,10 @@ cargo run --release
 
 With no argument, the program displays the Stage A generated test textures. Pass one image path to open
 JPEG, PNG, or BMP; `Ctrl+O` opens the native file dialog, Left/Right navigate the current directory,
-`F` selects Fit, and `1` selects 1:1 pixels. On exit, stdout prints bounded timing samples and cache
+`F` selects Fit, and `1` selects 1:1 pixels. Eligible large PNGs use the Tile path; wheel zoom and
+left-drag pan are available on that path. On exit, stdout prints bounded timing samples and cache
 counters. The Release executable is `target/release/pixstride.exe`. Feature details and limits are in
-[Stage B](stage-b.md).
+[Stage B](stage-b.md) and [Stage C](stage-c.md).
 
 ## Run the current checks
 

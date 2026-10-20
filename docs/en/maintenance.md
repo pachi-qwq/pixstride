@@ -1,11 +1,11 @@
 [English](maintenance.md) | [简体中文](../zh-CN/maintenance.md)
 
-<!-- doc-id: maintenance; revision: 4; status: active -->
+<!-- doc-id: maintenance; revision: 5; status: active -->
 
 # Repository maintenance and publication
 
-This page records the completed repository initialization and current workflow, verified on 2026-10-18.
-Future release work remains planned. Local configuration changes do not automatically change GitHub.
+This page retains the 2026-10-18 repository-initialization record and describes the current workflow.
+Stages A–C are merged; release work remains planned. Local configuration changes do not automatically change GitHub.
 
 ## Empty-repository bootstrap
 
@@ -34,14 +34,16 @@ The first documentation CI runs succeeded for both
 The observed `docs` check is required, `main` protection is active, and `main` remains the default branch.
 The post-merge documentation run [39139503844](https://github.com/pachi-qwq/pixstride/actions/runs/39139503844) succeeded.
 No history was rewritten, no force push was used, and automatic merging remains disabled.
-The local `feat/stage-a-win32-d3d11` branch contains unpushed Stage A work and has no PR yet.
+Application work subsequently merged through [Stage A PR #2](https://github.com/pachi-qwq/pixstride/pull/2),
+[Stage B PR #3](https://github.com/pachi-qwq/pixstride/pull/3), and
+[Stage C PR #4](https://github.com/pachi-qwq/pixstride/pull/4).
 Later changes use normal PRs; agents still need explicit authorization for remote actions.
 
 ## Branches and pull requests
 
 | Branch | Purpose |
 |---|---|
-| `main` | Protected, reviewed baseline. Stage A development is on a separate local feature branch. |
+| `main` | Protected, reviewed baseline containing merged Stages A–C. |
 | `feat/*` | New functionality. |
 | `fix/*` | Bug fixes. |
 | `docs/*` | Documentation. |
@@ -89,9 +91,11 @@ private-path/credential patterns, and oversized/publicly disallowed artifacts. L
 are advisory. The checker tests guard against false positives in code, API names and link syntax.
 It is a focused checker, not a full GFM implementation, secret-scanning service, or translation verifier.
 
-A Windows Rust CI workflow now runs fmt, Clippy, tests, Release build, and rustdoc for the Stage A Cargo
-package. The job is named `rust`; this local change has not yet been pushed or run on GitHub and is not
-a required status check. Hardware latency/VRAM tests run separately. Keep Actions updates reviewable;
+A merged Windows Rust CI workflow runs fmt, Clippy, tests, Release build, and rustdoc for the Cargo
+package. Its `rust` job and the `docs` job passed on the Stage C main merge:
+[Rust](https://github.com/pachi-qwq/pixstride/actions/runs/39442403113) and
+[Documentation](https://github.com/pachi-qwq/pixstride/actions/runs/39442402998). The current Ruleset
+requires `docs`; `rust` is not configured as required. Hardware latency/VRAM tests run separately. Keep Actions updates reviewable;
 no auto-merge or release permissions are needed for these workflows.
 
 ## Publication review
@@ -121,7 +125,7 @@ The owner approved the SPDX expression `MIT OR Apache-2.0`. Keep [LICENSE-MIT](.
 `Copyright (c) 2026 pachi-qwq`, and the complete [LICENSE-APACHE](../../LICENSE-APACHE).
 The MIT body was checked against the [official MIT text](https://opensource.org/license/mit);
 Apache's full [official text](https://www.apache.org/licenses/LICENSE-2.0) is preserved unchanged.
-Future Cargo packages use `license = "MIT OR Apache-2.0"`; no placeholder Cargo project is needed.
+The existing Cargo package declares `license = "MIT OR Apache-2.0"`.
 
 Check licenses before introducing dependencies or reusing code. Preserve required third-party copyright
 and license notices verbatim and identify external sources. Do not present external code as Pixstride's
@@ -147,7 +151,7 @@ These are engineering review items, not a claim that every future linkage/distri
 
 ## Versions and releases
 
-Use `0.x.y` for early application releases once an application exists, with changelogs distinguishing
+Use `0.x.y` for future early public releases, with changelogs distinguishing
 features, fixes, known limits and measured regressions. Version cache/config schemas separately.
 Create annotated `vX.Y.Z` tags only for reviewed builds. Start with an x64 portable ZIP containing
 the executable, selected runtime components, chosen license texts, notices and checksums.
@@ -158,5 +162,5 @@ checksums/SBOM/notices, and upload a draft release for owner review. Installatio
 update policy and release publishing require separate decisions. No application-release workflow is
 implemented in this documentation task.
 
-Repository initialization and protection are complete, and PR #1 has been merged. The current Stage A
-branch remains local pending review. Release and signing policies require separate approval.
+Repository initialization, protection, and the Stage A–C merges are complete. Stage D remains the next
+planned phase; release and signing policies require separate approval. No public Release has been published.

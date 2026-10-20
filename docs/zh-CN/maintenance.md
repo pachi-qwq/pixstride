@@ -1,10 +1,10 @@
 [English](../en/maintenance.md) | [简体中文](maintenance.md)
 
-<!-- doc-id: maintenance; revision: 4; status: active -->
+<!-- doc-id: maintenance; revision: 5; status: active -->
 
 # 仓库维护与发布
 
-本页记录已完成的仓库初始化和当前工作流，状态核查日期为 2026-10-18。
+本页保留 2026-10-18 的仓库初始化记录，并说明当前工作流。阶段 A–C 已合并，
 后续发布工作仍属计划，本地配置改动不会自动改变 GitHub 设置。
 
 ## 空仓库初始化
@@ -32,13 +32,15 @@
 实际产生的 `docs` 检查现为必需项，`main` 保护规则已启用，默认分支仍为 `main`。
 合并后的 [文档 CI 运行 39139503844](https://github.com/pachi-qwq/pixstride/actions/runs/39139503844) 成功。
 没有改写历史或强推，自动合并保持关闭。后续使用普通 PR 流程；Agent 执行远程操作仍须明确授权。
-本地 `feat/stage-a-win32-d3d11` 分支含有尚未推送的 Stage A 工作，目前没有对应 PR。
+后续应用开发已分别通过 [阶段 A PR #2](https://github.com/pachi-qwq/pixstride/pull/2)、
+[阶段 B PR #3](https://github.com/pachi-qwq/pixstride/pull/3) 和
+[阶段 C PR #4](https://github.com/pachi-qwq/pixstride/pull/4) 合并。
 
 ## 分支和 Pull Request
 
 | 分支 | 用途 |
 |---|---|
-| `main` | 受保护且经过评审的基线；Stage A 在独立的本地功能分支开发。 |
+| `main` | 受保护且经过评审的基线，包含已合并的阶段 A–C。 |
 | `feat/*` | 新功能。 |
 | `fix/*` | 缺陷修复。 |
 | `docs/*` | 文档。 |
@@ -84,8 +86,10 @@ Push 和 PR 事件不按路径过滤，运行本地检查与检查器测试。
 以及过大或禁止公开的产物。语言质量只作提示，检查器测试覆盖代码、API 名称和链接的误报场景。
 工具不是完整 GFM 解析器、秘密扫描服务或翻译校验器。
 
-Windows Rust CI 工作流已加入 fmt、Clippy、测试、Release 构建和 rustdoc，作业名为 `rust`。
-该本地改动尚未推送，也未在 GitHub 运行，因此还不是必需状态检查。
+已合并的 Windows Rust CI 工作流执行 fmt、Clippy、测试、Release 构建和 rustdoc，作业名为 `rust`。
+阶段 C 的 main 合并提交已通过 [Rust](https://github.com/pachi-qwq/pixstride/actions/runs/39442403113) 和
+[Documentation](https://github.com/pachi-qwq/pixstride/actions/runs/39442402998) 检查。
+当前 Ruleset 要求 `docs`，尚未将 `rust` 配为必需项。
 硬件延迟/VRAM 测试单独执行。Actions 更新必须可评审，工作流不需要自动合并或发布权限。
 
 ## 发布前检查
@@ -114,7 +118,7 @@ Pixstride 采用 MIT 或 Apache-2.0 双许可证，使用者可以自行选择�
 版权行为 `Copyright (c) 2026 pachi-qwq`，并保留完整的 [LICENSE-APACHE](../../LICENSE-APACHE)。
 MIT 正文已与[官方文本](https://opensource.org/license/mit)核对，
 Apache [官方完整文本](https://www.apache.org/licenses/LICENSE-2.0)保持原样。
-未来 Cargo Package 使用 `license = "MIT OR Apache-2.0"`，无需创建占位 Cargo 工程。
+现有 Cargo Package 已声明 `license = "MIT OR Apache-2.0"`。
 
 引入依赖或复用代码前检查授权条件，原样保留必要的第三方版权和许可证声明，标明外部来源。
 不将外部代码当作 Pixstride 原创代码。项目许可证不替代第三方义务，也不批准未来任意分发方式。
@@ -138,7 +142,7 @@ Apache [官方完整文本](https://www.apache.org/licenses/LICENSE-2.0)保持�
 
 ## 版本与 Release
 
-应用存在后，早期版本使用 `0.x.y`，变更记录区分功能、修复、已知限制和已测回归。
+后续公开的早期版本使用 `0.x.y`，变更记录区分功能、修复、已知限制和已测回归。
 缓存与配置 schema 单独版本化。只为已评审构建创建带注释的 `vX.Y.Z` tag。
 先发布 x64 便携 ZIP，包含程序、选定运行组件、已定许可证、第三方声明和校验值。
 在干净 Windows 验证 CRT 依赖后，才能宣称独立可执行。
@@ -147,5 +151,5 @@ Apache [官方完整文本](https://www.apache.org/licenses/LICENSE-2.0)保持�
 上传草稿 Release 供负责人检查。安装、签名、文件关联、更新策略和正式发布需要另行决定。
 本轮不实现应用发布流水线。
 
-仓库初始化和保护配置已经完成，PR #1 也已合并。Stage A 功能分支仍只在本地，等待评审。
-Release 和签名策略需要另行批准。
+仓库初始化、保护配置及阶段 A–C 合并均已完成。阶段 D 是下一阶段规划，Release 和签名策略需要另行批准。
+项目尚未发布公开 Release。

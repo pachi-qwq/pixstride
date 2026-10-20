@@ -1,12 +1,13 @@
 [English](../en/development.md) | [简体中文](development.md)
 
-<!-- doc-id: development; revision: 12; status: stage-c-development -->
+<!-- doc-id: development; revision: 13; status: stages-a-c-merged -->
 
 # 开发状态与检查
 
 仓库包含一个 Win32/D3D11 查看器 Cargo Package。阶段 B 加入 JPEG、PNG、BMP 的 WIC 解码、目录导航和有界
-CPU/GPU 缓存。负责人已确认真实图片显示、缩放、键盘导航、原生文件对话框和窗口 Resize 正常。阶段 B 已完成，阶段 C 的独立预算 PNG 流式/分块路径正在进行 Draft PR 评审。
-缓存变量、构建测量、支持的编码和人工检查见[阶段 C](stage-c.md)。项目尚无公开发行版。
+CPU/GPU 缓存。负责人已确认真实图片显示、缩放、键盘导航、原生文件对话框和窗口 Resize 正常。阶段 A–C 均已合并，
+阶段 C 提供独立预算的 PNG 流式处理、磁盘 Tile Pyramid 构建及支持缩放/平移的视口渲染，六项 Windows 人工验收全部通过。
+缓存变量、构建测量、支持的编码和人工检查见[阶段 C](stage-c.md)。项目尚无公开发行版；阶段 D 是下一阶段规划，候选范围仍需批准。
 
 ## 构建和运行
 
@@ -24,8 +25,9 @@ cargo run --release
 ```
 
 不带参数时，程序显示阶段 A 生成的测试纹理。传入一个图片路径可打开 JPEG、PNG 或 BMP；按 `Ctrl+O` 打开原生文件对话框，
-按 Left/Right 浏览当前目录，按 `F` 选择 Fit，按 `1` 选择 1:1 像素。退出时，stdout 输出有界计时样本和缓存计数。
-Release 可执行文件为 `target/release/pixstride.exe`。功能范围和限制见[阶段 B](stage-b.md)。
+按 Left/Right 浏览当前目录，按 `F` 选择 Fit，按 `1` 选择 1:1 像素。符合条件的超大 PNG 使用 Tile 路径，支持滚轮缩放和
+鼠标左键拖动平移。退出时，stdout 输出有界计时样本和缓存计数。
+Release 可执行文件为 `target/release/pixstride.exe`。功能范围和限制见 [阶段 B](stage-b.md) 与 [阶段 C](stage-c.md)。
 
 ## 当前可执行的检查
 

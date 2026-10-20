@@ -1,12 +1,12 @@
 [English](architecture.md) | [简体中文](../zh-CN/architecture.md)
 
-<!-- doc-id: architecture; revision: 8; status: implementation-review -->
+<!-- doc-id: architecture; revision: 9; status: active -->
 
 # Architecture and implementation scope
 
 Pixstride targets Windows 10/11 x64 with Rust Stable, Win32/windows-rs, D3D11, and DXGI Flip Model
-presentation. Stages A and B are merged. Stage C has a locally tested static-PNG Tile path; later
-formats remain proposals. This page does not reproduce the early internal design drafts.
+presentation. Stages A–C are merged. Stage C's static-PNG Tile path passed the owner's six Windows
+manual acceptance scenarios; later formats remain proposals. This page does not reproduce the early internal design drafts.
 
 ## Stage A implementation
 
@@ -113,19 +113,21 @@ IPC, Job Object, or automatic Device Lost recovery was added.
 
 This choice favors small ownership boundaries and measurable allocation over compressed-cache density
 or an early complete preview. Disk write performance, sampled-source false negatives, OS cache growth,
-disk exhaustion, driver hangs, and real desktop gesture quality remain review risks.
+disk exhaustion, driver hangs, and historical viewport-tail attribution remain review risks. The owner
+has accepted real desktop gestures; that acceptance does not establish long-duration stability or failure recovery.
 
-## Keep the first implementation small
+## Completed stage scope and deferred work
 
-| Stage | Implement when that stage is approved | Reserve or defer |
+| Stage | Implemented scope or planned candidates | Reserve or defer |
 |---|---|---|
 | A | Win32 lifecycle, one render owner, latest snapshot, simple sequence/Device Epoch if needed, embedded test texture, QPC events, resize/shutdown/recovery tests. | No file navigation, decoder pool, CPU/GPU image cache, IPC, Job Object, Color Cache, or Tile scheduler. |
-| B | Local implementation covers WIC JPEG/PNG/BMP decoding, checked pixel layout, source identity, one WIC worker plus one source-validation thread, CPU/GPU LRU caches, directory navigation, adjacent preloads, and stale-generation rejection. GUI acceptance and rapid-navigation retesting passed. | Keep one WIC worker, bounded source validation, and a two-image preload window; defer a general priority framework, panning, and pooled Texture allocator until measured. |
-| C | Sequential large-PNG prototype, preview, disk Tile Cache, Tile Pyramid, visible-region rendering and resource-failure tests. | Evaluate worker IPC and Job Object isolation after the row-decoding and cancellation prototype; no stable plugin or IPC ABI yet. |
-| D | Per-format capabilities, animation, basic ICC, configurable input and comic reading. | Add Color Key/derived caches only with a tested color path; HDR and complex filters remain later proposals. |
+| B | Merged WIC JPEG/PNG/BMP decoding, checked pixel layout, source identity, one WIC worker plus one source-validation thread, CPU/GPU LRU caches, directory navigation, adjacent preloads, and stale-generation rejection. GUI acceptance and rapid-navigation retesting passed. | Keep one WIC worker, bounded source validation, and a two-image preload window; defer a general priority framework, ordinary-image panning, and pooled Texture allocator until measured. |
+| C | Merged sequential large-PNG streaming, preview, disk Tile Cache/Pyramid, visible-region rendering, zoom/pan, and resource-failure regressions; six owner-run GUI scenarios passed. | Progressive preview and comprehensive Device Lost/resource-exhaustion/stability validation remain open; worker IPC and Job Object isolation require evidence, with no stable plugin or IPC ABI. |
+| D (planned) | Existing candidates: per-format capabilities, animation, basic ICC, configurable input and comic reading; scope is not finalized. | Add Color Key/derived caches only with a tested color path; HDR and complex filters remain later proposals. |
 
-Interfaces reserved for B/C describe pixel layout, cancellation, budget failure, and decoder capabilities.
-They do not require empty runtime services or a network of counters in A. Each later Generation must
+Stages A–C are complete; Stage D is the next planned phase and requires separate approval. Existing
+pixel-layout, cancellation, budget-failure, and decoder-capability boundaries do not authorize extra runtime
+services or counters. Each later Generation must
 have one owner and a distinct invalidation reason before it is added.
 
 ## Ordinary and large images
@@ -162,7 +164,7 @@ as an unnoticed fallback. Preserve premultiplied-alpha and color-domain semantic
 | A-03 | A frame-latency signal is not a GPU resource-completion fence. | Rendering; explicit in-flight/reuse tests. |
 | B-01 | WIC may allocate internally or fail to cancel inside one call. | Decoder; per-codec peak/cancellation data and conservative routing. |
 | B-02 | Stale completions or file replacement can select the wrong pixels. | Core/Cache; reverse navigation, source changes, and key tests. |
-| C-01 | The 512 MiB estimate excludes unknown decoder/allocator overhead. | Large-image prototype; allocation, process, and OS-cache measurements. |
+| C-01 | The early 512 MiB proposal was replaced by a 128 MiB Builder budget; estimates still exclude unknown process/allocator/OS-cache overhead. | Large-image path; allocation, process, and OS-cache measurements. |
 | C-02 | Tile writes, cache validity, and filtering borders add complexity. | Disk Cache/Rendering; small oracle fixtures before the private sample. |
 | C-03 | IPC/Job Object adds startup and recovery cost. | Large-image prototype; justify isolation with cancellation/failure evidence. |
 | D-01 | A derived Color Cache may repeat conversions or conflict with OS color management. | Color path; keep deferred until profile/ACM tests exist. |

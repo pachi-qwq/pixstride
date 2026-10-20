@@ -1,11 +1,14 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 7; status: implementation-review -->
+<!-- doc-id: stage-c; revision: 8; status: merged -->
 
 # Stage C: large PNG path
 
-Stages A and B are merged. Stage C has a locally tested streaming cache and Tile renderer. The private
-48000 × 32000 PNG passed full cache construction and programmatic D3D11 viewport tests. The owner also
+Stages A–C are merged. [Stage C PR #4](https://github.com/pachi-qwq/pixstride/pull/4) was squashed as
+`3a1b6b251bf70a07d5c9906bcfd3da13980b18c8`. Its main
+[Rust](https://github.com/pachi-qwq/pixstride/actions/runs/39442403113) and
+[Documentation](https://github.com/pachi-qwq/pixstride/actions/runs/39442402998) CI passed.
+The private 48000 × 32000 PNG passed full cache construction and programmatic D3D11 viewport tests. The owner also
 confirmed normal cache-hit operation on the Windows desktop and subsequently reported all six final
 manual acceptance scenarios passed. Remaining performance and stress limits are recorded below.
 
@@ -27,7 +30,7 @@ CRC corruption, truncation, oversized metadata, cancellation, and arithmetic lim
 An explicit Release probe ran separate processes for generated 8192 × 256 and 8192 × 8192 PNGs:
 owned input/output row capacity was 65,536 bytes in both, and peak working set was 10,022,912 bytes
 in both. Scan durations were 13.698 ms and 422.538 ms. This tests a 32× height change, not every PNG
-encoding or malformed-input allocation pattern. The private extreme image was not read.
+encoding or malformed-input allocation pattern. At that C1 checkpoint, the private extreme image had not been read.
 
 ## C2 disk pyramid
 
@@ -179,7 +182,7 @@ and are not controlled Stage B before/after comparisons. JPEG/PNG/BMP correctnes
 
 A subsequent alternating baseline comparison ran the same generated-BMP Release navigation probe
 three times per version, with no large-image builder active. Stage B used commit `0e39b64`; Stage C
-used the current local build, on the same host/toolchain. Each run contained 110 GPU-hit and 100 forced
+used the pre-merge test build at that checkpoint, on the same host/toolchain. Each run contained 110 GPU-hit and 100 forced
 CPU-hit selections, plus failure/stale-result assertions. All six runs passed:
 
 | Round | Version | GPU P50 µs | GPU P95 µs | CPU P50 µs | CPU P95 µs |
@@ -231,7 +234,7 @@ large PNG orientation metadata is not applied.
 
 The initial C4 checkpoint had 58 passing Rust tests and 10 explicit diagnostics omitted by default; document
 tool regression has 41 passing tests. Formatting, Clippy, Release build, Rustdoc, document checks and
-diff whitespace checks passed. These are local results; GitHub CI must be checked separately after publication.
+diff whitespace checks passed. These were local checkpoint results; merged-head CI is recorded above.
 
 For an approved real-cache probe only:
 
@@ -432,5 +435,5 @@ Run the explicit memory probe with `PIXSTRIDE_TEST_ROOT` pointing outside the re
 cargo test --release --locked release_streaming_memory_probe -- --ignored --nocapture
 ```
 
-C2 must validate a bounded disk pyramid before C3 integration. C4 additionally requires residency and
-free-space checks and explicit owner approval before creating more than 2 GiB of temporary cache.
+C1, C2, and C3 validation preceded the completed C4 experiment. Further private-source experiments still require
+residency/free-space checks and explicit owner approval before creating more than 2 GiB of temporary cache.

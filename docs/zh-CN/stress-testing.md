@@ -1,12 +1,13 @@
 [English](../en/stress-testing.md) | [简体中文](stress-testing.md)
 
-<!-- doc-id: stress; revision: 2; status: proposal -->
+<!-- doc-id: stress; revision: 3; status: proposal -->
 
 # 跨格式压力测试计划
 
 本计划覆盖兼容性、大型图片、资源耗尽和异常输入。列入计划不代表已支持或已测试。
 现有极限样本只有一张私人非隔行 RGBA8 PNG：48000 × 32000 像素，文件长度为
-2,071,102,933 字节。此前仅检查本地驻留状态和 33 字节文件头，没有完整解码。
+2,071,102,933 字节。阶段 C 已完成完整流式扫描、磁盘 Tile Pyramid、视口测试及负责人六项 Windows 人工验收。
+结果和其余压力测试缺口见[阶段 C](stage-c.md)，不代表下文全部计划用例都已通过。
 
 ## 分别记录四层限制
 

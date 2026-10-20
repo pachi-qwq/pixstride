@@ -1,26 +1,35 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 7; status: stage-c-draft-review -->
+<!-- doc-id: readme; revision: 8; status: stages-a-c-merged -->
 
 # Pixstride
 
 A native Windows image viewer project focused on fast startup, responsive input, and bounded resource use.
 
-Inspired by MassiGra's lightweight interface and fast interaction, Pixstride has completed the Stage A
-foundation and Stage B image browsing. JPEG, PNG, and BMP opening, navigation, bounded caches, and
-hold-navigation progress passed owner acceptance. Stage C streaming PNG and tiled rendering are in
-[Draft PR review](https://github.com/pachi-qwq/pixstride/pull/4). Real-image cache-hit operation passed
-owner testing; performance and detailed stress/visual acceptance remain open. There is no public release.
+Inspired by MassiGra's lightweight interface and fast interaction, Pixstride has completed and merged
+Stages A–C. [Stage C PR #4](https://github.com/pachi-qwq/pixstride/pull/4) includes the owner's six passed
+Windows manual acceptance scenarios. There is no public release. Stage D is the next planned phase;
+its scope still requires owner approval.
 
 ## Current foundation
 
 The selected stack is Rust Stable, Win32 through windows-rs, Direct3D 11, and a DXGI Flip Model
-Swap Chain. The target is Windows 10/11 x64. Stage A established the window and rendering foundation;
-Stage B adds WIC decoding and directory navigation.
+Swap Chain. The target is Windows 10/11 x64. The merged implementation includes:
+
+- Native Win32 UI and D3D11 hardware rendering.
+- JPEG/PNG/BMP browsing with background WIC decoding, directory navigation, CPU/GPU caches, adjacent
+  preloading, and a GPU-cache-hit fast path.
+- Large-PNG row streaming, a disk Tile Pyramid, viewport Tile rendering, zoom, and pan.
+- Generation-based stale-work protection and bounded CPU/GPU cache residency with separate large-image budgets.
 
 The architecture keeps GPU resource ownership on a render thread and decodes images in
 bounded background work. Large images have a separate path. Threading, cache budgets, and Tile sizes
 remain subject to experiments; format names in the test plan are not a support claim.
+
+First full large-PNG cache construction is slow and has no progressive preview. Historical viewport
+tails are not fully attributed. Device Lost, actual disk exhaustion, allocation failure, and
+long-duration stability still need broader testing. Some PNG encodings and ICC/HDR are unsupported;
+see [Stage C limits](docs/en/stage-c.md). Present return does not mean a frame has reached the screen.
 
 ## Read and contribute
 
