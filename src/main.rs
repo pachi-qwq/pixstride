@@ -5,6 +5,7 @@
 mod app;
 mod diagnostics;
 mod image;
+mod large;
 mod renderer;
 mod window;
 

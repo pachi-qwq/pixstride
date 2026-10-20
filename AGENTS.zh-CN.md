@@ -1,12 +1,12 @@
 [English](AGENTS.md) | [简体中文](AGENTS.zh-CN.md)
 
-<!-- doc-id: agents; revision: 4; status: active -->
+<!-- doc-id: agents; revision: 5; status: active -->
 
 # Agent 工作要求
 
 ## 当前范围
 
-Pixstride 已进入开发阶段。每项任务只实施负责人批准的范围；当前阶段 B 仅覆盖常规 JPEG、PNG、BMP 浏览，
+Pixstride 已进入开发阶段。每项任务只实施负责人批准的范围；阶段 B 已合并，当前阶段 C 覆盖静态超大 PNG 流式处理和分块渲染，
 未经批准不添加后续阶段功能。每次任务开始前检查 Git 状态、当前分支、历史和上游。切换分支或整理文件前保护
 未跟踪成果，不直接在 `main` 开发功能。
 
@@ -35,8 +35,9 @@ Rust 注释和 Rustdoc 使用自然、准确的简体中文。保留 Rust 标识
 整理原始设计前，先在仓库外备份，不删除原始记录。
 内部草稿、机器报告、私人样本、大型测试文件、缓存和构建结果均保存在仓库外。
 不发布本地绝对路径、凭据或未经脱敏的日志。
-未来本地测试通过 `PIXSTRIDE_STRESS_IMAGE` 提供输入，通过 `PIXSTRIDE_TEST_ROOT` 指定输出根目录；
-这两个名称是测试工具的计划约定，尚无对应查看器选项。
+本地显式测试通过 `PIXSTRIDE_STRESS_IMAGE` 提供输入，通过 `PIXSTRIDE_TEST_ROOT` 指定输出根目录；
+这两个名称用于显式本地诊断，不是查看器命令行选项。大图缓存诊断须使用获批专用目录与磁盘预算，
+不得自动取回仅在云端的极限样本。
 
 ## 检查和 Git
 

@@ -49,6 +49,8 @@ pub(crate) struct RenderSnapshot {
     pub(crate) requested_at: Instant,
     pub(crate) request_origin: RequestOrigin,
     pub(crate) view_mode: ViewMode,
+    pub(crate) zoom: f32,
+    pub(crate) pan: (f32, f32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +82,7 @@ struct PendingState {
     shutdown_started: Option<Instant>,
     // 选择代际、共享像素所有权、CPU 命中标记；最后一项只用于诊断，不是另一套版本号。
     image_update: Option<(u64, Arc<DecodedImage>, bool)>,
+    large_request: Option<crate::large::worker::Request>,
     #[cfg(test)]
     clear_gpu_cache: bool,
     gpu_probe: Option<ResolvedSelection>,
@@ -93,6 +96,7 @@ pub(crate) struct PendingRenderWork {
     pub(crate) redraw: bool,
     pub(crate) shutdown: bool,
     pub(crate) image: Option<(u64, Arc<DecodedImage>, bool)>,
+    pub(crate) large_request: Option<crate::large::worker::Request>,
     #[cfg(test)]
     pub(crate) clear_gpu_cache: bool,
     pub(crate) gpu_probe: Option<ResolvedSelection>,
@@ -127,6 +131,7 @@ pub(crate) struct ResolvedSelection {
 pub(crate) enum GpuProbeReply {
     Hit { generation: u64, path: PathBuf },
     Miss(ResolvedSelection),
+    LargeError { generation: u64, message: String },
 }
 
 impl Shared {
@@ -151,6 +156,7 @@ impl Shared {
             redraw,
             shutdown: pending.shutdown,
             image: pending.image_update.take(),
+            large_request: pending.large_request.take(),
             #[cfg(test)]
             clear_gpu_cache: std::mem::take(&mut pending.clear_gpu_cache),
             gpu_probe: pending.gpu_probe.take(),
@@ -181,6 +187,7 @@ impl Shared {
             pending.image_update = None;
         }
         pending.gpu_probe = None;
+        pending.large_request = None;
         drop(pending);
         self.metrics
             .lock()
@@ -247,7 +254,48 @@ impl Shared {
 
     /// 短暂持锁检查候选结果是否仍属于 UI 的最新选择。
     pub(crate) fn is_image_generation_current(&self, generation: u64) -> bool {
-        self.pending().image_generation == generation
+        let p = self.pending();
+        !p.shutdown && p.image_generation == generation
+    }
+
+    /// 复用已有选择版本；后台大图构建取消不另建代际体系。
+    pub(crate) fn image_generation(&self) -> u64 {
+        self.pending().image_generation
+    }
+
+    /// 发布当前源的大图请求，清除上一源的缩放偏移；不在 UI 线程读取 PNG 或缓存。
+    pub(crate) fn request_large(&self, request: crate::large::worker::Request) {
+        {
+            let mut p = self.pending();
+            if p.shutdown || p.image_generation != request.generation {
+                return;
+            }
+            // 新源不能继承上一张图的任意平移位置；保留用户选择的 Fit/100% 模式。
+            p.snapshot.zoom = 1.0;
+            p.snapshot.pan = (0.0, 0.0);
+            p.snapshot.sequence = p.snapshot.sequence.wrapping_add(1);
+            p.large_request = Some(request);
+        }
+        self.wake_render_thread();
+    }
+
+    /// 缩放以窗口中心为锚点；只更新快照，不在 UI 回调读取 Tile。
+    pub(crate) fn zoom_by(&self, factor: f32) {
+        if factor.is_finite() && factor > 0.0 {
+            self.publish(RequestOrigin::Paint, |p| {
+                let next = (p.snapshot.zoom * factor).clamp(0.01, 64.0);
+                let ratio = next / p.snapshot.zoom;
+                p.snapshot.pan.0 = (p.snapshot.pan.0 * ratio).clamp(-1e9, 1e9);
+                p.snapshot.pan.1 = (p.snapshot.pan.1 * ratio).clamp(-1e9, 1e9);
+                p.snapshot.zoom = next;
+            });
+        }
+    }
+    pub(crate) fn pan_by(&self, x: f32, y: f32) {
+        self.publish(RequestOrigin::Paint, |p| {
+            p.snapshot.pan.0 = (p.snapshot.pan.0 + x).clamp(-1e9, 1e9);
+            p.snapshot.pan.1 = (p.snapshot.pan.1 + y).clamp(-1e9, 1e9);
+        });
     }
 
     /// 向渲染线程发布最新一次已校验的选择；此处不读文件、不访问 GPU。
@@ -434,6 +482,8 @@ impl Shared {
     pub(crate) fn set_view_mode(&self, mode: ViewMode) {
         self.publish(RequestOrigin::Paint, |pending| {
             pending.snapshot.view_mode = mode;
+            pending.snapshot.zoom = 1.0;
+            pending.snapshot.pan = (0.0, 0.0);
         });
     }
 
@@ -466,6 +516,14 @@ impl Shared {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_image_task(trace);
+    }
+
+    /// 大图长尾信息只进入有界诊断缓冲，不在绘制路径同步写控制台。
+    pub(crate) fn record_tile_view(&self, trace: String) {
+        self.metrics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_tile_view(trace);
     }
 
     pub(crate) fn increment(&self, counter: Counter) {
@@ -523,6 +581,7 @@ fn candidate_allowed(pending: &PendingState, generation: u64) -> bool {
 pub(crate) struct WindowContext {
     pub(crate) shared: Arc<Shared>,
     pub(crate) close_started: bool,
+    pub(crate) drag_position: Option<(i32, i32)>,
     pub(crate) action: Option<WindowAction>,
     navigation: UiNavigation,
 }
@@ -560,7 +619,8 @@ struct UiNavigation {
     progress_floor: Option<u64>,
 }
 
-struct WakeEvent(HANDLE);
+/// UI 独占的渲染唤醒事件；所有发布者停止且 Render Thread join 后才释放句柄。
+pub(crate) struct WakeEvent(HANDLE);
 
 impl Drop for WakeEvent {
     fn drop(&mut self) {
@@ -651,6 +711,8 @@ pub(crate) fn run() -> Result<()> {
         requested_at: process_started,
         request_origin: RequestOrigin::InitialWindowSize,
         view_mode: ViewMode::Fit,
+        zoom: 1.0,
+        pan: (0.0, 0.0),
     };
     let shared = Arc::new(Shared {
         pending: Mutex::new(PendingState {
@@ -662,6 +724,7 @@ pub(crate) fn run() -> Result<()> {
             shutdown: false,
             shutdown_started: None,
             image_update: None,
+            large_request: None,
             #[cfg(test)]
             clear_gpu_cache: false,
             gpu_probe: None,
@@ -680,6 +743,7 @@ pub(crate) fn run() -> Result<()> {
     let mut context = Box::new(WindowContext {
         shared: Arc::clone(&shared),
         close_started: false,
+        drag_position: None,
         action: None,
         navigation: UiNavigation::default(),
     });
@@ -1054,6 +1118,15 @@ fn process_gpu_probe_reply(
                 );
             }
         }
+        GpuProbeReply::LargeError {
+            generation,
+            message,
+        } => {
+            if context.shared.is_image_generation_current(generation) {
+                context.shared.increment(Counter::ImageLoadFailed);
+                show_non_modal_error(hwnd, &format!("大图加载失败：{message}"));
+            }
+        }
         GpuProbeReply::Miss(selection) => {
             if selection.generation == context.navigation.generation
                 && context.navigation.current_path.as_deref() == Some(selection.path.as_path())
@@ -1150,6 +1223,21 @@ fn process_loader_messages(
                         restore_navigation(context, hwnd);
                         show_non_modal_error(hwnd, &format!("图片加载失败：{error}"));
                     }
+                }
+            }
+            LoaderMessage::Large {
+                generation,
+                path,
+                requested_at,
+            } => {
+                if context.shared.is_image_generation_current(generation) {
+                    context.navigation.fallback = None;
+                    set_window_title(hwnd, "正在构建大图缓存；可切换图片或关闭窗口");
+                    context.shared.request_large(crate::large::worker::Request {
+                        generation,
+                        path,
+                        started: requested_at,
+                    });
                 }
             }
             LoaderMessage::Directory { generation, result } => {
@@ -1279,7 +1367,7 @@ fn set_window_title(hwnd: windows::Win32::Foundation::HWND, title: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
         CompletionEvent, CompletionSignal, Metrics, PendingState, RenderSnapshot, Shared,
         WakeEvent, run_render_worker,
@@ -1295,7 +1383,7 @@ mod tests {
         System::Threading::{CreateEventW, GetCurrentThreadId, WaitForSingleObject},
     };
 
-    fn test_shared() -> Result<(Arc<Shared>, WakeEvent)> {
+    pub(crate) fn test_shared() -> Result<(Arc<Shared>, WakeEvent)> {
         // SAFETY: 测试独占此无名称 auto-reset event，并在同步状态断言结束后关闭；没有工作线程等待它。
         let event = WakeEvent(unsafe { CreateEventW(None, false, false, None)? });
         let shared = Arc::new(Shared {
@@ -1308,6 +1396,8 @@ mod tests {
                     requested_at: Instant::now(),
                     request_origin: super::RequestOrigin::InitialWindowSize,
                     view_mode: super::ViewMode::Fit,
+                    zoom: 1.0,
+                    pan: (0.0, 0.0),
                 },
                 image_generation: 0,
                 progress_floor: None,
@@ -1316,6 +1406,7 @@ mod tests {
                 shutdown: false,
                 shutdown_started: None,
                 image_update: None,
+                large_request: None,
                 clear_gpu_cache: false,
                 gpu_probe: None,
                 preload_uploads: VecDeque::new(),
@@ -1328,6 +1419,31 @@ mod tests {
             ui_ready_event: Mutex::new(0),
         });
         Ok((shared, event))
+    }
+
+    #[test]
+    fn large_source_reset_and_center_zoom_do_not_reuse_an_old_pan() -> Result<()> {
+        let (shared, _event) = test_shared()?;
+        shared.set_image_generation(4);
+        shared.pan_by(10.0, 20.0);
+        shared.zoom_by(2.0);
+        assert_eq!(shared.current_snapshot().pan, (20.0, 40.0));
+        shared.request_large(crate::large::worker::Request {
+            generation: 3,
+            path: "old.png".into(),
+            started: Instant::now(),
+        });
+        assert!(shared.take_pending().large_request.is_none());
+        shared.request_large(crate::large::worker::Request {
+            generation: 4,
+            path: "new.png".into(),
+            started: Instant::now(),
+        });
+        assert_eq!(shared.current_snapshot().pan, (0.0, 0.0));
+        assert_eq!(shared.current_snapshot().zoom, 1.0);
+        shared.set_image_generation(5);
+        assert!(shared.take_pending().large_request.is_none());
+        Ok(())
     }
 
     #[test]
@@ -1500,6 +1616,7 @@ mod tests {
         let mut context = super::WindowContext {
             shared: Arc::clone(&shared),
             close_started: false,
+            drag_position: None,
             action: None,
             navigation: super::UiNavigation {
                 generation: 10,
@@ -1732,6 +1849,7 @@ mod tests {
         let mut context = Box::new(super::WindowContext {
             shared: Arc::clone(&shared),
             close_started: false,
+            drag_position: None,
             action: None,
             navigation: super::UiNavigation::default(),
         });
@@ -1840,6 +1958,7 @@ mod tests {
         let mut context = Box::new(super::WindowContext {
             shared: Arc::clone(&shared),
             close_started: false,
+            drag_position: None,
             action: None,
             navigation: super::UiNavigation::default(),
         });
@@ -2049,6 +2168,326 @@ mod tests {
         unsafe {
             DestroyWindow(hwnd)?;
         }
+        println!("{}", shared.metrics_report());
+        result?;
+        render_result?;
+        Ok(())
+    }
+    /// 在真实 HWND/D3D11 上验证合成宽图、层级、普通图片切换和关闭，不代替人工像素观感验收。
+    #[test]
+    #[ignore = "C3 Release 集成诊断，需要 HWND 和独立 PIXSTRIDE_TILE_CACHE"]
+    fn release_large_viewer_probe() -> Result<()> {
+        use crate::{
+            diagnostics::Counter,
+            image::{ImageBudget, worker::ImageLoader},
+        };
+        use crate::{
+            diagnostics::Metric,
+            large::stream::tests::{generate, root},
+        };
+        use std::path::PathBuf;
+        let root = root("viewer");
+        let cache_root = std::env::var_os("PIXSTRIDE_TILE_CACHE")
+            .map(PathBuf::from)
+            .context("设置专用 PIXSTRIDE_TILE_CACHE")?;
+        let wide = root.join("wide.png");
+        generate(&wide, 20000, 65)?;
+        let small = root.join("ordinary.png");
+        generate(&small, 37, 19)?;
+        let slow = root.join("cancel.png");
+        generate(&slow, 20000, 1025)?;
+        let (shared, _event) = test_shared()?;
+        let mut loader = ImageLoader::start(ImageBudget::default(), Arc::clone(&shared))?;
+        shared.set_ui_ready_event(loader.ready_handle());
+        let mut context = Box::new(super::WindowContext {
+            shared: Arc::clone(&shared),
+            close_started: false,
+            drag_position: None,
+            action: None,
+            navigation: super::UiNavigation::default(),
+        });
+        let hwnd = crate::window::create_main_window(&mut context)?;
+        crate::window::show_main_window(hwnd);
+        let rs = Arc::clone(&shared);
+        let raw = hwnd.0 as isize;
+        let thread = std::thread::spawn(move || crate::renderer::render_thread(raw, rs));
+        let n = |m| shared.metrics.lock().unwrap().sample_count(m);
+        let result = (|| -> Result<()> {
+            super::request_open(&mut context, &loader, hwnd, small.clone())?;
+            let generation = context.navigation.generation;
+            pump(&mut context, &loader, hwnd, || {
+                shared.metrics.lock().unwrap().presented_generation() == generation
+            })?;
+            let misses = shared
+                .metrics
+                .lock()
+                .unwrap()
+                .counter(Counter::CpuCurrentMiss);
+            super::request_open(&mut context, &loader, hwnd, wide.clone())?;
+            pump(&mut context, &loader, hwnd, || n(Metric::LargePreview) == 1)?;
+            pump(&mut context, &loader, hwnd, || n(Metric::TileViewport) >= 1)?;
+            let before = n(Metric::TileViewport);
+            shared.set_view_mode(super::ViewMode::NativePixels);
+            pump(&mut context, &loader, hwnd, || {
+                n(Metric::TileViewport) > before
+            })?;
+            for pan in [9300.0, -18600.0, 9300.0] {
+                let before = n(Metric::TileViewport);
+                shared.pan_by(pan, 0.0);
+                pump(&mut context, &loader, hwnd, || {
+                    n(Metric::TileViewport) > before
+                })?;
+            }
+            let before = n(Metric::TileViewport);
+            shared.zoom_by(0.25);
+            pump(&mut context, &loader, hwnd, || {
+                n(Metric::TileViewport) > before
+            })?;
+            shared.resize(0, 0);
+            shared.resize(900, 600);
+            let before = n(Metric::LargePreview);
+            super::request_open(&mut context, &loader, hwnd, small.clone())?;
+            let generation = context.navigation.generation;
+            pump(&mut context, &loader, hwnd, || {
+                shared.metrics.lock().unwrap().presented_generation() == generation
+            })?;
+            super::request_open(&mut context, &loader, hwnd, wide.clone())?;
+            pump(&mut context, &loader, hwnd, || {
+                n(Metric::LargePreview) > before
+            })?;
+            // 在新源构建已有半成品时切回普通 GPU 缓存；大图 Builder 不得占据 WIC Worker。
+            super::request_open(&mut context, &loader, hwnd, slow.clone())?;
+            pump(&mut context, &loader, hwnd, || {
+                std::fs::read_dir(&cache_root).is_ok_and(|r| {
+                    r.filter_map(|e| e.ok())
+                        .any(|e| e.file_name().to_string_lossy().starts_with(".build-"))
+                })
+            })?;
+            super::request_open(&mut context, &loader, hwnd, small.clone())?;
+            let generation = context.navigation.generation;
+            pump(&mut context, &loader, hwnd, || {
+                shared.metrics.lock().unwrap().presented_generation() == generation
+            })?;
+            assert!(
+                shared
+                    .metrics
+                    .lock()
+                    .unwrap()
+                    .counter(Counter::GpuCurrentHit)
+                    > 0
+            );
+            assert!(
+                shared
+                    .metrics
+                    .lock()
+                    .unwrap()
+                    .counter(Counter::CpuCurrentMiss)
+                    <= misses + 3,
+                "大图不应运行完整 WIC 解码"
+            );
+            // 再次启动构建并在其开始后关闭，验证取消与渲染线程收尾。
+            super::request_open(&mut context, &loader, hwnd, slow)?;
+            pump(&mut context, &loader, hwnd, || {
+                std::fs::read_dir(&cache_root).is_ok_and(|r| {
+                    r.filter_map(|e| e.ok())
+                        .any(|e| e.file_name().to_string_lossy().starts_with(".build-"))
+                })
+            })?;
+            Ok(())
+        })();
+        shared.request_shutdown();
+        loader.request_stop();
+        let render_result = thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("渲染线程 panic"))?;
+        loader.join()?;
+        // SAFETY: 所有使用 HWND 的线程已 join；当前线程仍持有窗口上下文。
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd)?;
+        }
+        println!("{}", shared.metrics_report());
+        result?;
+        render_result?;
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+    /// 只用合成 PNG，关联多 Tile 读取与视口完成；可在测试进程中注入慢读。
+    #[test]
+    #[ignore = "Release 合成视口分项诊断，需要 HWND 和独立缓存根目录"]
+    fn release_tile_viewport_profile() -> Result<()> {
+        use crate::{
+            diagnostics::Metric,
+            image::{ImageBudget, worker::ImageLoader},
+            large::{
+                stream::tests::{generate, root},
+                worker::Request,
+            },
+        };
+        let root = root("viewport-profile");
+        let image = root.join("synthetic.png");
+        generate(&image, 8193, 4097)?;
+        let (shared, _event) = test_shared()?;
+        let mut loader = ImageLoader::start(ImageBudget::default(), Arc::clone(&shared))?;
+        shared.set_ui_ready_event(loader.ready_handle());
+        let mut context = Box::new(super::WindowContext {
+            shared: Arc::clone(&shared),
+            close_started: false,
+            drag_position: None,
+            action: None,
+            navigation: super::UiNavigation::default(),
+        });
+        let hwnd = crate::window::create_main_window(&mut context)?;
+        crate::window::show_main_window(hwnd);
+        let rs = Arc::clone(&shared);
+        let raw = hwnd.0 as isize;
+        let thread = std::thread::spawn(move || crate::renderer::render_thread(raw, rs));
+        let n = |m| shared.metrics.lock().unwrap().sample_count(m);
+        let result = (|| -> Result<()> {
+            shared.set_image_generation(1);
+            shared.request_large(Request {
+                generation: 1,
+                path: image,
+                started: Instant::now(),
+            });
+            pump(&mut context, &loader, hwnd, || n(Metric::TileViewport) > 0)?;
+            shared.set_view_mode(super::ViewMode::NativePixels);
+            for round in 0..2 {
+                let reads = n(Metric::TileRead);
+                let uploads = n(Metric::TileUpload);
+                for pan in [
+                    (-3000.0, -1000.0),
+                    (6000.0, 0.0),
+                    (0.0, 2000.0),
+                    (-6000.0, 0.0),
+                    (3000.0, -1000.0),
+                ] {
+                    let before = n(Metric::TileViewport);
+                    shared.pan_by(pan.0, pan.1);
+                    pump(&mut context, &loader, hwnd, || {
+                        n(Metric::TileViewport) > before
+                    })?;
+                    println!(
+                        "VIEWSTEP round={round} pan={pan:?} total_us={:?}",
+                        shared
+                            .metrics
+                            .lock()
+                            .unwrap()
+                            .last_sample_us(Metric::TileViewport)
+                    );
+                }
+                if round == 1 {
+                    assert_eq!(n(Metric::TileRead), reads, "GPU 复用不应再次读取 Tile");
+                    assert_eq!(n(Metric::TileUpload), uploads, "GPU 复用不应再次上传 Tile");
+                }
+            }
+            Ok(())
+        })();
+        shared.request_shutdown();
+        loader.request_stop();
+        let render = thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("渲染线程 panic"))?;
+        loader.join()?;
+        // SAFETY: Render/Loader 已退出，HWND 与 WindowContext 仍由当前 UI 测试线程持有。
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd)?;
+        }
+        println!("{}", shared.metrics_report());
+        result?;
+        render?;
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    /// C4 已发布缓存的真实 Viewer 路径；路径由本地环境传入，不触碰源图片内容。
+    #[test]
+    #[ignore = "C4 真实缓存 Viewer 验证，需要明确批准"]
+    fn real_large_viewer_probe() -> Result<()> {
+        use crate::{
+            diagnostics::Metric,
+            image::{ImageBudget, worker::ImageLoader},
+        };
+        anyhow::ensure!(
+            std::env::var("PIXSTRIDE_APPROVED_LARGE_CACHE").as_deref() == Ok("1"),
+            "缺少真实大图测试批准"
+        );
+        let source = std::env::var_os("PIXSTRIDE_STRESS_IMAGE")
+            .map(std::path::PathBuf::from)
+            .context("设置 PIXSTRIDE_STRESS_IMAGE")?;
+        crate::large::cache::ensure_local(&source)?;
+        let (shared, _event) = test_shared()?;
+        let mut loader = ImageLoader::start(ImageBudget::default(), Arc::clone(&shared))?;
+        shared.set_ui_ready_event(loader.ready_handle());
+        let mut context = Box::new(super::WindowContext {
+            shared: Arc::clone(&shared),
+            close_started: false,
+            drag_position: None,
+            action: None,
+            navigation: super::UiNavigation::default(),
+        });
+        let hwnd = crate::window::create_main_window(&mut context)?;
+        crate::window::show_main_window(hwnd);
+        let rs = Arc::clone(&shared);
+        let raw = hwnd.0 as isize;
+        let thread = std::thread::spawn(move || crate::renderer::render_thread(raw, rs));
+        let n = |m| shared.metrics.lock().unwrap().sample_count(m);
+        let result = (|| -> Result<()> {
+            // C3 已验证路由；真实样本诊断直接发布大图请求，避免扫描私人目录或预加载其他私人图片。
+            context.navigation.generation = 1;
+            context.navigation.current_path = Some(source.clone());
+            shared.set_image_generation(1);
+            shared.request_large(crate::large::worker::Request {
+                generation: 1,
+                path: source,
+                started: Instant::now(),
+            });
+            pump(&mut context, &loader, hwnd, || n(Metric::LargePreview) > 0)?;
+            pump(&mut context, &loader, hwnd, || n(Metric::TileViewport) > 0)?;
+            let before = n(Metric::TileViewport);
+            shared.set_view_mode(super::ViewMode::NativePixels);
+            pump(&mut context, &loader, hwnd, || {
+                n(Metric::TileViewport) > before
+            })?;
+            let mut previous = (0.0, 0.0);
+            for _ in 0..2 {
+                for y in [-15500.0, -7750.0, 0.0, 7750.0, 15500.0] {
+                    for x in [-23300.0, -11650.0, 0.0, 11650.0, 23300.0] {
+                        let before = n(Metric::TileViewport);
+                        shared.pan_by(x - previous.0, y - previous.1);
+                        previous = (x, y);
+                        pump(&mut context, &loader, hwnd, || {
+                            n(Metric::TileViewport) > before
+                        })?;
+                    }
+                }
+            }
+            let before = n(Metric::TileViewport);
+            shared.set_view_mode(super::ViewMode::Fit);
+            pump(&mut context, &loader, hwnd, || {
+                n(Metric::TileViewport) > before
+            })?;
+            // GPU 完成且窗口不变时，不得由 Tile Worker 不断请求重绘。
+            let presents = n(Metric::Present);
+            let deadline = Instant::now() + Duration::from_millis(250);
+            while Instant::now() < deadline {
+                // SAFETY: 测试持有 ready event；短等待仅观察空闲，不替代正式事件驱动循环。
+                unsafe {
+                    WaitForSingleObject(loader.ready_handle(), 25);
+                }
+            }
+            assert_eq!(n(Metric::Present), presents, "静止后不应持续 Present");
+            Ok(())
+        })();
+        let shutdown = Instant::now();
+        shared.request_shutdown();
+        loader.request_stop();
+        let render_result = thread.join().map_err(|_| anyhow::anyhow!("Render panic"))?;
+        loader.join()?;
+        // SAFETY: 当前测试线程拥有 HWND，所有渲染资源使用者已退出，上下文仍然有效。
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd)?;
+        }
+        println!("REAL viewer shutdown_us={}", shutdown.elapsed().as_micros());
         println!("{}", shared.metrics_report());
         result?;
         render_result?;

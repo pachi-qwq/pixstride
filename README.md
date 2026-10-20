@@ -1,23 +1,24 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 5; status: stage-b-local-review -->
+<!-- doc-id: readme; revision: 7; status: stage-c-draft-review -->
 
 # Pixstride
 
 A native Windows image viewer project focused on fast startup, responsive input, and bounded resource use.
 
 Inspired by MassiGra's lightweight interface and fast interaction, Pixstride has completed the Stage A
-foundation and is under Stage B review. Initial JPEG, PNG, and BMP opening and browsing code is in the
-local feature branch; real-image GUI acceptance is pending. There is no public release or verified
-Stage B performance report.
+foundation and Stage B image browsing. JPEG, PNG, and BMP opening, navigation, bounded caches, and
+hold-navigation progress passed owner acceptance. Stage C streaming PNG and tiled rendering are in
+[Draft PR review](https://github.com/pachi-qwq/pixstride/pull/4). Real-image cache-hit operation passed
+owner testing; performance and detailed stress/visual acceptance remain open. There is no public release.
 
 ## Current foundation
 
 The selected stack is Rust Stable, Win32 through windows-rs, Direct3D 11, and a DXGI Flip Model
 Swap Chain. The target is Windows 10/11 x64. Stage A established the window and rendering foundation;
-Stage B adds initial WIC decoding and directory navigation, subject to GUI validation.
+Stage B adds WIC decoding and directory navigation.
 
-The proposed architecture keeps GPU resource ownership on a render thread and decodes images in
+The architecture keeps GPU resource ownership on a render thread and decodes images in
 bounded background work. Large images have a separate path. Threading, cache budgets, and Tile sizes
 remain subject to experiments; format names in the test plan are not a support claim.
 
@@ -25,6 +26,7 @@ remain subject to experiments; format names in the test plan are not a support c
 
 - [Stage A implementation and verification](docs/en/stage-a.md)
 - [Stage B image browsing implementation and limits](docs/en/stage-b.md)
+- [Stage C large PNG implementation and verification](docs/en/stage-c.md)
 - [Architecture scope and review actions](docs/en/architecture.md)
 - [Development status and documentation checks](docs/en/development.md)
 - [Cross-format stress test plan](docs/en/stress-testing.md)

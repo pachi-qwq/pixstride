@@ -45,6 +45,11 @@ pub(crate) enum LoaderMessage {
         requested_at: Instant,
         result: std::result::Result<(Arc<DecodedImage>, bool), String>,
     },
+    Large {
+        generation: u64,
+        path: PathBuf,
+        requested_at: Instant,
+    },
     Directory {
         generation: u64,
         result: std::result::Result<ImageDirectory, String>,
@@ -630,16 +635,27 @@ fn worker_loop(
                 if control.can_finish_current(job.generation)
                     && shared.can_present_image_generation(job.generation)
                 {
-                    send(
-                        sender,
-                        ready,
+                    let large = result
+                        .as_ref()
+                        .err()
+                        .is_some_and(|e| e.is::<BudgetRejection>())
+                        && is_png(&job.path)
+                        && shared.is_image_generation_current(job.generation);
+                    let message = if large {
+                        LoaderMessage::Large {
+                            generation: job.generation,
+                            path: job.path,
+                            requested_at: job.requested_at,
+                        }
+                    } else {
                         LoaderMessage::Current {
                             generation: job.generation,
                             path: job.path,
                             requested_at: job.requested_at,
-                            result: result.map_err(|error| format!("{error:#}")),
-                        },
-                    );
+                            result: result.map_err(|e| format!("{e:#}")),
+                        }
+                    };
+                    send(sender, ready, message);
                 }
                 control.lock().active_current_generation = None;
             }
@@ -772,19 +788,30 @@ fn service_image_job(
             queue,
             service,
             still_current: control.is_current(job.generation),
-            outcome: match &result {
-                Ok((_, true)) => "cpu-hit".to_owned(),
-                Ok((_, false)) => "decoded".to_owned(),
-                Err(_) if cancelled => "cancelled-stale".to_owned(),
-                Err(error) => format!("error: {}", error.root_cause())
-                    .chars()
-                    .take(512)
-                    .collect(),
-            },
+            outcome: task_outcome(&result, &job.path, current),
             stages: stages.into_inner(),
         });
     }
     result
+}
+
+/// PNG 普通预算拒绝是路由决定；预加载不启动 Builder，其他错误仍保留错误标签。
+fn task_outcome(result: &Result<(Arc<DecodedImage>, bool)>, path: &Path, current: bool) -> String {
+    match result {
+        Ok((_, true)) => "cpu-hit".to_owned(),
+        Ok((_, false)) => "decoded".to_owned(),
+        Err(error) if error.is::<DecodeCancelled>() => "cancelled-stale".to_owned(),
+        Err(error) if is_png(path) && error.is::<BudgetRejection>() => if current {
+            "route-to-tiles"
+        } else {
+            "skip-large-preload"
+        }
+        .to_owned(),
+        Err(error) => format!("error: {}", error.root_cause())
+            .chars()
+            .take(512)
+            .collect(),
+    }
 }
 
 fn identity_loop(
@@ -816,6 +843,11 @@ fn identity_loop(
             );
         }
     }
+}
+
+fn is_png(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"))
 }
 
 fn load_with_cache(
@@ -859,6 +891,17 @@ fn load_with_cache(
     if let Some(error) = cache.rejection(&identity) {
         shared.increment(Counter::BudgetRejectionHit);
         return Err(error.into());
+    }
+    if is_png(path) {
+        crate::large::cache::ensure_local(path)?;
+        if let Ok(size) = crate::large::stream::inspect(path) {
+            if let Err(e) = super::checked_layout(size.width, size.height, budget) {
+                if let Some(rejection) = e.downcast_ref::<BudgetRejection>() {
+                    cache.remember_rejection(identity, rejection.clone());
+                }
+                return Err(e);
+            }
+        }
     }
     let decode_started = Instant::now();
     let result = decode_wic(path, &identity, budget, &record, is_current);
@@ -905,6 +948,24 @@ mod tests {
         sync::{Condvar, Mutex},
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn large_png_routing_is_distinct_from_an_actual_load_error() {
+        let error =
+            super::super::checked_layout(20000, 1, super::ImageBudget::default()).unwrap_err();
+        let result = Err(error);
+        assert_eq!(
+            super::task_outcome(&result, Path::new("large.PNG"), true),
+            "route-to-tiles"
+        );
+        assert_eq!(
+            super::task_outcome(&result, Path::new("large.png"), false),
+            "skip-large-preload"
+        );
+        assert!(super::task_outcome(&result, Path::new("large.jpg"), true).starts_with("error:"));
+        let failed = Err(anyhow::anyhow!("file unavailable"));
+        assert!(super::task_outcome(&failed, Path::new("missing.png"), true).starts_with("error:"));
+    }
 
     #[test]
     fn latest_selection_replaces_pending_work_and_old_preloads() {

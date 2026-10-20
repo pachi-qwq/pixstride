@@ -8,7 +8,7 @@ use std::{
     ffi::OsStr,
     fs,
     hash::Hash,
-    os::windows::ffi::OsStrExt,
+    os::windows::{ffi::OsStrExt, fs::MetadataExt},
     path::{Path, PathBuf},
     time::{Duration, Instant, UNIX_EPOCH},
 };
@@ -74,10 +74,26 @@ pub(crate) struct SourceIdentity {
 
 impl SourceIdentity {
     pub(crate) fn read(path: &Path) -> Result<Self> {
+        // PNG 可能被路由到大图路径；先查属性，避免 canonicalize 的句柄访问先触发云端取回。
+        // 复用同一次 metadata 结果，不给有效 PNG 的 GPU 快速路径增加第二次元数据查询。
+        let png_metadata = if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+        {
+            let metadata = fs::metadata(path)
+                .with_context(|| format!("无法读取 PNG 属性：{}", path.display()))?;
+            crate::large::cache::check_local_attributes(metadata.file_attributes())?;
+            Some(metadata)
+        } else {
+            None
+        };
         let canonical = fs::canonicalize(path)
             .with_context(|| format!("无法解析图片路径：{}", path.display()))?;
-        let metadata = fs::metadata(&canonical)
-            .with_context(|| format!("无法读取图片信息：{}", canonical.display()))?;
+        let metadata = match png_metadata {
+            Some(metadata) => metadata,
+            None => fs::metadata(&canonical)
+                .with_context(|| format!("无法读取图片信息：{}", canonical.display()))?,
+        };
         if !metadata.is_file() {
             bail!("所选路径不是文件：{}", canonical.display());
         }
@@ -141,7 +157,7 @@ impl std::fmt::Display for BudgetRejection {
                 limit,
             } => write!(
                 f,
-                "图片尺寸 {width}×{height} 超过单张纹理边长上限 {limit}；超大图片路径尚未实现"
+                "图片尺寸 {width}×{height} 超过单张纹理边长上限 {limit}；该格式不在普通单纹理路径内"
             ),
             Self::DecodedBytes { bytes, limit } => write!(
                 f,

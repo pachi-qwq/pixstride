@@ -1,15 +1,17 @@
 [English](development.md) | [简体中文](../zh-CN/development.md)
 
-<!-- doc-id: development; revision: 10; status: stage-b-development -->
+<!-- doc-id: development; revision: 12; status: stage-c-development -->
 
 # Development status and checks
 
 The repository contains a single Cargo package for a Win32/D3D11 viewer. Stage B adds WIC decoding for
 JPEG, PNG, and BMP, directory navigation, and bounded CPU/GPU caches. The project owner has confirmed
-real-image display, zoom, keyboard navigation, the native file dialog, and window resizing. Review of
-cache-path latency and preload scheduling is in progress. There is no public release.
+real-image display, zoom, keyboard navigation, the native file dialog, and window resizing.
+Stage B is complete. Stage C adds a separately budgeted streaming PNG/Tile path in Draft PR review.
+See [Stage C](stage-c.md) for cache variables, build measurements, supported encodings, and manual checks.
+There is no public release.
 
-## Build and run Stage B
+## Build and run
 
 Use Windows 10/11 x64, Rust Stable with `x86_64-pc-windows-msvc`, MSVC C++ Build Tools, the Windows SDK,
 and `fxc.exe`. The build script compiles HLSL into DXBC in Cargo's `OUT_DIR`; set `PIXSTRIDE_FXC` to
@@ -96,11 +98,10 @@ Use [Rust's Windows MSVC guidance](https://doc.rust-lang.org/rustc/platform-supp
 
 The `Rust` workflow uses a Windows runner and a `rust` job. It runs formatting, Clippy, tests, Release
 build, and Rustdoc with the checked-in lockfile. The workflow has read-only repository permissions and
-does not publish releases. The `docs` check remains the only required Ruleset status check; this task
-did not change repository protection.
+does not publish releases. This task did not change required status checks or repository protection.
 
 Application timings use `std::time::Instant` and retain at most 4096 recent samples per category.
 Percentiles use nearest rank. Startup ends at `CreateWindowExW` return, not first display. `Present`
 duration is not display latency. Use PresentMon/ETW for displayed-frame events and an external method
-for Input-to-Photon measurement. See [Stage A verification](stage-a.md), [Stage B](stage-b.md), [architecture](architecture.md),
+for Input-to-Photon measurement. See [Stage A verification](stage-a.md), [Stage B](stage-b.md), [Stage C](stage-c.md), [architecture](architecture.md),
 and [maintenance](maintenance.md) for the current implementation and limits.

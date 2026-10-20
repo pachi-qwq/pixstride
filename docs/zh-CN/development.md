@@ -1,14 +1,14 @@
 [English](../en/development.md) | [简体中文](development.md)
 
-<!-- doc-id: development; revision: 10; status: stage-b-development -->
+<!-- doc-id: development; revision: 12; status: stage-c-development -->
 
 # 开发状态与检查
 
 仓库包含一个 Win32/D3D11 查看器 Cargo Package。阶段 B 加入 JPEG、PNG、BMP 的 WIC 解码、目录导航和有界
-CPU/GPU 缓存。负责人已确认真实图片显示、缩放、键盘导航、原生文件对话框和窗口 Resize 正常。目前正在评审缓存路径延迟与
-预加载调度。项目尚无公开发行版。
+CPU/GPU 缓存。负责人已确认真实图片显示、缩放、键盘导航、原生文件对话框和窗口 Resize 正常。阶段 B 已完成，阶段 C 的独立预算 PNG 流式/分块路径正在进行 Draft PR 评审。
+缓存变量、构建测量、支持的编码和人工检查见[阶段 C](stage-c.md)。项目尚无公开发行版。
 
-## 构建和运行阶段 B
+## 构建和运行
 
 需要 Windows 10/11 x64、Rust Stable 和 `x86_64-pc-windows-msvc` Target、MSVC C++ Build Tools、
 Windows SDK 及 `fxc.exe`。构建脚本会将 HLSL 编译为 DXBC 并写入 Cargo 的 `OUT_DIR`；如果 SDK 自动发现失败，
@@ -65,7 +65,7 @@ python -B scripts/check_docs.py --external-links
 
 当前验证环境有 Rust/Cargo 1.96.0、`x86_64-pc-windows-msvc` Target、Visual Studio Build Tools 2022
 （MSVC 14.44）和 Windows SDK 10.0.26100.0。项目依赖 `windows` 0.62.2 和 `anyhow` 1.0.104；
-`Cargo.lock` 记录了完整解析结果。Release 构建调用 SDK 中的 FXC 编译了两个 HLSL 入口。
+`Cargo.lock` 记录了完整解析结果。阶段 A 的 Release 构建通过 FXC 编译两个 HLSL 入口，阶段 C 另加 Tile Vertex Shader 入口。
 
 项目负责人在 NVIDIA GeForce RTX 4080 SUPER、Hardware Driver、Feature Level 11.1 的机器上运行 Release 程序，
 人工确认棋盘格、Left/Right 纹理切换、最大化/最小化/恢复、连续 Resize 和 Alt+F4 关闭正常。测得 D3D11 初始化
@@ -85,10 +85,9 @@ Device Lost 压力测试和长期稳定性仍未验证。仅通过编译不能�
 ## CI 与性能验证
 
 `Rust` 工作流使用 Windows Runner，Job 名为 `rust`。它通过锁文件运行格式检查、Clippy、测试、Release 构建和 Rustdoc。
-工作流权限为只读，不发布 Release。Ruleset 仍只要求 `docs` 检查；
-本轮没有修改仓库保护设置。
+工作流权限为只读，不发布 Release。本轮没有修改必需状态检查或仓库保护设置。
 
 程序使用 `std::time::Instant` 计时，每类最多保留最近 4096 个样本，分位数采用最近秩法。启动范围结束于
 `CreateWindowExW` 返回，不代表首帧已显示；`Present` 耗时也不代表屏显延迟。可用 PresentMon/ETW 观察已显示帧，
-用外部方法测量 Input-to-Photon。当前实现与限制见[阶段 A 验证](stage-a.md)、[阶段 B](stage-b.md)、[架构](architecture.md)
+用外部方法测量 Input-to-Photon。当前实现与限制见[阶段 A 验证](stage-a.md)、[阶段 B](stage-b.md)、[阶段 C](stage-c.md)、[架构](architecture.md)
 和[维护说明](maintenance.md)。

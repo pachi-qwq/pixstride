@@ -96,6 +96,7 @@ struct Renderer {
     first_image_present_reported: bool,
     pending_selection_present: Option<(Instant, bool, bool)>,
     render_thread_started: Instant,
+    tiles: Option<super::tiles::Tiles>,
 }
 
 impl Renderer {
@@ -201,6 +202,7 @@ impl Renderer {
             first_image_present_reported: false,
             pending_selection_present: None,
             render_thread_started,
+            tiles: None,
         };
 
         let snapshot = shared.current_snapshot();
@@ -210,7 +212,7 @@ impl Renderer {
         Ok(renderer)
     }
 
-    fn run(&mut self, shared: &Shared) -> Result<()> {
+    fn run(&mut self, shared: &Arc<Shared>) -> Result<()> {
         let mut snapshot = shared.current_snapshot();
         let mut needs_render = snapshot.width > 0 && snapshot.height > 0;
 
@@ -232,6 +234,23 @@ impl Renderer {
                 if work.cancel_preloads {
                     self.pending_preloads.clear();
                 }
+                if let Some(request) = work.large_request {
+                    if shared.is_image_generation_current(request.generation) {
+                        if self.tiles.is_none() {
+                            self.tiles = Some(super::tiles::Tiles::new(&self.device, shared)?);
+                        }
+                        if let Some(tiles) = &self.tiles {
+                            let generation = request.generation;
+                            if let Err(error) = tiles.request(request) {
+                                shared.publish_gpu_probe_reply(GpuProbeReply::LargeError {
+                                    generation,
+                                    message: format!("{error:#}"),
+                                });
+                            }
+                        }
+                    }
+                }
+
                 if work.redraw {
                     let delay = work.snapshot.requested_at.elapsed();
                     shared.record(Metric::RequestToRender, delay);
@@ -257,6 +276,9 @@ impl Renderer {
                         self.image_cache.contains_key(&image.source),
                         cpu_cache_hit,
                     ));
+                    if let Some(tiles) = self.tiles.as_mut() {
+                        tiles.clear();
+                    }
                     self.upload_image(image, true, shared)?;
                     self.selection_generation = Some(generation);
                 }
@@ -282,6 +304,9 @@ impl Renderer {
                             let dimensions = (*width, *height);
                             if !shared.claim_image_generation(selection.generation) {
                                 continue;
+                            }
+                            if let Some(tiles) = self.tiles.as_mut() {
+                                tiles.clear();
                             }
                             self.current_image = Some(selection.identity.clone());
                             self.current_dimensions = dimensions;
@@ -312,6 +337,14 @@ impl Renderer {
                     && (snapshot.width != self.width || snapshot.height != self.height)
                 {
                     self.resize_resources(snapshot.width, snapshot.height, true, shared)?;
+                }
+                if let Some(tiles) = self.tiles.as_mut() {
+                    if let Some(generation) = tiles.pump(&self.device, shared, &snapshot)? {
+                        self.current_image = None;
+                        self.selection_generation = Some(generation);
+                        self.pending_selection_present = None;
+                        needs_render = true;
+                    }
                 }
                 needs_render = snapshot.width > 0
                     && snapshot.height > 0
@@ -490,7 +523,12 @@ impl Renderer {
             self.context.PSSetShaderResources(0, Some(&[Some(srv)]));
             self.context
                 .PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
-            self.context.Draw(3, 0);
+            if !self.tiles.as_ref().is_some_and(|t| t.active()) {
+                self.context.Draw(3, 0);
+            }
+        }
+        if let Some(tiles) = self.tiles.as_ref().filter(|t| t.active()) {
+            tiles.draw(&self.context, snapshot);
         }
         shared.record(Metric::RenderCommands, started.elapsed());
 
@@ -511,6 +549,9 @@ impl Renderer {
                     .map(|error| error.to_string())
                     .unwrap_or_else(|| "设备未报告移除原因".to_owned())
             ));
+        }
+        if let Some(tiles) = self.tiles.as_mut() {
+            tiles.presented(shared);
         }
         if !self.first_present_reported {
             shared.record(Metric::FirstPresent, self.render_thread_started.elapsed());
@@ -925,5 +966,143 @@ mod tests {
             fit_viewport(400, 200, 1000, 600, ViewMode::NativePixels),
             (400.0, 200.0)
         );
+    }
+    /// GPU 回读校验跨 Tile 边界与预乘 Alpha；不依赖人工观察窗口。
+    #[test]
+    #[ignore = "C3 Release GPU 回读，需要硬件或 WARP"]
+    fn release_tile_gpu_readback() -> anyhow::Result<()> {
+        use super::*;
+        use crate::large::{
+            stream::tests::{generate, root},
+            worker::Request,
+        };
+        use windows::Win32::Graphics::Direct3D11::*;
+        let root = root("readback");
+        let source = root.join("own.png");
+        generate(&source, 2049, 17)?;
+        let (shared, _event) = crate::app::tests::test_shared()?;
+        shared.set_image_generation(1);
+        shared.resize(1025, 17);
+        shared.set_view_mode(ViewMode::NativePixels);
+        let snapshot = shared.current_snapshot();
+        let (device, _, context, _) = create_device()?;
+        let mut tiles = crate::renderer::tiles::Tiles::new(&device, &shared)?;
+        tiles.request(Request {
+            generation: 1,
+            path: source,
+            started: Instant::now(),
+        })?;
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !tiles.complete() {
+            anyhow::ensure!(Instant::now() < deadline, "Tile GPU 回读等待超时");
+            tiles.pump(&device, &shared, &snapshot)?;
+            // SAFETY: 测试持有 wake event 到 Tiles 退出；短超时仅用于测试期限，不是正式渲染循环。
+            unsafe {
+                windows::Win32::System::Threading::WaitForSingleObject(
+                    HANDLE(shared.wake_event() as _),
+                    10,
+                );
+            }
+        }
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: 1025,
+            Height: 17,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+            ..Default::default()
+        };
+        let mut output = None;
+        let mut target = None;
+        let mut shader = None;
+        // SAFETY: 描述完整且尺寸很小，所有输出槽均为当前栈帧上的有效 Option。
+        unsafe {
+            device.CreateTexture2D(&desc, None, Some(&mut output))?;
+            device.CreateRenderTargetView(
+                output.as_ref().context("缺少输出纹理")?,
+                None,
+                Some(&mut target),
+            )?;
+            device.CreatePixelShader(PIXEL_SHADER, None, Some(&mut shader))?;
+        }
+        let target: ID3D11RenderTargetView = target.context("缺少渲染目标")?;
+        let output: ID3D11Texture2D = output.context("缺少输出纹理")?;
+        let sampler = create_sampler(&device)?;
+        let blend = create_alpha_blend(&device)?;
+        let rasterizer = create_rasterizer(&device)?;
+        // SAFETY: Context 和所有绑定资源由测试当前线程独占，数组在调用期间有效。
+        unsafe {
+            context.OMSetRenderTargets(Some(&[Some(target.clone())]), None);
+            context.ClearRenderTargetView(&target, &[0.1, 0.2, 0.3, 1.0]);
+            context.OMSetBlendState(&blend, None, u32::MAX);
+            context.RSSetState(&rasterizer);
+            context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            context.PSSetShader(shader.as_ref().context("缺少 Pixel Shader")?, None);
+            context.PSSetSamplers(0, Some(&[Some(sampler)]));
+        }
+        tiles.draw(&context, &snapshot);
+        let staging_desc = D3D11_TEXTURE2D_DESC {
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            ..desc
+        };
+        let mut staging = None;
+        // SAFETY: staging 与输出纹理尺寸/格式相同；只由当前测试线程复制和映射。
+        unsafe {
+            device.CreateTexture2D(&staging_desc, None, Some(&mut staging))?;
+        }
+        let staging: ID3D11Texture2D = staging.context("缺少回读纹理")?;
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        // SAFETY: CopyResource 提交后 Map(READ) 等待 GPU 完成，返回的内存活到配对 Unmap。
+        unsafe {
+            context.CopyResource(&staging, &output);
+            context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+        }
+        let result = (|| -> Result<()> {
+            for y in 0..17usize {
+                for x in 0..1025usize {
+                    let ox = x + 512;
+                    let alpha = if (ox + y) % 3 == 0 { 128u32 } else { 255 };
+                    let src = [(ox % 256) as u32, y as u32, ((ox + y) % 256) as u32];
+                    // SAFETY: x/y 严格小于已映射尺寸，RowPitch 由 D3D11 返回，读取 4 字节不会越过当前行。
+                    let actual = unsafe {
+                        std::slice::from_raw_parts(
+                            (mapped.pData as *const u8).add(y * mapped.RowPitch as usize + x * 4),
+                            4,
+                        )
+                    };
+                    for c in 0..3 {
+                        let premult = (src[c] * alpha + 127) / 255;
+                        let expected = (premult as f32
+                            + [25.5, 51.0, 76.5][c] * (1.0 - alpha as f32 / 255.0))
+                            .round() as i16;
+                        anyhow::ensure!(
+                            (i16::from(actual[c]) - expected).abs() <= 2,
+                            "GPU 像素不符 x={x},y={y},c={c}: actual={},expected={expected}",
+                            actual[c]
+                        );
+                    }
+                    anyhow::ensure!(actual[3] == 255, "输出 Alpha 不符");
+                }
+            }
+            Ok(())
+        })();
+        // SAFETY: Map 已成功，且以上读取已结束；无论断言结果如何均配对 Unmap。
+        unsafe {
+            context.Unmap(&staging, 0);
+            context.ClearState();
+        }
+        drop(tiles);
+        std::fs::remove_dir_all(root)?;
+        result?;
+        println!("GPU readback: 17425 pixels, tile boundary and premultiplied alpha passed");
+        Ok(())
     }
 }

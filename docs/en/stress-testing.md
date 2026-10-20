@@ -1,6 +1,6 @@
 [English](stress-testing.md) | [简体中文](../zh-CN/stress-testing.md)
 
-<!-- doc-id: stress; revision: 1; status: proposal -->
+<!-- doc-id: stress; revision: 2; status: proposal -->
 
 # Cross-format stress test plan
 
@@ -138,3 +138,7 @@ instead of claiming stable P95/P99 from a few trials. Record failures and trace 
 Every L3 capability needs correct preview/regions or an explicit unsupported/over-budget result,
 responsive input, bounded queues/resources, cancellation/failure recovery and cleanup evidence.
 Re-run the ordinary-image baseline after adding an extreme path.
+
+Stage C executable row/cache/viewport probes are listed in [Stage C](stage-c.md). Small generated
+fixtures run in Rust CI; explicit GPU and private-image probes remain opt-in. The actual extreme
+image is never a CI input. Cache budgets are independent of the ordinary 256 MiB image limit.
