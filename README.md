@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 6; status: stage-c-local-review -->
+<!-- doc-id: readme; revision: 7; status: stage-c-draft-review -->
 
 # Pixstride
 
@@ -8,8 +8,9 @@ A native Windows image viewer project focused on fast startup, responsive input,
 
 Inspired by MassiGra's lightweight interface and fast interaction, Pixstride has completed the Stage A
 foundation and Stage B image browsing. JPEG, PNG, and BMP opening, navigation, bounded caches, and
-hold-navigation progress passed owner acceptance. Stage C is in local development with streaming PNG
-and tiled rendering; real-image acceptance remains pending. There is no public release.
+hold-navigation progress passed owner acceptance. Stage C streaming PNG and tiled rendering are in
+[Draft PR review](https://github.com/pachi-qwq/pixstride/pull/4). Real-image cache-hit operation passed
+owner testing; performance and detailed stress/visual acceptance remain open. There is no public release.
 
 ## Current foundation
 

@@ -28,6 +28,12 @@ pub(crate) enum Reply {
     Tile {
         generation: u64,
         pixels: Arc<TilePixels>,
+        sequence: u64,
+        ready_at: Instant,
+        read: cache::ReadProfile,
+        cpu_hit: bool,
+        queue: Duration,
+        backpressure: Duration,
     },
     Error {
         generation: u64,
@@ -39,6 +45,7 @@ struct ViewJob {
     sequence: u64,
     cache: Arc<DiskCache>,
     ids: Vec<usize>,
+    queued_at: Instant,
 }
 #[derive(Default)]
 struct State {
@@ -67,7 +74,8 @@ impl Control {
                 .upgrade()
                 .is_some_and(|s| s.is_image_generation_current(generation))
     }
-    fn publish(&self, generation: u64, reply: Reply) {
+    fn publish(&self, generation: u64, mut reply: Reply) {
+        let at = Instant::now();
         let mut s = self.lock();
         while s.replies.len() >= 2 && !s.stopping {
             s = self
@@ -81,6 +89,19 @@ impl Control {
             .upgrade()
             .filter(|shared| !s.stopping && shared.is_image_generation_current(generation))
         {
+            if let Reply::Tile {
+                ready_at,
+                backpressure,
+                ..
+            } = &mut reply
+            {
+                *backpressure = at.elapsed();
+                shared.record(
+                    crate::diagnostics::Metric::TileReplyBackpressure,
+                    *backpressure,
+                );
+                *ready_at = Instant::now();
+            }
             s.replies.push_back(reply);
             shared.wake_render_thread();
         }
@@ -157,6 +178,7 @@ impl Worker {
             sequence,
             cache,
             ids,
+            queued_at: Instant::now(),
         });
         self.control.changed.notify_all();
     }
@@ -250,6 +272,13 @@ fn run(control: &Control) {
                         "PNG scan: {}x{}, rows={}, owned_row_bytes={}",
                         scan.size.width, scan.size.height, scan.rows, scan.owned_row_bytes
                     );
+                    println!(
+                        "PNG phases us: read_rows={} convert_rows={} pyramid_visitor={} (visitor includes writes); build phases={:?}",
+                        scan.decode_rows.as_micros(),
+                        scan.convert_rows.as_micros(),
+                        scan.visitor.as_micros(),
+                        r.phases
+                    );
                 }
                 let preview = cache
                     .plan
@@ -306,11 +335,16 @@ fn run(control: &Control) {
                     break;
                 }
                 let at = Instant::now();
+                let queue = job.queued_at.elapsed();
+                if let Some(s) = control.shared.upgrade() {
+                    s.record(crate::diagnostics::Metric::TileWorkerQueue, queue);
+                }
                 let found = cpu
                     .iter()
                     .position(|p| p.id == id)
                     .and_then(|i| cpu.remove(i));
                 let cpu_hit = found.is_some();
+                let mut read = cache::ReadProfile::default();
                 if cpu_hit {
                     hits += 1;
                 } else {
@@ -318,8 +352,22 @@ fn run(control: &Control) {
                 }
                 let pixels = match found {
                     Some(p) => p,
-                    None => match job.cache.read_tile(id) {
-                        Ok(p) => Arc::new(p),
+                    None => match job.cache.read_tile_profiled(id) {
+                        Ok((p, profile)) => {
+                            read = profile;
+                            if let Some(s) = control.shared.upgrade() {
+                                s.record(
+                                    crate::diagnostics::Metric::TileAllocation,
+                                    profile.allocation,
+                                );
+                                s.record(
+                                    crate::diagnostics::Metric::TileFileRead,
+                                    profile.file_read,
+                                );
+                                s.record(crate::diagnostics::Metric::TileCrc, profile.crc);
+                            }
+                            Arc::new(p)
+                        }
                         Err(e) => {
                             control.publish(
                                 job.generation,
@@ -354,6 +402,12 @@ fn run(control: &Control) {
                         Reply::Tile {
                             generation: job.generation,
                             pixels,
+                            sequence: job.sequence,
+                            ready_at: Instant::now(),
+                            read,
+                            cpu_hit,
+                            queue,
+                            backpressure: Duration::ZERO,
                         },
                     );
                 }
@@ -463,6 +517,63 @@ mod tests {
         let at = Instant::now();
         drop(worker);
         assert!(at.elapsed() < Duration::from_secs(1));
+        Ok(())
+    }
+
+    #[test]
+    fn switching_source_clears_old_replies_and_keeps_only_latest_viewport() -> Result<()> {
+        let root = super::super::stream::tests::root("switch");
+        let image = root.join("own.png");
+        super::super::stream::tests::generate(&image, 9, 11)?;
+        let (cache, _) =
+            cache::build_or_open(&image, &root.join("tiles"), CacheBudget::default(), || true)?;
+        let cache = Arc::new(cache);
+        let (shared, _event) = crate::app::tests::test_shared()?;
+        shared.set_image_generation(1);
+        let control = Arc::new(Control {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+            shared: Arc::downgrade(&shared),
+        });
+        let (tx, done) = mpsc::channel();
+        let worker = Worker {
+            control: Arc::clone(&control),
+            thread: None,
+            done,
+        };
+        control.publish(
+            1,
+            Reply::Error {
+                generation: 1,
+                message: "old".into(),
+            },
+        );
+        for generation in 2..=100 {
+            shared.set_image_generation(generation);
+            worker.build(Request {
+                generation,
+                path: image.clone(),
+                started: Instant::now(),
+            })?;
+            worker.view(generation, generation, Arc::clone(&cache), vec![0]);
+        }
+        let state = control.lock();
+        assert!(state.replies.is_empty());
+        assert_eq!(state.build.as_ref().unwrap().generation, 100);
+        assert_eq!(state.view.as_ref().unwrap().sequence, 100);
+        drop(state);
+        control.publish(
+            1,
+            Reply::Error {
+                generation: 1,
+                message: "late".into(),
+            },
+        );
+        assert!(worker.drain().is_empty());
+        drop(tx);
+        drop(worker);
+        drop(cache);
+        std::fs::remove_dir_all(root)?;
         Ok(())
     }
 }

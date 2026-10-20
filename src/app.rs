@@ -518,6 +518,14 @@ impl Shared {
             .record_image_task(trace);
     }
 
+    /// 大图长尾信息只进入有界诊断缓冲，不在绘制路径同步写控制台。
+    pub(crate) fn record_tile_view(&self, trace: String) {
+        self.metrics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_tile_view(trace);
+    }
+
     pub(crate) fn increment(&self, counter: Counter) {
         self.metrics
             .lock()
@@ -2303,6 +2311,94 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root)?;
         Ok(())
     }
+    /// 只用合成 PNG，关联多 Tile 读取与视口完成；可在测试进程中注入慢读。
+    #[test]
+    #[ignore = "Release 合成视口分项诊断，需要 HWND 和独立缓存根目录"]
+    fn release_tile_viewport_profile() -> Result<()> {
+        use crate::{
+            diagnostics::Metric,
+            image::{ImageBudget, worker::ImageLoader},
+            large::{
+                stream::tests::{generate, root},
+                worker::Request,
+            },
+        };
+        let root = root("viewport-profile");
+        let image = root.join("synthetic.png");
+        generate(&image, 8193, 4097)?;
+        let (shared, _event) = test_shared()?;
+        let mut loader = ImageLoader::start(ImageBudget::default(), Arc::clone(&shared))?;
+        shared.set_ui_ready_event(loader.ready_handle());
+        let mut context = Box::new(super::WindowContext {
+            shared: Arc::clone(&shared),
+            close_started: false,
+            drag_position: None,
+            action: None,
+            navigation: super::UiNavigation::default(),
+        });
+        let hwnd = crate::window::create_main_window(&mut context)?;
+        crate::window::show_main_window(hwnd);
+        let rs = Arc::clone(&shared);
+        let raw = hwnd.0 as isize;
+        let thread = std::thread::spawn(move || crate::renderer::render_thread(raw, rs));
+        let n = |m| shared.metrics.lock().unwrap().sample_count(m);
+        let result = (|| -> Result<()> {
+            shared.set_image_generation(1);
+            shared.request_large(Request {
+                generation: 1,
+                path: image,
+                started: Instant::now(),
+            });
+            pump(&mut context, &loader, hwnd, || n(Metric::TileViewport) > 0)?;
+            shared.set_view_mode(super::ViewMode::NativePixels);
+            for round in 0..2 {
+                let reads = n(Metric::TileRead);
+                let uploads = n(Metric::TileUpload);
+                for pan in [
+                    (-3000.0, -1000.0),
+                    (6000.0, 0.0),
+                    (0.0, 2000.0),
+                    (-6000.0, 0.0),
+                    (3000.0, -1000.0),
+                ] {
+                    let before = n(Metric::TileViewport);
+                    shared.pan_by(pan.0, pan.1);
+                    pump(&mut context, &loader, hwnd, || {
+                        n(Metric::TileViewport) > before
+                    })?;
+                    println!(
+                        "VIEWSTEP round={round} pan={pan:?} total_us={:?}",
+                        shared
+                            .metrics
+                            .lock()
+                            .unwrap()
+                            .last_sample_us(Metric::TileViewport)
+                    );
+                }
+                if round == 1 {
+                    assert_eq!(n(Metric::TileRead), reads, "GPU 复用不应再次读取 Tile");
+                    assert_eq!(n(Metric::TileUpload), uploads, "GPU 复用不应再次上传 Tile");
+                }
+            }
+            Ok(())
+        })();
+        shared.request_shutdown();
+        loader.request_stop();
+        let render = thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("渲染线程 panic"))?;
+        loader.join()?;
+        // SAFETY: Render/Loader 已退出，HWND 与 WindowContext 仍由当前 UI 测试线程持有。
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd)?;
+        }
+        println!("{}", shared.metrics_report());
+        result?;
+        render?;
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
     /// C4 已发布缓存的真实 Viewer 路径；路径由本地环境传入，不触碰源图片内容。
     #[test]
     #[ignore = "C4 真实缓存 Viewer 验证，需要明确批准"]

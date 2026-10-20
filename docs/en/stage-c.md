@@ -1,6 +1,6 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 5; status: implementation-review -->
+<!-- doc-id: stage-c; revision: 6; status: implementation-review -->
 
 # Stage C: large PNG path
 
@@ -227,7 +227,7 @@ allocation failure, driver-stalled shutdown, long-duration stability, and detail
 unverified. EXIF Orientation, ICC/HDR, APNG, Adam7, and 16-bit large-PNG handling are outside this path;
 large PNG orientation metadata is not applied.
 
-The final local suite has 58 passing Rust tests and 10 explicit diagnostics omitted by default; document
+The initial C4 checkpoint had 58 passing Rust tests and 10 explicit diagnostics omitted by default; document
 tool regression has 41 passing tests. Formatting, Clippy, Release build, Rustdoc, document checks and
 diff whitespace checks passed. These are local results; GitHub CI must be checked separately after publication.
 
@@ -245,6 +245,144 @@ setting it does not grant permission. Keep the cache root available to reuse the
 Close all viewer/probe instances before deleting that dedicated root; the next open will need a full
 build again. Partial directories are cleaned on a later build; completed caches do not resume partial
 work and corrupted Tile data requires explicit cleanup.
+
+## Performance review with synthetic sources
+
+This review uses Release builds on the same Windows host and local volume. It never opens or rebuilds
+the private source. Generated 1025 × 769 and 4097 × 2049 RGBA PNGs each ran three alternating file-output
+and discard-output trials. The discard trial executes the same decode, conversion, gutters, and
+pyramid code, but its writer discards bytes. No OS cache purge was attempted. Three trials identify
+costs, not stable P95/P99 or a prediction of the original 755.866 s build.
+
+| Stage | 1025 × 769 median ms | 4097 × 2049 median ms |
+| --- | --- | --- |
+| Complete file build | 115.425 | 1094.517 |
+| Scan with file writes, nested in build | 24.549 | 817.684 |
+| PNG row reads/decode, nested in scan | 2.994 | 31.626 |
+| PBGRA row conversion, nested in scan | 2.311 | 25.363 |
+| Seek/write calls, nested in pyramid visitor | 16.195 | 732.448 |
+| Tile reread and CRC after scan | 1.167 | 11.235 |
+| Data `sync_all` | 55.202 | 214.585 |
+| Index write and `sync_all` | 24.214 | 27.969 |
+| Scan with discard output | 8.864 | 84.989 |
+
+The medium case writes 45,055,512 bytes through 14,936 row calls. Its visitor minus measured writes
+costs roughly 26–28 ms, covering gutters, downsampling, allocation, and callback overhead. Row writes
+and synchronization dominate this synthetic workload. The original run lacked these stage counters;
+its 750.860 s scan included both PNG work and pyramid writes. Its exact attribution remains unknown.
+
+A separate 32 MiB sequential-write control changed only block size and alternated order. Three runs
+used 8,192 calls at 4 KiB versus 128 calls at 256 KiB. Median write time was 34.091 versus 8.961 ms;
+median final sync was 231.978 versus 174.083 ms. This tests call granularity, not the pyramid's
+interleaved offsets. It supports a follow-up experiment with bounded multi-row batches, not a claimed
+end-to-end speedup. Such buffers must be charged to the existing 128 MiB Builder budget, with a smaller
+batch fallback. Sync-before-publication remains required; it was not removed to improve the numbers.
+
+`CacheReport` now separates file reservation, stream row decode, conversion, visitor, row writes,
+post-scan checksum, data sync, index sync, and publication. Per-row clocks add diagnostic overhead.
+Timing scopes are nested and cannot all be added together.
+
+### Viewport tail diagnosis
+
+The reported 426.249 ms real-image maximum has no historical per-request stage trace. This review
+cannot assign it to disk, CRC, or scheduling retrospectively. A completed viewport may require up to
+24 serialized worker reads, and its end event includes uploads and Present. Summed per-Tile work can
+therefore matter even when an individual upload is short.
+
+New counters separate allocation/zeroing, file lock/Seek/Read, CRC, CPU hit lookup, worker queue
+residence including earlier Tiles, reply backpressure, reply-to-render delay, snapshot dispatch, and
+GPU upload. At completion, viewports over 100 ms retain a bounded trace with Generation, Snapshot
+sequence, visible/missing counts, CPU hits, uploads, and stage sums/maxima. These sums overlap pipeline
+time. The first viewport can include building and device startup; inspect dispatch time and the
+separate build/preview report before treating it as an interaction sample.
+
+An 8193 × 4097 generated image used the real HWND/D3D11 path on the RTX 4080 SUPER. Five native-pixel
+pans took 6.737–11.246 ms with filesystem-warm misses; repeating the same five with GPU reuse took
+0.110–0.149 ms. Tile file reads were P50/P95 0.477/0.566 ms, CRC 0.068/0.088 ms (n=26), and GPU uploads
+0.395/1.834 ms (n=27). With an explicitly artificial 20 ms delay per disk Tile, the first pans took
+86.282–87.304 ms and GPU reuse took 0.089–0.129 ms. File-read P50 rose to 20.762 ms while CRC was
+0.073 ms and reply-to-render P50 was 0.015 ms. The delay exists only in the test executable.
+The second-pass assertions also verify that GPU reuse adds no Tile read or upload samples.
+
+This control demonstrates how serialized reads accumulate. It neither reproduces the original
+storage conditions nor explains every real tail. No Tile CPU-cache hit occurred in this traversal;
+the second pass stayed in GPU memory. The existing CPU-hit counter remains available for a different
+eviction workload. Sample counts are too small to characterize rare tails. Ordinary navigation also
+passed with 110 GPU-hit and 100 forced CPU-hit selections: P50/P95 0.558/7.132 ms and 0.601/4.358 ms.
+This is a regression check, not a controlled performance comparison against an earlier host session.
+
+### Progressive preview proposal — not implemented
+
+Non-interlaced PNG still requires sequential decoding. A complete preview needs pixels through the
+last row. Compare these options before changing the implementation:
+
+| Option | Benefit | Cost and limit |
+| --- | --- | --- |
+| Publish coarse image at EOF before final CRC/sync | Avoid post-scan wait for provisional display | Still waits for all current row writes; source/cache validation can later fail |
+| Emit incomplete preview bands during the current scan | Show covered top-to-bottom regions before EOF | Needs explicit uncovered-region state, bounded snapshots, and failure/cancel transitions |
+| Preview-only first scan, then a second scan for Tiles | Avoid Tile writes before the first full preview | Reads/decodes the source twice and delays completion; no instant full-preview guarantee |
+
+For a band prototype, the existing Builder would own a preview bounded to 1024² PBGRA pixels
+(at most 4 MiB), checked downsample accumulators, and row-coverage metadata. Two queued immutable
+snapshots add at most 8 MiB, plus active staging; reserve all of this within the Builder limit.
+Count its texture inside the 128 MiB Tile GPU budget. Reuse selection Generation and coalesce progress
+updates, initially at no more than two per second. A provisional reply must carry source geometry
+without pretending that a validated `DiskCache` exists. On cancellation, source change, or later
+validation failure, discard it; never publish partial disk data as a completed cache.
+
+This adds a provisional scene state and new failure transitions. First test bounded write batching
+and remeasure preview latency; then review whether bands or a preview-first scan justify that cost.
+No new thread, IPC, cache format, budget increase, or progressive scene was implemented here.
+
+## Review regression and Windows GUI checklist
+
+The revised default suite has 63 passing tests and 13 explicitly ignored diagnostics/generators.
+Added tests cover free-space rejection while preserving an active cache and unknown directories,
+an injected Windows disk-full write error and partial-directory cleanup, 100 source/view replacements,
+routing labels, and bounded slow-viewport records. Existing cancellation, abandoned-partial cleanup,
+revision/CRC invalidation, reverse/release/focus-loss, and stale GPU-result tests passed again.
+These simulate space/write failures; the real volume was not filled. Release probes passed for build
+phases, normal/slow viewports, ordinary navigation, hold progress, large-build switch/close, and pixel
+readback. The private image was not accessed during this review.
+
+Large-PNG routing now reports `route-to-tiles`; large preloads report `skip-large-preload`. Actual
+missing/corrupt-file errors retain `error`. The successful routing decision is no longer a load failure.
+
+Generate owned GUI inputs with `PIXSTRIDE_TEST_ROOT` set to a dedicated directory outside Git:
+
+```powershell
+cargo test --release --locked release_prepare_gui_samples -- --ignored --nocapture
+$samples = Get-ChildItem -LiteralPath $env:PIXSTRIDE_TEST_ROOT -Directory -Filter 'stage-c-gui-samples-*' |
+    Sort-Object LastWriteTime | Select-Object -Last 1 -ExpandProperty FullName
+$env:PIXSTRIDE_TILE_CACHE = Join-Path $env:PIXSTRIDE_TEST_ROOT 'gui-cache'
+$env:PIXSTRIDE_TILE_CACHE_GIB = '2'
+& .\target\release\pixstride.exe (Join-Path $samples 'wide.png')
+```
+
+The generator leaves ordinary, wide, slower-build, and invalid PNGs for inspection; delete only that
+generated sample directory and its dedicated cache after closing all instances. The following are
+human acceptance steps, not assertions that this review performed them:
+
+| Check | Action and expected result |
+| --- | --- |
+| First small build | Open `wide.png` with the new dedicated cache; window stays responsive and the full preview appears after construction |
+| Pixel layout | Press F and 1; inspect gradient, alpha, all four edges and Tile boundaries without cracks or doubled alpha |
+| Pan/zoom | At 100%, drag to both ends and use the wheel repeatedly; coarse fallback may appear, then required Tiles resolve |
+| Latest viewport | Pan quickly in opposite directions, release, then Alt+Tab away/back; obsolete work must not move the final view |
+| Window lifecycle | Resize continuously, maximize, minimize/restore during loading; recover without black output or deadlock |
+| Switch during build | Ctrl+O `build-cancel.png`, then promptly open `ordinary.png`; ordinary display must win and old content must not return |
+| Rapid navigation | Alternate ordinary/wide sources and direction keys; final target remains selected and resident caches stay within budget |
+| Error recovery | Open `broken.png`, then a valid image; show a non-modal error and continue operating |
+| Shutdown | Close during build and Tile loading, then repeat five start/close cycles; process exits and owned partial builds are cleaned |
+| Warm reopen | Reopen unchanged `wide.png`; report `hit=true`, with no rebuild; a normal route must not be labeled `error` |
+| Source revision | Regenerate an owned fixture after closing it; reopen and confirm stale cache is not reused |
+| Idle | After Tiles settle, leave untouched for 30 seconds; compare Present/activity counters, not total counts from prior gestures |
+
+Space shortage, write failure, CRC corruption, and unowned-directory preservation use automated
+injection tests; do not fill the real disk or damage a personal cache for manual acceptance. Existing
+real-image cache-hit acceptance remains recorded above. Detailed visual checks, real Device Lost,
+disk exhaustion, and long-duration stability remain open. Do not repeat the private first build for
+this checklist. All timing still ends at API return, not at a physical display event.
 
 ## Dependencies and evidence
 

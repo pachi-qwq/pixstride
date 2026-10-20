@@ -222,25 +222,84 @@ pub(crate) struct TilePixels {
 impl DiskCache {
     /// 在后台读取一块并验证 CRC；返回独立拥有的带边框像素，禁止在 Render/UI Thread 调用。
     pub(crate) fn read_tile(&self, id: usize) -> Result<TilePixels> {
+        self.read_tile_profiled(id).map(|(pixels, _)| pixels)
+    }
+    /// 分离分配、文件锁/Seek/Read 和 CRC；文件阶段仍包含 OS 缓存与调度等待。
+    pub(crate) fn read_tile_profiled(&self, id: usize) -> Result<(TilePixels, ReadProfile)> {
         let t = self.plan.tiles.get(id).context("Tile 索引越界")?;
+        let at = Instant::now();
         let mut bytes = stream::allocated(usize::try_from(t.length)?)?;
+        let allocation = at.elapsed();
+        let at = Instant::now();
+        #[cfg(test)]
+        if let Some(delay) = std::env::var("PIXSTRIDE_TILE_TEST_READ_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            // 只供独立 Release 诊断模拟慢存储，不存在于正式可执行文件，也不冒充真实磁盘耗时。
+            std::thread::sleep(Duration::from_millis(delay.min(100)));
+        }
         let mut file = self
             .file
             .lock()
             .map_err(|_| anyhow::anyhow!("Tile 文件锁已损坏"))?;
         file.seek(SeekFrom::Start(t.offset))?;
         file.read_exact(&mut bytes)?;
+        drop(file);
+        let file_read = at.elapsed();
+        let at = Instant::now();
         ensure!(
             crc32fast::hash(&bytes) == t.crc,
             "Tile CRC 校验失败，请清理该图片缓存后重建"
         );
-        Ok(TilePixels {
-            id,
-            width: t.width + 2,
-            height: t.height + 2,
-            bytes,
-        })
+        let crc = at.elapsed();
+        Ok((
+            TilePixels {
+                id,
+                width: t.width + 2,
+                height: t.height + 2,
+                bytes,
+            },
+            ReadProfile {
+                allocation,
+                file_read,
+                crc,
+            },
+        ))
     }
+}
+
+/// 每块 CPU 读取阶段的耗时；不包含 Worker 排队、答复背压或 GPU 调用。
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ReadProfile {
+    pub(crate) allocation: Duration,
+    pub(crate) file_read: Duration,
+    pub(crate) crc: Duration,
+}
+
+/// 构建分项为嵌套计时；scan 包含写入，不能把所有字段直接相加。
+#[derive(Debug, Default)]
+pub(crate) struct BuildProfile {
+    pub(crate) reserve: Duration,
+    pub(crate) writes: WriteProfile,
+    pub(crate) checksum: Duration,
+    pub(crate) data_sync: Duration,
+    pub(crate) index_sync: Duration,
+    pub(crate) publish: Duration,
+}
+
+/// 逐行写入的调用次数、字节和 Seek/Write 累计耗时；不含最终 sync_all。
+#[derive(Debug, Default)]
+pub(crate) struct WriteProfile {
+    pub(crate) calls: u64,
+    pub(crate) bytes: u64,
+    pub(crate) elapsed: Duration,
+}
+
+/// 借用单个输出流，统计每行 Seek/Write；不增加缓存或改变持久化语义。
+struct RowWriter<'a, W> {
+    output: &'a mut W,
+    profile: WriteProfile,
 }
 
 /// 本次构建或复用的应用侧测量。cache_hit 不表示所有 Tile 已载入 RAM/VRAM。
@@ -250,6 +309,7 @@ pub(crate) struct CacheReport {
     pub(crate) elapsed: Duration,
     pub(crate) scan: Option<stream::StreamReport>,
     pub(crate) builder_owned_bytes: usize,
+    pub(crate) phases: BuildProfile,
 }
 
 fn encode(stamp: &Stamp, plan: &Plan) -> Result<Vec<u8>> {
@@ -459,6 +519,16 @@ pub(crate) fn build_or_open(
     budget: CacheBudget,
     valid: impl Fn() -> bool,
 ) -> Result<(DiskCache, CacheReport)> {
+    build_with_space(source, root, budget, valid, free_bytes)
+}
+
+fn build_with_space(
+    source: &Path,
+    root: &Path,
+    budget: CacheBudget,
+    valid: impl Fn() -> bool,
+    available: impl Fn(&Path) -> Result<u64>,
+) -> Result<(DiskCache, CacheReport)> {
     let started = Instant::now();
     ensure!(valid(), "大图任务已取消");
     let stamp = Stamp::read(source)?;
@@ -491,6 +561,7 @@ pub(crate) fn build_or_open(
                 elapsed: started.elapsed(),
                 scan: None,
                 builder_owned_bytes: 0,
+                phases: BuildProfile::default(),
             },
         ));
     }
@@ -537,7 +608,7 @@ pub(crate) fn build_or_open(
     );
     clean_for_build(&root, needed, budget.disk_bytes)?;
     ensure!(
-        free_bytes(&root)?
+        available(&root)?
             > needed
                 .checked_add(1024 * 1024 * 1024)
                 .context("空间计算溢出")?,
@@ -563,11 +634,20 @@ pub(crate) fn build_or_open(
         .write(true)
         .create_new(true)
         .open(temporary.join("pixels.bin"))?;
+    let mut phases = BuildProfile::default();
+    let at = Instant::now();
     data.set_len(plan.bytes)?;
+    phases.reserve = at.elapsed();
     let mut previous: Vec<Option<Vec<u8>>> = vec![None; plan.levels.len()];
+    let mut writer = RowWriter {
+        output: &mut data,
+        profile: WriteProfile::default(),
+    };
     let report = stream::scan(source, StreamBudget::default(), &valid, |y, row, _| {
-        push_row(&plan, &mut data, &mut previous, 0, y, row, &valid)
+        push_row(&plan, &mut writer, &mut previous, 0, y, row, &valid)
     })?;
+    phases.writes = writer.profile;
+    let at = Instant::now();
     for t in &mut plan.tiles {
         ensure!(valid(), "大图任务已取消");
         let mut bytes = stream::allocated(t.length as usize)?;
@@ -575,17 +655,24 @@ pub(crate) fn build_or_open(
         data.read_exact(&mut bytes)?;
         t.crc = crc32fast::hash(&bytes);
     }
+    phases.checksum = at.elapsed();
     ensure!(Stamp::read(source)? == stamp, "原图在缓存构建期间发生变化");
     ensure!(valid(), "大图任务已取消");
+    let at = Instant::now();
     data.sync_all()?;
+    phases.data_sync = at.elapsed();
     drop(data);
+    let at = Instant::now();
     let mut index = File::create(temporary.join("index.bin"))?;
     index.write_all(&encode(&stamp, &plan)?)?;
     index.sync_all()?;
     drop(index);
+    phases.index_sync = at.elapsed();
+    let at = Instant::now();
     fs::rename(&temporary, &target).context("原子发布 Tile Cache 失败")?;
     drop(guard);
     let cache = open_cache(&target, &stamp)?;
+    phases.publish = at.elapsed();
     Ok((
         cache,
         CacheReport {
@@ -593,13 +680,14 @@ pub(crate) fn build_or_open(
             elapsed: started.elapsed(),
             scan: Some(report),
             builder_owned_bytes: builder_owned,
+            phases,
         },
     ))
 }
 
 fn push_row(
     plan: &Plan,
-    data: &mut File,
+    data: &mut RowWriter<'_, impl Write + Seek>,
     previous: &mut [Option<Vec<u8>>],
     level: usize,
     y: u32,
@@ -667,15 +755,24 @@ fn push_row(
     push_row(plan, data, previous, level + 1, y / 2, &smaller, valid)
 }
 
-fn write_tile_row(data: &mut File, tile: &Tile, y: u32, row: &[u8]) -> Result<()> {
+fn write_tile_row(
+    data: &mut RowWriter<'_, impl Write + Seek>,
+    tile: &Tile,
+    y: u32,
+    row: &[u8],
+) -> Result<()> {
     ensure!(
         row.len() == (tile.width as usize + 2) * 4 && y < tile.height + 2,
         "Tile 行布局错误"
     );
-    data.seek(SeekFrom::Start(
+    let at = Instant::now();
+    data.output.seek(SeekFrom::Start(
         tile.offset + u64::from(y) * row.len() as u64,
     ))?;
-    data.write_all(row)?;
+    data.output.write_all(row)?;
+    data.profile.elapsed += at.elapsed();
+    data.profile.calls += 1;
+    data.profile.bytes += row.len() as u64;
     Ok(())
 }
 
@@ -683,6 +780,198 @@ fn write_tile_row(data: &mut File, tile: &Tile, y: u32, row: &[u8]) -> Result<()
 mod tests {
     use super::super::stream::tests::{generate, root};
     use super::*;
+
+    #[test]
+    fn free_space_refusal_preserves_existing_cache_and_unknown_directories() -> Result<()> {
+        let root = root("space");
+        let image = root.join("own.png");
+        generate(&image, 33, 31)?;
+        let c = root.join("tiles");
+        let (cache, _) = build_or_open(&image, &c, CacheBudget::default(), || true)?;
+        let old = cache.directory.clone();
+        let unknown = c.join(".build-unowned");
+        fs::create_dir(&unknown)?;
+        fs::write(unknown.join("keep"), b"unrelated")?;
+        generate(&image, 34, 32)?;
+        let error = build_with_space(&image, &c, CacheBudget::default(), || true, |_| Ok(0))
+            .err()
+            .context("应拒绝空间不足")?;
+        assert!(error.to_string().contains("可用空间不足"));
+        assert!(old.exists());
+        assert!(cache.read_tile(0).is_ok());
+        assert!(unknown.join("keep").exists());
+        assert!(!fs::read_dir(&c)?.filter_map(|e| e.ok()).any(|e| {
+            e.file_name().to_string_lossy().starts_with(".build-") && e.path() != unknown
+        }));
+        drop(cache);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn write_failure_propagates_and_partial_guard_releases_directory() -> Result<()> {
+        struct Fails;
+        impl Write for Fails {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from_raw_os_error(112))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Seek for Fails {
+            fn seek(&mut self, _: SeekFrom) -> std::io::Result<u64> {
+                Ok(0)
+            }
+        }
+        let root = root("write-failure");
+        let temporary = root.join(".build-test");
+        fs::create_dir(&temporary)?;
+        let plan = Plan::new(
+            PngSize {
+                width: 3,
+                height: 3,
+            },
+            512,
+        )?;
+        {
+            let _guard = PartialBuild(temporary.clone());
+            let mut sink = Fails;
+            let mut writer = RowWriter {
+                output: &mut sink,
+                profile: WriteProfile::default(),
+            };
+            let error = push_row(
+                &plan,
+                &mut writer,
+                &mut vec![None; plan.levels.len()],
+                0,
+                0,
+                &[0; 12],
+                &|| true,
+            )
+            .unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .and_then(|e| e.raw_os_error()),
+                Some(112)
+            );
+        }
+        assert!(!temporary.exists());
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    /// 合成对照：相同 PNG/金字塔回调输出到文件或丢弃流；不读取外部样本。
+    #[test]
+    #[ignore = "受控 Release 构建分项诊断，使用仓库外 PIXSTRIDE_TEST_ROOT"]
+    fn release_build_phase_probe() -> Result<()> {
+        struct Discard;
+        impl Write for Discard {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Seek for Discard {
+            fn seek(&mut self, at: SeekFrom) -> std::io::Result<u64> {
+                match at {
+                    SeekFrom::Start(n) => Ok(n),
+                    _ => unreachable!(),
+                }
+            }
+        }
+        let root = root("phases");
+        for (width, height) in [(1025, 769), (4097, 2049)] {
+            let source = root.join(format!("{width}.png"));
+            generate(&source, width, height)?;
+            let plan = Plan::new(PngSize { width, height }, 1024)?;
+            for round in 0..3 {
+                // 交替顺序，减少顺序造成的缓存/调度偏差；不声称清除了 OS 缓存。
+                for disk in if round % 2 == 0 {
+                    [true, false]
+                } else {
+                    [false, true]
+                } {
+                    if disk {
+                        let (cache, report) = build_or_open(
+                            &source,
+                            &root.join(format!("c-{width}-{round}")),
+                            CacheBudget::default(),
+                            || true,
+                        )?;
+                        let scan = report.scan.as_ref().context("应为新构建")?;
+                        println!(
+                            "BUILD size={width}x{height} round={round} disk=true total_us={} scan_us={} decode_us={} convert_us={} visitor_us={} phases={:?}",
+                            report.elapsed.as_micros(),
+                            scan.elapsed.as_micros(),
+                            scan.decode_rows.as_micros(),
+                            scan.convert_rows.as_micros(),
+                            scan.visitor.as_micros(),
+                            report.phases
+                        );
+                        assert_eq!(report.phases.writes.bytes, cache.plan.bytes);
+                        for id in 0..cache.plan.tiles.len() {
+                            cache.read_tile(id)?;
+                        }
+                        drop(cache);
+                    } else {
+                        let mut sink = Discard;
+                        let mut writer = RowWriter {
+                            output: &mut sink,
+                            profile: WriteProfile::default(),
+                        };
+                        let mut previous = vec![None; plan.levels.len()];
+                        let scan = stream::scan(
+                            &source,
+                            StreamBudget::default(),
+                            || true,
+                            |y, row, _| {
+                                push_row(&plan, &mut writer, &mut previous, 0, y, row, &|| true)
+                            },
+                        )?;
+                        println!(
+                            "BUILD size={width}x{height} round={round} disk=false scan_us={} decode_us={} convert_us={} visitor_us={} writes={:?}",
+                            scan.elapsed.as_micros(),
+                            scan.decode_rows.as_micros(),
+                            scan.convert_rows.as_micros(),
+                            scan.visitor.as_micros(),
+                            writer.profile
+                        );
+                    }
+                }
+            }
+        }
+        // 固定 32 MiB 数据、相同文件和 sync_all，隔离小写调用数量；不代表金字塔的随机偏移模式。
+        for round in 0..3 {
+            for block in if round % 2 == 0 {
+                [4096, 262144]
+            } else {
+                [262144, 4096]
+            } {
+                let mut file = File::create(root.join(format!("writes-{round}-{block}")))?;
+                let data = vec![73u8; block];
+                let count = 32 * 1024 * 1024 / block;
+                let at = Instant::now();
+                for _ in 0..count {
+                    file.write_all(&data)?;
+                }
+                let writes = at.elapsed();
+                let at = Instant::now();
+                file.sync_all()?;
+                println!(
+                    "WRITE round={round} block={block} calls={count} write_us={} sync_us={}",
+                    writes.as_micros(),
+                    at.elapsed().as_micros()
+                );
+            }
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
     #[test]
     fn cloud_recall_attributes_are_rejected_before_opening_a_stream() {
         assert!(check_local_attributes(0x20).is_ok());

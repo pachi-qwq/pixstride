@@ -90,6 +90,13 @@ pub(crate) enum Metric {
     TileViewport,
     TileCpuHit,
     TileDiskRead,
+    TileAllocation,
+    TileFileRead,
+    TileCrc,
+    TileWorkerQueue,
+    TileReplyBackpressure,
+    TileReplyToRender,
+    TileViewDispatch,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -192,7 +199,7 @@ impl Counter {
 }
 
 impl Metric {
-    const ALL: [Self; 57] = [
+    const ALL: [Self; 64] = [
         Self::Startup,
         Self::D3dInitialization,
         Self::DeviceCreation,
@@ -250,6 +257,13 @@ impl Metric {
         Self::TileViewport,
         Self::TileCpuHit,
         Self::TileDiskRead,
+        Self::TileAllocation,
+        Self::TileFileRead,
+        Self::TileCrc,
+        Self::TileWorkerQueue,
+        Self::TileReplyBackpressure,
+        Self::TileReplyToRender,
+        Self::TileViewDispatch,
     ];
 
     fn index(self) -> usize {
@@ -311,6 +325,13 @@ impl Metric {
             Self::TileViewport => 54,
             Self::TileCpuHit => 55,
             Self::TileDiskRead => 56,
+            Self::TileAllocation => 57,
+            Self::TileFileRead => 58,
+            Self::TileCrc => 59,
+            Self::TileWorkerQueue => 60,
+            Self::TileReplyBackpressure => 61,
+            Self::TileReplyToRender => 62,
+            Self::TileViewDispatch => 63,
         }
     }
 
@@ -322,6 +343,13 @@ impl Metric {
             Self::TileViewport => "视口发布到本次最后所需 Tile Present 返回",
             Self::TileCpuHit => "Tile CPU 缓存命中查询",
             Self::TileDiskRead => "Tile 磁盘读取与 CRC 校验",
+            Self::TileAllocation => "Tile 缓冲区分配与清零",
+            Self::TileFileRead => "Tile 文件锁、Seek 与 Read（含 OS 缓存）",
+            Self::TileCrc => "Tile CRC 计算",
+            Self::TileWorkerQueue => "视口入队到该 Tile 开始（含前序 Tile 处理）",
+            Self::TileReplyBackpressure => "Tile 答复队列背压等待",
+            Self::TileReplyToRender => "Tile 答复发布到渲染线程接收",
+            Self::TileViewDispatch => "视口状态发布到 Tile 请求入队",
 
             Self::Startup => "启动到 CreateWindowExW 返回",
             Self::D3dInitialization => "D3D11 初始化",
@@ -431,6 +459,7 @@ pub(crate) struct Metrics {
     samples: Vec<Samples>,
     counters: [u64; 20],
     slow_image_tasks: VecDeque<ImageTaskTrace>,
+    slow_tile_views: VecDeque<String>,
     cpu_cache_bytes: u64,
     gpu_cache_bytes: u64,
     peak_cpu_cache_bytes: u64,
@@ -448,6 +477,7 @@ impl Default for Metrics {
                 .collect(),
             counters: [0; 20],
             slow_image_tasks: VecDeque::new(),
+            slow_tile_views: VecDeque::new(),
             cpu_cache_bytes: 0,
             gpu_cache_bytes: 0,
             peak_cpu_cache_bytes: 0,
@@ -460,6 +490,13 @@ impl Default for Metrics {
 }
 
 impl Metrics {
+    /// 只保留最近 16 个长尾视口的关联分项，退出时统一打印。
+    pub(crate) fn record_tile_view(&mut self, trace: String) {
+        if self.slow_tile_views.len() == 16 {
+            self.slow_tile_views.pop_front();
+        }
+        self.slow_tile_views.push_back(trace);
+    }
     /// 记录方向键松开时的目标；已经提交的图片不混入后续等待分布。
     pub(crate) fn record_navigation_release(&mut self, generation: u64, at: Instant) {
         self.last_navigation_release = Some(NavigationRelease {
@@ -538,6 +575,11 @@ impl Metrics {
     #[cfg(test)]
     pub(crate) fn sample_count(&self, metric: Metric) -> usize {
         self.samples[metric.index()].values_us.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_sample_us(&self, metric: Metric) -> Option<u64> {
+        self.samples[metric.index()].values_us.back().copied()
     }
 
     pub(crate) fn increment(&mut self, counter: Counter) {
@@ -670,6 +712,13 @@ impl Metrics {
                 );
             }
         }
+        report.push_str(
+            "Slow Tile viewports (at most 16; microseconds; stage sums overlap pipeline time):\n",
+        );
+        for trace in &self.slow_tile_views {
+            report.push_str(trace);
+            report.push('\n');
+        }
         report
     }
 }
@@ -696,6 +745,19 @@ fn percentile(sorted: &[u64], percentile: usize) -> u64 {
 mod tests {
     use super::{MAX_SAMPLES_PER_METRIC, Metric, Metrics, Samples, percentile};
     use std::time::Duration;
+
+    #[test]
+    fn slow_tile_view_traces_are_bounded_and_report_pipeline_units() {
+        let mut metrics = super::Metrics::default();
+        for i in 0..100 {
+            metrics.record_tile_view(format!("tile-view-{i}"));
+        }
+        assert_eq!(metrics.slow_tile_views.len(), 16);
+        let report = metrics.report();
+        assert!(report.contains("stage sums overlap pipeline time"));
+        assert!(report.contains("tile-view-99\n"));
+        assert!(!report.contains("tile-view-83\n"));
+    }
 
     #[test]
     fn percentile_uses_nearest_rank() {

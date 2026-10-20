@@ -1,13 +1,14 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 6; status: stage-c-local-review -->
+<!-- doc-id: readme; revision: 7; status: stage-c-draft-review -->
 
 # Pixstride
 
 Pixstride 是一个 Windows 原生图片查看器项目，目标是快速启动、低延迟交互和有界的资源占用。
 
 项目受 MassiGra 轻量化界面和快速交互体验启发，已完成阶段 A 基础和阶段 B 图片浏览。JPEG、PNG、BMP 打开、导航、
-有界缓存和长按进度显示已通过负责人验收。阶段 C 正在本地开发，已加入 PNG 流式处理和分块渲染，真实图片验收仍待完成。
+有界缓存和长按进度显示已通过负责人验收。阶段 C 的 PNG 流式处理和分块渲染正在进行
+[Draft PR 评审](https://github.com/pachi-qwq/pixstride/pull/4)。负责人已确认真实图片缓存命中运行正常，性能及详细压力/视觉验收仍待完成。
 项目尚无公开发行版。
 
 ## 当前基础

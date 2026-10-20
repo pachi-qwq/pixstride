@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter3, IDXGIDevice,
@@ -39,6 +39,23 @@ struct Scene {
     view_reported: bool,
     first: Option<Instant>,
     upload_error_reported: bool,
+    trace: ViewTrace,
+}
+
+/// 同一 Snapshot 的阶段汇总；总和不是关键路径长度，因为 Worker 与 Render Thread 可重叠。
+#[derive(Default)]
+struct ViewTrace {
+    missing: usize,
+    cpu_hits: usize,
+    uploads: usize,
+    file_read: Duration,
+    crc: Duration,
+    allocation: Duration,
+    upload: Duration,
+    reply_max: Duration,
+    queue_max: Duration,
+    backpressure: Duration,
+    dispatch: Duration,
 }
 /// 延迟到首次大图才创建，不给普通图片启动路径增加线程或 GPU 对象。
 pub(super) struct Tiles {
@@ -138,15 +155,34 @@ impl Tiles {
                         view_reported: false,
                         first: Some(started),
                         upload_error_reported: false,
+                        trace: ViewTrace::default(),
                     });
                     shared.claim_image_generation(generation);
                     changed = Some(generation);
                 }
-                Reply::Tile { generation, pixels }
-                    if shared.is_image_generation_current(generation) =>
-                {
+                Reply::Tile {
+                    generation,
+                    pixels,
+                    sequence,
+                    ready_at,
+                    read,
+                    cpu_hit,
+                    queue,
+                    backpressure,
+                } if shared.is_image_generation_current(generation) => {
+                    shared.record(Metric::TileReplyToRender, ready_at.elapsed());
                     if let Some(scene) = self.scene.as_mut().filter(|s| s.generation == generation)
                     {
+                        // 旧视口分块仍可进入同一图片的缓存；当前视口只统计其自身所需数据。
+                        if scene.sequence == Some(sequence) {
+                            scene.trace.cpu_hits += usize::from(cpu_hit);
+                            scene.trace.file_read += read.file_read;
+                            scene.trace.crc += read.crc;
+                            scene.trace.allocation += read.allocation;
+                            scene.trace.reply_max = scene.trace.reply_max.max(ready_at.elapsed());
+                            scene.trace.queue_max = scene.trace.queue_max.max(queue);
+                            scene.trace.backpressure += backpressure;
+                        }
                         if !scene.textures.contains_key(&pixels.id) {
                             let bytes = pixels.bytes.len() as u64;
                             let mut candidates = scene.lru.len();
@@ -173,6 +209,7 @@ impl Tiles {
                                 }
                                 continue;
                             }
+                            let at = Instant::now();
                             let srv = match upload(device, &pixels, shared) {
                                 Ok(srv) => srv,
                                 Err(error) => {
@@ -183,6 +220,10 @@ impl Tiles {
                                     continue;
                                 }
                             };
+                            if scene.sequence == Some(sequence) {
+                                scene.trace.upload += at.elapsed();
+                                scene.trace.uploads += 1;
+                            }
                             scene.textures.insert(pixels.id, (srv, bytes));
                             scene.bytes += bytes;
                             scene.lru.push_back(pixels.id);
@@ -224,18 +265,24 @@ impl Tiles {
                 scene.sequence = Some(snapshot.sequence);
                 scene.view_started = snapshot.requested_at;
                 scene.view_reported = false;
-                let ids = scene
+                let ids: Vec<_> = scene
                     .pieces
                     .iter()
                     .filter(|p| !scene.textures.contains_key(&p.id))
                     .map(|p| p.id)
                     .collect();
+                scene.trace = ViewTrace {
+                    missing: ids.len(),
+                    dispatch: snapshot.requested_at.elapsed(),
+                    ..Default::default()
+                };
                 self.worker.view(
                     scene.generation,
                     snapshot.sequence,
                     Arc::clone(&scene.cache),
                     ids,
                 );
+                shared.record(Metric::TileViewDispatch, snapshot.requested_at.elapsed());
             }
         }
         Ok(changed)
@@ -298,7 +345,23 @@ impl Tiles {
                 shared.record(Metric::LargePreview, at.elapsed());
             }
             if !s.view_reported && s.pieces.iter().all(|p| s.textures.contains_key(&p.id)) {
-                shared.record(Metric::TileViewport, s.view_started.elapsed());
+                let elapsed = s.view_started.elapsed();
+                shared.record(Metric::TileViewport, elapsed);
+                if elapsed >= Duration::from_millis(100) {
+                    shared.record_tile_view(format!(
+                        concat!(
+                            "generation={} sequence={:?} total={} visible={} missing={} cpu_hits={} ",
+                            "uploads={} dispatch={} file_read_sum={} crc_sum={} alloc_sum={} ",
+                            "upload_sum={} reply_max={} queue_max={} backpressure_sum={}"
+                        ),
+                        s.generation, s.sequence, elapsed.as_micros(), s.pieces.len(),
+                        s.trace.missing, s.trace.cpu_hits, s.trace.uploads,
+                        s.trace.dispatch.as_micros(), s.trace.file_read.as_micros(),
+                        s.trace.crc.as_micros(), s.trace.allocation.as_micros(),
+                        s.trace.upload.as_micros(), s.trace.reply_max.as_micros(),
+                        s.trace.queue_max.as_micros(), s.trace.backpressure.as_micros(),
+                    ));
+                }
                 s.view_reported = true;
             }
         }

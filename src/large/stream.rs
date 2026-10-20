@@ -38,6 +38,9 @@ pub(crate) struct StreamReport {
     pub(crate) rows: u32,
     pub(crate) owned_row_bytes: usize,
     pub(crate) elapsed: Duration,
+    pub(crate) decode_rows: Duration,
+    pub(crate) convert_rows: Duration,
+    pub(crate) visitor: Duration,
 }
 
 /// 在分配前验证宽度和 64 位总像素计算；限制的是行，不拒绝超大总像素。
@@ -157,12 +160,21 @@ pub(crate) fn scan(
     let mut raw = allocated(raw_len)?;
     let mut bgra = allocated(rgba_len)?;
     let mut rows = 0;
+    let mut decode_rows = Duration::ZERO;
+    let mut convert_rows = Duration::ZERO;
+    let mut visitor = Duration::ZERO;
     for y in 0..size.height {
         ensure!(valid(), "PNG 扫描已取消");
+        let at = Instant::now();
         ensure!(reader.read_row(&mut raw)?.is_some(), "PNG 缺少扫描行");
+        decode_rows += at.elapsed();
+        let at = Instant::now();
         convert_row(&raw, &mut bgra, color)?;
+        convert_rows += at.elapsed();
         ensure!(valid(), "PNG 扫描已取消");
+        let at = Instant::now();
         visit(y, &bgra, size)?;
+        visitor += at.elapsed();
         rows += 1;
     }
     ensure!(reader.next_row()?.is_none(), "PNG 扫描行数量不符");
@@ -173,6 +185,9 @@ pub(crate) fn scan(
         rows,
         owned_row_bytes: raw.capacity() + bgra.capacity(),
         elapsed: started.elapsed(),
+        decode_rows,
+        convert_rows,
+        visitor,
     })
 }
 
@@ -258,6 +273,19 @@ pub(crate) mod tests {
             stream.finish()?;
         }
         writer.finish()?;
+        Ok(())
+    }
+
+    /// 显式生成并保留自己的 GUI 样本；只写入唯一测试子目录，供人工验收后清理。
+    #[test]
+    #[ignore = "人工 GUI 样本生成器，保留仓库外合成文件"]
+    fn release_prepare_gui_samples() -> Result<()> {
+        let root = root("gui-samples");
+        generate(&root.join("ordinary.png"), 97, 73)?;
+        generate(&root.join("wide.png"), 20000, 257)?;
+        generate(&root.join("build-cancel.png"), 20000, 2049)?;
+        std::fs::write(root.join("broken.png"), b"not a png")?;
+        println!("Synthetic GUI samples retained at {}", root.display());
         Ok(())
     }
 
