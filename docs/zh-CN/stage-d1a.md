@@ -1,6 +1,6 @@
 [English](../en/stage-d1a.md) | [简体中文](stage-d1a.md)
 
-<!-- doc-id: gif-poster; revision: 1; status: local-review -->
+<!-- doc-id: gif-poster; revision: 2; status: local-review -->
 
 # D1-a：GIF 静态首帧
 
@@ -65,6 +65,9 @@ UI 与渲染线程继续独立运行。超限 GIF 不进入 PNG Tile Builder。�
 这些数值包括 WIC、DLL、allocator 及测试进程开销，不能作为 WIC 专属分配估算或通用硬上限。
 GPU 诊断保留的纹理有效载荷为 8,388,656 字节，即一份 8 MiB 首帧和一份 48 字节首帧，并验证了 SRV 复用。
 载荷计费不包括驱动分配粒度及其他 GPU 资源。
+
+满画布文件含两个图像帧并先运行，局部帧文件含一个图像帧；首轮还包含 WIC codec 的初次初始化。
+这些数据分别描述两种负载，不能据此比较整帧复制和逐行复制策略的快慢。
 
 Present 返回、解码完成及应用内部计时均不等于 Input-to-Photon。
 Stage C 合成图集成诊断使用独立缓存另行执行；本轮不测试私人极限 PNG 或长期稳定性。

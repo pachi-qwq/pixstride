@@ -1,6 +1,6 @@
 [English](stage-d1a.md) | [简体中文](../zh-CN/stage-d1a.md)
 
-<!-- doc-id: gif-poster; revision: 1; status: local-review -->
+<!-- doc-id: gif-poster; revision: 2; status: local-review -->
 
 # D1-a: GIF first-frame posters
 
@@ -79,6 +79,10 @@ peaked at 20,209,664 bytes; the largest sampled PrivateUsage was 10,498,048 byte
 WIC, DLLs, allocator and test-harness overhead, not a WIC-only allocation estimate or a universal bound.
 The GPU probe retained 8,388,656 bytes of texture payload (8 MiB plus a 48-byte poster), reusing SRVs.
 Payload accounting excludes driver allocation granularity and other GPU resources.
+
+The whole-screen input contains two image frames and ran first; the offset input contains one frame.
+The first run also includes initial WIC codec setup. These are separate workloads, not a controlled
+comparison of whole-frame and row-copy strategies.
 
 Present return, decode completion and application-side timing do not measure Input-to-Photon.
 The existing Stage C synthetic integration diagnostic is run separately with a dedicated cache;

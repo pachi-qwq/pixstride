@@ -223,7 +223,7 @@
       "id": "gif-poster",
       "en": "docs/en/stage-d1a.md",
       "zh-CN": "docs/zh-CN/stage-d1a.md",
-      "revision": 1,
+      "revision": 2,
       "shared_literals": [
         "GIF87a/GIF89a",
         "ImageContent::GifPosterV1",
