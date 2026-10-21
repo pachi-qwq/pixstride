@@ -5,7 +5,7 @@
       "id": "readme",
       "en": "README.md",
       "zh-CN": "README.zh-CN.md",
-      "revision": 9,
+      "revision": 10,
       "shared_literals": [
         "Windows 10/11 x64",
         "LICENSE-MIT",
@@ -223,7 +223,7 @@
       "id": "gif-poster",
       "en": "docs/en/stage-d1a.md",
       "zh-CN": "docs/zh-CN/stage-d1a.md",
-      "revision": 3,
+      "revision": 4,
       "shared_literals": [
         "GIF87a/GIF89a",
         "ImageContent::GifPosterV1",
@@ -238,6 +238,7 @@
         "8,388,656",
         "167",
         "8 KiB",
+        "ad1df3692d449dba87c0fa93baecd88d5f4f0172",
         "PIXSTRIDE_TEST_ROOT"
       ]
     }

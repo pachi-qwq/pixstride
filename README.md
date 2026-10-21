@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 9; status: gif-poster-review -->
+<!-- doc-id: readme; revision: 10; status: gif-poster-review -->
 
 # Pixstride
 
@@ -23,8 +23,8 @@ Swap Chain. The target is Windows 10/11 x64. The merged implementation includes:
 - Generation-based stale-work protection and bounded CPU/GPU cache residency with separate large-image budgets.
 
 This branch also implements [D1-a GIF posters](docs/en/stage-d1a.md): bounded structural validation
-and a composed first image on a transparent canvas. GIF animation is not implemented. Desktop visual
-acceptance for this change is pending.
+and a composed first image on a transparent canvas. GIF animation is not implemented. The maintainer
+has confirmed that all five Windows manual acceptance checks passed; code review is pending.
 
 The architecture keeps GPU resource ownership on a render thread and decodes images in
 bounded background work. Large images have a separate path. Threading, cache budgets, and Tile sizes

@@ -1,6 +1,6 @@
 [English](stage-d1a.md) | [简体中文](../zh-CN/stage-d1a.md)
 
-<!-- doc-id: gif-poster; revision: 3; status: gui-review -->
+<!-- doc-id: gif-poster; revision: 4; status: pr-review -->
 
 # D1-a: GIF first-frame posters
 
@@ -98,8 +98,28 @@ comparison of whole-frame and row-copy strategies.
 Present return, decode completion and application-side timing do not measure Input-to-Photon.
 The existing Stage C synthetic integration diagnostic is run separately with a dedicated cache;
 private extreme PNG testing and long-duration stability are outside this task.
+Compatibility with all real-world GIF encoding variants has not been verified. Broad long-duration
+stability and Device Lost testing also remain incomplete.
 
-## Build and manual acceptance
+## Windows manual acceptance
+
+On 2026-10-21, the project maintainer reported that all five checks below passed on a real Windows
+desktop using the Release build with the zero-padding fix, code commit
+`ad1df3692d449dba87c0fa93baecd88d5f4f0172`. These are maintainer-provided observations, separate from
+the automated window/API diagnostics above.
+
+| Check | Result |
+|---|---|
+| Transparent GIF poster and empty transparent areas | Passed |
+| Local Frame Rect alignment; the poster remains static | Passed |
+| GIF/JPG/PNG/BMP round trips, held arrows and reverse navigation | Passed |
+| Fit/100%, Resize, Alt+Tab, Ctrl+O and Alt+F4 | Passed |
+| Malformed GIFs, zero-padded GIFs and continued browsing after an error | Passed |
+
+This acceptance covers static posters only. GIF animation playback is not implemented, and the
+admission, background, WIC and measurement limits described above still apply.
+
+## Build and repeat manual checks
 
 Set PIXSTRIDE_TEST_ROOT to a dedicated writable directory outside the checkout, then run:
 
@@ -109,7 +129,7 @@ cargo test --release --locked release_prepare_gif_poster_samples -- --ignored --
 & .\target\release\pixstride.exe (Join-Path $env:PIXSTRIDE_TEST_ROOT 'gif-poster-gui\partial-transparent.gif')
 ```
 
-Check these on a real desktop before approval:
+Use this checklist for desktop regression checks and additional shutdown validation:
 
 1. Verify the partial transparent poster uses the viewer background outside its rectangle, rather
    than the file's green palette background. Compare partial-opaque.gif and confirm the local black pixel.

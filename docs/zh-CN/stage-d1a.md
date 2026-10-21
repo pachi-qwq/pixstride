@@ -1,6 +1,6 @@
 [English](../en/stage-d1a.md) | [简体中文](stage-d1a.md)
 
-<!-- doc-id: gif-poster; revision: 3; status: gui-review -->
+<!-- doc-id: gif-poster; revision: 4; status: pr-review -->
 
 # D1-a：GIF 静态首帧
 
@@ -79,8 +79,25 @@ GPU 诊断保留的纹理有效载荷为 8,388,656 字节，即一份 8 MiB 首�
 
 Present 返回、解码完成及应用内部计时均不等于 Input-to-Photon。
 Stage C 合成图集成诊断使用独立缓存另行执行；本轮不测试私人极限 PNG 或长期稳定性。
+尚未验证所有真实 GIF 编码变体，广泛的长期稳定性及 Device Lost 测试也尚未完成。
 
-## 构建和人工验收
+## Windows 人工验收
+
+2026-10-21，项目负责人在真实 Windows 桌面使用包含零填充修复的 Release 程序，确认以下五项全部通过。
+对应代码提交为 `ad1df3692d449dba87c0fa93baecd88d5f4f0172`。这些是项目负责人提供的实测结果，
+与前述自动化窗口/API 诊断分别记录。
+
+| 检查项 | 结果 |
+|---|---|
+| 透明 GIF 首帧及空白透明区域 | 通过 |
+| 局部 Frame Rect 对齐，画面保持静止 | 通过 |
+| GIF/JPG/PNG/BMP 往返、长按及反向导航 | 通过 |
+| Fit/100%、Resize、Alt+Tab、Ctrl+O 和 Alt+F4 | 通过 |
+| 损坏 GIF、尾随零填充 GIF 及错误后继续浏览 | 通过 |
+
+本次验收只覆盖静态首帧，尚未实现 GIF 动画播放。前述准入、背景、WIC 和测量限制仍然保留。
+
+## 构建和复测
 
 将 PIXSTRIDE_TEST_ROOT 指向仓库外专用可写目录，然后运行：
 
@@ -90,7 +107,7 @@ cargo test --release --locked release_prepare_gif_poster_samples -- --ignored --
 & .\target\release\pixstride.exe (Join-Path $env:PIXSTRIDE_TEST_ROOT 'gif-poster-gui\partial-transparent.gif')
 ```
 
-批准前请在真实桌面检查：
+以下清单供桌面回归及补充关闭场景验证使用：
 
 1. 局部透明首帧的矩形外显示查看器背景，没有填充文件调色板中的绿色。对照 partial-opaque.gif，确认帧内黑色像素不透明。
 2. 与生成的 JPEG/PNG/BMP 往返浏览，快速长按、反向和松键，确认最终选择正确。GIF 应始终静止。
