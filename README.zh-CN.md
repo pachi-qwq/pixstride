@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 8; status: stages-a-c-merged -->
+<!-- doc-id: readme; revision: 9; status: gif-poster-review -->
 
 # Pixstride
 
@@ -8,7 +8,7 @@ Pixstride 是一个 Windows 原生图片查看器项目，目标是快速启动�
 
 项目受 MassiGra 轻量化界面和快速交互体验启发，阶段 A–C 均已完成并合并。
 [阶段 C PR #4](https://github.com/pachi-qwq/pixstride/pull/4) 记录了负责人提供的六项 Windows 人工验收，结果全部通过。
-项目尚无公开发行版。阶段 D 是下一阶段规划，具体范围仍需负责人批准。
+项目尚无公开发行版。阶段 D 已开始技术验证，本分支实现了 GIF 首帧支持，其余范围仍需负责人批准。
 
 ## 当前基础
 
@@ -19,6 +19,9 @@ Pixstride 是一个 Windows 原生图片查看器项目，目标是快速启动�
 - JPEG/PNG/BMP 浏览、WIC 后台解码、同目录导航、CPU/GPU 缓存、相邻预加载及 GPU 缓存命中快速切换。
 - 超大 PNG 行流式解码、磁盘 Tile Pyramid、视口分块渲染、缩放和平移。
 - Generation 过期任务保护、有界 CPU/GPU 缓存驻留，以及独立的大图资源预算。
+
+本分支还实现了 [D1-a GIF 首帧](docs/zh-CN/stage-d1a.md)：先进行有界结构校验，再将首个图像帧合成到透明画布。
+尚未实现 GIF 动画播放，本次变更的桌面目视验收仍待完成。
 
 目前由独立渲染线程管理 GPU 资源，通过有界后台任务解码图片，并为超大图片设置独立路径。
 线程方案、缓存预算和分块尺寸仍需实验验证；测试计划中列出的格式不代表已经支持。

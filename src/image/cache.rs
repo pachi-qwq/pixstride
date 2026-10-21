@@ -122,6 +122,7 @@ mod tests {
                 path: PathBuf::from(name),
                 length: revision,
                 modified_nanos: None,
+                content: super::super::ImageContent::Static,
             },
             width: 1,
             height: 1,
@@ -197,6 +198,7 @@ mod tests {
                 .unwrap()
                 .as_secs(),
             modified_nanos: Some(1),
+            content: super::super::ImageContent::Static,
         };
         assert!(identity.length > 0);
     }

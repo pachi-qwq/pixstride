@@ -1,5 +1,9 @@
 //! 在专属线程中创建 D3D11 设备、Swap Chain 和测试纹理，并按需绘制。
 
+#[cfg(test)]
+#[path = "gif_tests.rs"]
+mod gif_tests;
+
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,

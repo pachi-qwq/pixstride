@@ -97,6 +97,8 @@ pub(crate) enum Metric {
     TileReplyBackpressure,
     TileReplyToRender,
     TileViewDispatch,
+    GifStructure,
+    GifPoster,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -199,7 +201,7 @@ impl Counter {
 }
 
 impl Metric {
-    const ALL: [Self; 64] = [
+    const ALL: [Self; 66] = [
         Self::Startup,
         Self::D3dInitialization,
         Self::DeviceCreation,
@@ -264,6 +266,8 @@ impl Metric {
         Self::TileReplyBackpressure,
         Self::TileReplyToRender,
         Self::TileViewDispatch,
+        Self::GifStructure,
+        Self::GifPoster,
     ];
 
     fn index(self) -> usize {
@@ -332,11 +336,15 @@ impl Metric {
             Self::TileReplyBackpressure => 61,
             Self::TileReplyToRender => 62,
             Self::TileViewDispatch => 63,
+            Self::GifStructure => 64,
+            Self::GifPoster => 65,
         }
     }
 
     fn name(self) -> &'static str {
         match self {
+            Self::GifStructure => "GIF 完整块结构预检（不校验 LZW 内容）",
+            Self::GifPoster => "GIF WIC 首帧与透明画布合成",
             Self::TileRead => "Tile CPU 查询或磁盘读取与 CRC 校验",
             Self::TileUpload => "Tile GPU 创建与上传提交",
             Self::LargePreview => "大图选择到预览 Present 返回",

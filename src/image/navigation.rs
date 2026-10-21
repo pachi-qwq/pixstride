@@ -140,10 +140,10 @@ mod tests {
         let upper = directory.file("Alpha.PNG");
         let lower = directory.file("alpha.bmp");
         directory.file("notes.txt");
-        directory.file("animation.gif");
+        let gif = directory.file("animation.gif");
 
         let result = ImageDirectory::scan(&directory.0, &lower).unwrap();
-        assert_eq!(result.files, vec![lower, upper, z]);
+        assert_eq!(result.files, vec![lower, upper, gif, z]);
     }
 
     #[test]
