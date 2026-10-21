@@ -27,7 +27,9 @@ fn release_gif_poster_gpu() -> Result<()> {
     let _com = ComMta::initialize()?;
     let dir = Directory::new()?;
     let path = dir.0.join("poster.gif");
-    std::fs::write(&path, sample(true))?;
+    let mut padded = sample(true);
+    padded.extend_from_slice(&[0; 167]);
+    std::fs::write(&path, padded)?;
     let image = Arc::new(decode(&path)?);
     let (shared, _event) = crate::app::tests::test_shared()?;
     // SAFETY: 系统 STATIC 类名称和标题为静态 UTF16，窗口由本线程独占且不显示。

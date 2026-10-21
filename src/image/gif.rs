@@ -117,6 +117,30 @@ impl<R: Read, F: Fn() -> bool> Scan<'_, R, F> {
         }
         Ok((table, count))
     }
+    fn zero_padding(&mut self) -> Result<()> {
+        // Trailer 后只兼容零填充；固定缓冲和原有总扫描额度共同限制空间与工作量。
+        // 填充不是 GIF metadata，不计入 4 MiB 元数据额度；每轮读取前仍响应取消。
+        let mut data = [0; 8192];
+        loop {
+            check_decode_current(self.current)?;
+            let length = match self.reader.read(&mut data) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => result.context("GIF 尾随填充读取失败")?,
+            };
+            if length == 0 {
+                return Ok(());
+            }
+            self.bytes = self
+                .bytes
+                .checked_add(length as u64)
+                .context("GIF 长度溢出")?;
+            ensure!(self.bytes <= MAX_SCAN, "GIF 结构扫描超过 64 MiB");
+            ensure!(
+                data[..length].iter().all(|&byte| byte == 0),
+                "GIF 结束标记后存在非零额外数据"
+            );
+        }
+    }
 }
 
 fn inspect(reader: impl Read, budget: ImageBudget, current: &impl Fn() -> bool) -> Result<Info> {
@@ -156,12 +180,7 @@ fn inspect(reader: impl Read, budget: ImageBudget, current: &impl Fn() -> bool) 
         match s.fixed::<1>()?[0] {
             0x3b => {
                 ensure!(frames > 0, "GIF 没有图像帧");
-                check_decode_current(current)?;
-                let mut extra = [0];
-                ensure!(
-                    s.reader.read(&mut extra)? == 0,
-                    "GIF 结束标记后存在额外数据"
-                );
+                s.zero_padding()?;
                 return Ok(Info {
                     size,
                     first: first.context("GIF 缺少首帧")?,
@@ -449,9 +468,101 @@ mod tests {
                 .to_string()
                 .contains("10000")
         );
-        let mut trailing = crate::image::gif_tests::sample(false);
-        trailing.push(0);
-        assert!(inspect(&trailing[..], ImageBudget::default(), &|| true).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn trailer_accepts_zero_padding_with_short_reads() -> Result<()> {
+        struct ShortReads<R>(R);
+        impl<R: Read> Read for ShortReads<R> {
+            fn read(&mut self, data: &mut [u8]) -> std::io::Result<usize> {
+                let length = data.len().min(7);
+                self.0.read(&mut data[..length])
+            }
+        }
+        let bytes = crate::image::gif_tests::sample(false);
+        let expected = inspect(&bytes[..], ImageBudget::default(), &|| true)?;
+        for length in [0, 1, 167, 8192, 3 * 8192 + 17] {
+            let mut padded = bytes.clone();
+            padded.resize(padded.len() + length, 0);
+            for short in [false, true] {
+                let result = if short {
+                    inspect(ShortReads(&padded[..]), ImageBudget::default(), &|| true)?
+                } else {
+                    inspect(&padded[..], ImageBudget::default(), &|| true)?
+                };
+                assert_eq!(result.size, expected.size);
+                assert_eq!(result.first, expected.first);
+                assert_eq!(result.frames, expected.frames);
+                assert_eq!(result.background, expected.background);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn trailer_rejects_nonzero_and_mixed_data_and_remains_required() {
+        let bytes = crate::image::gif_tests::sample(false);
+        for padding in [vec![1], vec![0, 1, 0], {
+            let mut mixed = vec![0; 3 * 8192 + 1];
+            mixed[2 * 8192] = 0x3b;
+            mixed
+        }] {
+            let mut extra = bytes.clone();
+            extra.extend(padding);
+            assert!(
+                inspect(&extra[..], ImageBudget::default(), &|| true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("非零")
+            );
+        }
+        // 零字节不能代替 Trailer；删除最后一个 Sub-block 结束符时仍必须拒绝。
+        let mut no_trailer = bytes[..bytes.len() - 1].to_vec();
+        no_trailer.extend_from_slice(&[0; 167]);
+        assert!(inspect(&no_trailer[..], ImageBudget::default(), &|| true).is_err());
+        assert!(inspect(&bytes[..bytes.len() - 2], ImageBudget::default(), &|| true).is_err());
+    }
+
+    #[test]
+    fn trailer_padding_respects_total_scan_limit_and_cancellation() -> Result<()> {
+        use std::{cell::Cell, io::repeat};
+        let bytes = crate::image::gif_tests::sample(false);
+        // repeat/take 不保存整段填充，边界测试本身也只使用固定大小的读取缓冲。
+        let padding = MAX_SCAN - bytes.len() as u64;
+        assert!(
+            inspect(
+                bytes.as_slice().chain(repeat(0).take(padding)),
+                ImageBudget::default(),
+                &|| true,
+            )
+            .is_ok()
+        );
+        assert!(
+            inspect(
+                bytes.as_slice().chain(repeat(0).take(padding + 1)),
+                ImageBudget::default(),
+                &|| true,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("64 MiB")
+        );
+        let checks = Cell::new(0);
+        let current = || {
+            checks.set(checks.get() + 1);
+            checks.get() < 2
+        };
+        let mut scan = Scan {
+            reader: repeat(0).take(3 * 8192),
+            current: &current,
+            bytes: 0,
+            metadata: 0,
+            blocks: 0,
+        };
+        assert!(scan.zero_padding().unwrap_err().is::<DecodeCancelled>());
+        assert_eq!(scan.bytes, 8192, "取消后不得继续扫描后续填充块");
+        assert_eq!(scan.metadata, 0);
         Ok(())
     }
 }

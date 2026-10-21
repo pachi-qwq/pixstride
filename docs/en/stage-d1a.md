@@ -1,13 +1,14 @@
 [English](stage-d1a.md) | [简体中文](../zh-CN/stage-d1a.md)
 
-<!-- doc-id: gif-poster; revision: 2; status: local-review -->
+<!-- doc-id: gif-poster; revision: 3; status: gui-review -->
 
 # D1-a: GIF first-frame posters
 
 This branch implements a static poster for basic GIF87a/GIF89a files. A poster is the first image
 frame composed at its offset on the Logical Screen. Later frames do not alter it. Animation,
 playback clocks, Loop policy, pause controls and animation cache reservations are outside this change.
-The separate EXIF 5/7 fix remains in [PR #6](https://github.com/pachi-qwq/pixstride/pull/6).
+The EXIF 5/7 fix was merged through [PR #6](https://github.com/pachi-qwq/pixstride/pull/6)
+and is included in this branch.
 
 ## Decode and cache contract
 
@@ -15,6 +16,11 @@ The existing background WIC Worker validates the GIF structure before opening WI
 signature, screen, palettes, frame rectangles, extensions, sub-block lengths, terminators and Trailer.
 The scan uses an 8 KiB reader buffer and fixed-size metadata storage. It checks cancellation between
 reads and blocks. It does not implement LZW or guarantee detection of damaged pixel codes.
+
+Trailer remains mandatory. After it, the scan accepts only zero padding within the unchanged
+64 MiB total file/scan limit. A fixed 8 KiB buffer checks every chunk and cancellation between
+reads; short reads do not imply end-of-file. Nonzero trailing data is rejected. This compatibility
+rule does not relax palette, extension, Sub-block or terminator checks.
 
 WIC supplies the first local frame and PBGRA8 pixels. The decoder checks WIC screen/rectangle metadata
 against the scan, allocates one zeroed Logical Screen canvas and copies the local pixels into it.
@@ -48,7 +54,7 @@ the existing title/stderr status so another file can still be selected.
 | Metadata / frames / blocks | 4 MiB / 10,000 / 1,000,000 |
 | Application pixel storage | One Logical Screen canvas; no separate full patch or frame list |
 
-These are admission limits, not GIF format limits. Plain Text Extension, trailing bytes after Trailer,
+These are admission limits, not GIF format limits. Plain Text Extension, nonzero data after Trailer,
 unknown block markers, invalid reserved fields and unsupported metadata are rejected. Comments and
 Application Extensions are bounded and skipped; their Loop content does not establish playback.
 GIF content disguised under another supported extension is rejected to prevent bypassing preflight.
@@ -65,6 +71,11 @@ input, local palettes, transparency, GIF87a, missing global palettes and common 
 They reject every truncated prefix of a small fixture, the Prototype's truncated pixel example,
 invalid metadata, scan/metadata limits and over-budget screens. Cancellation and read-only locking
 are tested. No private image or large-PNG cache is used.
+
+Padding regressions cover no padding, 167 zero bytes, multiple buffer-sized chunks, short reads,
+nonzero/mixed trailing data, missing Trailer, truncated Sub-blocks, cancellation and the exact
+64 MiB boundary. Production WIC tests compare padded and unpadded pixels and verify source revision
+invalidation. GPU readback and Viewer diagnostics also use a synthetic 167-byte-padded GIF.
 
 Explicit Windows Release diagnostics cover actual GPU readback, SRV reuse, CPU hit without repeated
 preflight, GIF/JPEG/PNG/BMP navigation, stale completion after a newer GPU hit, revisions, error
@@ -107,6 +118,9 @@ Check these on a real desktop before approval:
 3. Use Ctrl+O, F (Fit), 1 (100%), Resize, maximize/minimize/restore and Alt+Tab.
 4. Open broken.gif, continue to a valid file, and close with Alt+F4. Repeat opening and closing while
    loading memory-full.gif; check for a residual process.
+5. Compare padded-transparent.gif with partial-transparent.gif; their posters must match. Retry
+   locally available GIFs previously rejected for zero padding. They must still remain static;
+   animation playback has not been implemented. Record any remaining compatibility failures.
 
 Implementation references: [GIF parser/compositor](../../src/image/gif.rs),
 [pixel fixtures](../../src/image/gif_tests.rs), [Viewer diagnostic](../../src/app/gif_tests.rs).

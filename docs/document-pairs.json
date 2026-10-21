@@ -223,7 +223,7 @@
       "id": "gif-poster",
       "en": "docs/en/stage-d1a.md",
       "zh-CN": "docs/zh-CN/stage-d1a.md",
-      "revision": 2,
+      "revision": 3,
       "shared_literals": [
         "GIF87a/GIF89a",
         "ImageContent::GifPosterV1",
@@ -236,6 +236,8 @@
         "20,209,664",
         "10,498,048",
         "8,388,656",
+        "167",
+        "8 KiB",
         "PIXSTRIDE_TEST_ROOT"
       ]
     }

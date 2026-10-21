@@ -202,7 +202,7 @@ fn wic_poster_pixels_transparency_local_palette_and_cpu_revision() -> Result<()>
     {
         let path = dir.0.join("局部 首帧.gif");
         let mut bytes = generated([4, 3], [1, 1, 2, 1], transparent, multiple, local);
-        // 在 Trailer 前加入合法 Comment，改变修订长度，禁止使用尾随垃圾绕过结构预检。
+        // 在 Trailer 前加入合法 Comment，独立验证元数据修订，不依赖尾随零填充策略。
         bytes.pop();
         bytes.extend_from_slice(&[0x21, 0xfe, (revision + 1) as u8]);
         bytes.extend(std::iter::repeat_n(b'x', revision + 1));
@@ -268,6 +268,38 @@ fn wic_poster_pixels_transparency_local_palette_and_cpu_revision() -> Result<()>
     expected[20..24].copy_from_slice(&[0, 0, 255, 255]);
     expected[24..28].copy_from_slice(&[0, 0, 0, 255]);
     assert_eq!(legacy.pixels, expected);
+    Ok(())
+}
+
+#[test]
+fn wic_zero_padding_preserves_pixels_and_invalidates_source_revision() -> Result<()> {
+    let _com = ComMta::initialize()?;
+    let dir = Directory::new()?;
+    let path = dir.0.join("padded.gif");
+    let bytes = sample(true);
+    fs::write(&path, &bytes)?;
+    let reference = Arc::new(decode(&path)?);
+    let mut cache = super::cache::CpuCache::new(ImageBudget::default().cpu_cache_bytes);
+    cache.insert(Arc::clone(&reference));
+    let mut previous = reference.source.clone();
+    for padding in [167, 3 * 8192 + 17] {
+        let mut padded = bytes.clone();
+        padded.resize(padded.len() + padding, 0);
+        fs::write(&path, padded)?;
+        let image = Arc::new(decode(&path)?);
+        assert_eq!(image.pixels, reference.pixels);
+        assert_eq!(image.source.content, ImageContent::GifPosterV1);
+        assert_ne!(image.source, previous);
+        cache.insert(Arc::clone(&image));
+        assert!(cache.get(&previous).is_none());
+        assert!(Arc::ptr_eq(&cache.get(&image.source).unwrap(), &image));
+        assert_eq!(cache.byte_cost(), 48);
+        previous = image.source.clone();
+    }
+    let mut mixed = bytes;
+    mixed.extend_from_slice(&[0, 1, 0]);
+    fs::write(&path, mixed)?;
+    assert!(decode(&path).unwrap_err().to_string().contains("非零"));
     Ok(())
 }
 

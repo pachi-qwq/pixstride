@@ -1,18 +1,22 @@
 [English](../en/stage-d1a.md) | [简体中文](stage-d1a.md)
 
-<!-- doc-id: gif-poster; revision: 2; status: local-review -->
+<!-- doc-id: gif-poster; revision: 3; status: gui-review -->
 
 # D1-a：GIF 静态首帧
 
 本分支为基本 GIF87a/GIF89a 文件实现静态首帧图（poster）：将第一个图像帧按偏移合成到逻辑画布
 （Logical Screen），后续帧不改变结果。本轮不实现动画、播放时钟、Loop 策略、暂停操作或动画缓存预留。
-EXIF 5/7 修复仍由独立的 [PR #6](https://github.com/pachi-qwq/pixstride/pull/6) 处理。
+EXIF 5/7 修复已通过 [PR #6](https://github.com/pachi-qwq/pixstride/pull/6) 合并，本分支也已包含该修复。
 
 ## 解码与缓存契约
 
 现有后台 WIC Worker 在打开 WIC 前预检 GIF 结构，检查签名、画布、颜色表、帧矩形、扩展、
 Sub-block 长度、块结束标记及 Trailer。扫描使用 8 KiB 读取缓冲和固定大小的元数据存储，
 在读取和块处理之间检查取消。预检不实现 LZW，不能保证发现损坏的像素编码。
+
+Trailer 仍然必须存在，其后只允许连续零填充，且整个文件和扫描仍受原有 64 MiB 上限约束。
+扫描使用固定 8 KiB 缓冲，逐块检查内容，并在读取之间检查取消；短读不视为文件结束。
+非零尾随数据继续拒绝。这项兼容规则没有放宽颜色表、Extension、Sub-block 或结束结构检查。
 
 WIC 提供第一个局部帧及 PBGRA8 像素。解码器核对 WIC 的画布和矩形信息，然后分配一份清零的
 Logical Screen 画布，将局部像素写入对应位置。满画布帧只调用一次 CopyPixels；带偏移的帧逐行直接写入画布，
@@ -40,7 +44,7 @@ GPU 命中不进入 WIC；CPU 命中跳过预检和解码，仅在 GPU 缓存缺
 | 元数据 / 帧数 / 块数 | 4 MiB / 10,000 / 1,000,000 |
 | 应用像素存储 | 一份 Logical Screen 画布，不保存额外完整局部位图或帧列表 |
 
-这些是准入策略，不是 GIF 格式上限。本轮拒绝 Plain Text Extension、Trailer 后的额外数据、未知块标记、
+这些是准入策略，不是 GIF 格式上限。本轮拒绝 Plain Text Extension、Trailer 后的非零数据、未知块标记、
 非法保留字段及不支持的元数据。Comment 和 Application Extension 只做有界跳过，其 Loop 内容不建立播放语义。
 伪装为其他已支持扩展名的 GIF 内容会被拒绝，防止绕过预检。
 
@@ -53,6 +57,10 @@ UI 与渲染线程继续独立运行。超限 GIF 不进入 PNG Tile Builder。�
 生产解码测试使用手写坐标参考比较全部像素，覆盖多帧输入、局部颜色表、透明、GIF87a、无全局表及常见来源修订。
 测试拒绝小型 Fixture 的每个截断前缀、Prototype 中的截断像素反例、非法元数据、扫描和元数据超限及超预算画布。
 同时测试取消和只读锁定，没有使用私人图片或超大 PNG 缓存。
+
+填充回归覆盖无填充、167 字节零填充、多缓冲块填充、短读、非零和混合尾随数据、缺少 Trailer、
+Sub-block 截断、取消及恰好 64 MiB 的边界。生产 WIC 测试比较有无填充的像素结果，并验证来源修订失效。
+GPU 回读和 Viewer 诊断也使用自行生成、带 167 字节填充的 GIF。
 
 显式 Windows Release 诊断覆盖真实 GPU 回读、SRV 复用、CPU 命中后不重复预检、GIF/JPEG/PNG/BMP 导航、
 新 GPU 命中后旧解码结果被丢弃、文件修订、错误恢复、Fit/100%、Resize、最大化/最小化/恢复，以及存在待完成 GIF 时关闭。
@@ -88,6 +96,8 @@ cargo test --release --locked release_prepare_gif_poster_samples -- --ignored --
 2. 与生成的 JPEG/PNG/BMP 往返浏览，快速长按、反向和松键，确认最终选择正确。GIF 应始终静止。
 3. 操作 Ctrl+O、F（Fit）、1（100%）、Resize、最大化/最小化/恢复和 Alt+Tab。
 4. 打开 broken.gif 后继续浏览有效文件，再用 Alt+F4 退出。加载 memory-full.gif 时重复打开和关闭，确认没有残留进程。
+5. 对比 padded-transparent.gif 与 partial-transparent.gif，首帧内容应一致。重新打开本地曾因零填充被拒绝的 GIF，
+   并记录仍存在的兼容性问题。GIF 仍应保持静止，当前尚未实现动画播放。
 
 实现位置：[GIF 预检及合成](../../src/image/gif.rs)、[像素 Fixture](../../src/image/gif_tests.rs)、
 [Viewer 诊断](../../src/app/gif_tests.rs)。块语义依据 [GIF89a](https://www.w3.org/Graphics/GIF/spec-gif89a.txt)，

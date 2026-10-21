@@ -10,8 +10,11 @@ use crate::{
 fn release_prepare_gif_poster_samples() -> Result<()> {
     let root = gif_tests::gui_root()?;
     ordinary_files(&root)?;
+    let mut padded = gif_tests::sample(true);
+    padded.extend_from_slice(&[0; 167]);
     for (name, data) in [
         ("partial-transparent.gif", gif_tests::sample(true)),
+        ("padded-transparent.gif", padded),
         (
             "partial-opaque.gif",
             gif_tests::generated([4, 3], [1, 1, 2, 1], false, false, false),
@@ -81,7 +84,9 @@ fn release_gif_poster_viewer() -> Result<()> {
     let dir = gif_tests::Directory::new()?;
     ordinary_files(&dir.0)?;
     let poster = dir.0.join("d 局部.gif");
-    std::fs::write(&poster, gif_tests::sample(true))?;
+    let mut padded = gif_tests::sample(true);
+    padded.extend_from_slice(&[0; 167]);
+    std::fs::write(&poster, padded)?;
     let (shared, _event) = tests::test_shared()?;
     let mut loader = ImageLoader::start(crate::image::ImageBudget::default(), Arc::clone(&shared))?;
     shared.set_ui_ready_event(loader.ready_handle());
