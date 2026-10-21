@@ -7,6 +7,10 @@ license = "MIT OR Apache-2.0"
 build = "build.rs"
 publish = false
 
+[[example]]
+name = "gif_probe"
+test = true
+
 [dependencies]
 anyhow = "1.0"
 crc32fast = "1.5.0"

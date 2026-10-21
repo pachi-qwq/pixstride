@@ -1106,3 +1106,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "gif_timer_tests.rs"]
+mod gif_timer_tests;
