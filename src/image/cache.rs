@@ -17,16 +17,41 @@ pub(crate) struct CpuCache {
     entries: HashMap<SourceIdentity, Arc<DecodedImage>>,
     lru: VecDeque<SourceIdentity>,
     rejections: VecDeque<(SourceIdentity, BudgetRejection)>,
+    pool: super::memory::CpuMemory,
 }
 
 impl CpuCache {
+    #[cfg(test)]
     pub(crate) fn new(budget_bytes: u64) -> Self {
+        Self::with_pool(budget_bytes, super::memory::CpuMemory::new(budget_bytes))
+    }
+
+    pub(crate) fn with_pool(budget_bytes: u64, pool: super::memory::CpuMemory) -> Self {
         Self {
             budget_bytes,
             bytes: 0,
             entries: HashMap::new(),
             lru: VecDeque::new(),
             rejections: VecDeque::new(),
+            pool,
+        }
+    }
+
+    /// 淘汰只撤销缓存成员资格；仍被 Renderer/消费者持有的 Arc 不提前归还共同额度。
+    pub(crate) fn allocate(
+        &mut self,
+        len: usize,
+    ) -> anyhow::Result<(Vec<u8>, super::memory::Charge)> {
+        loop {
+            if let Ok(charge) = self.pool.reserve(len as u64, false) {
+                return super::memory::allocate(len, charge);
+            }
+            let Some(oldest) = self.lru.pop_front() else {
+                anyhow::bail!("共同 CPU 像素额度不足，仍有被引用的静态像素或动画缓冲");
+            };
+            if let Some(image) = self.entries.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(image.byte_cost());
+            }
         }
     }
 
@@ -129,6 +154,7 @@ mod tests {
             format: PixelFormat::Bgra8Premultiplied,
             stride: 4,
             pixels: vec![byte; 4],
+            _charge: None,
         })
     }
 
@@ -164,6 +190,26 @@ mod tests {
         let mut cache = CpuCache::new(0);
         cache.insert(image("large.png", 1, 0));
         assert_eq!(cache.byte_cost(), 0);
+    }
+
+    #[test]
+    fn eviction_does_not_release_pinned_pixels_or_duplicate_arc_charges() -> anyhow::Result<()> {
+        let pool = super::super::memory::CpuMemory::new(8);
+        let mut cache = CpuCache::with_pool(8, pool.clone());
+        let mut pinned = image("pinned.png", 1, 0);
+        Arc::get_mut(&mut pinned).unwrap()._charge = Some(pool.reserve(4, false)?);
+        cache.insert(Arc::clone(&pinned));
+        assert_eq!(pool.usage().total, 4);
+        assert!(cache.allocate(8).is_err()); // 缓存成员被淘汰，消费者仍持有同一像素分配。
+        assert_eq!(cache.byte_cost(), 0);
+        assert_eq!(pool.usage().total, 4);
+        drop(pinned);
+        assert_eq!(pool.usage().total, 0);
+        let allocation = cache.allocate(8)?;
+        assert_eq!(pool.usage().total, 8);
+        drop(allocation);
+        assert_eq!(pool.usage().total, 0);
+        Ok(())
     }
 
     #[test]

@@ -1596,6 +1596,7 @@ pub(crate) mod tests {
             format: crate::image::PixelFormat::Bgra8Premultiplied,
             stride: 4,
             pixels: vec![0; 4],
+            _charge: None,
         });
         shared.set_navigation_generation(8, Some(3));
         shared.set_image(5, Arc::clone(&image), Instant::now(), false);
@@ -1777,6 +1778,7 @@ pub(crate) mod tests {
             format: crate::image::PixelFormat::Bgra8Premultiplied,
             stride: 4,
             pixels: vec![0; 4],
+            _charge: None,
         });
         shared.set_image(1, Arc::clone(&image), Instant::now(), false);
         assert!(shared.take_pending().image.is_none());

@@ -1,14 +1,16 @@
 [English](stage-d1a.md) | [简体中文](../zh-CN/stage-d1a.md)
 
-<!-- doc-id: gif-poster; revision: 4; status: pr-review -->
+<!-- doc-id: gif-poster; revision: 5; status: merged -->
 
 # D1-a: GIF first-frame posters
 
-This branch implements a static poster for basic GIF87a/GIF89a files. A poster is the first image
+Merged [PR #7](https://github.com/pachi-qwq/pixstride/pull/7) implements a static poster for basic
+GIF87a/GIF89a files. A poster is the first image
 frame composed at its offset on the Logical Screen. Later frames do not alter it. Animation,
 playback clocks, Loop policy, pause controls and animation cache reservations are outside this change.
 The EXIF 5/7 fix was merged through [PR #6](https://github.com/pachi-qwq/pixstride/pull/6)
-and is included in this branch.
+and is included in main. Later background frame production is documented in [D1-b1](stage-d1b1.md);
+the Viewer still displays only the static poster.
 
 ## Decode and cache contract
 

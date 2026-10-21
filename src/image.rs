@@ -1,9 +1,15 @@
 //! 定义图片像素契约、WIC 解码和普通图片的资源预算。
 
+#[expect(
+    dead_code,
+    reason = "D1-b1 后台协议由测试消费者验证；正式播放消费者在 D1-b2 接入"
+)]
+pub(crate) mod animation;
 mod cache;
 mod gif;
 #[cfg(test)]
 pub(crate) mod gif_tests;
+pub(crate) mod memory;
 pub(crate) mod navigation;
 #[cfg(test)]
 pub(crate) mod orientation_tests;
@@ -71,6 +77,7 @@ pub(crate) enum PixelFormat {
 pub(crate) enum ImageContent {
     Static,
     GifPosterV1,
+    GifAnimationV1,
 }
 
 /// 由路径、长度、修改时间和固定输出语义组成的内存缓存键。
@@ -143,6 +150,8 @@ pub(crate) struct DecodedImage {
     pub(crate) format: PixelFormat,
     pub(crate) stride: u32,
     pub(crate) pixels: Vec<u8>,
+    // 正式解码始终持有票据；None 只供 cfg(test) 手工构造的极小像素 Fixture。
+    pub(crate) _charge: Option<memory::Charge>,
 }
 
 /// 离开一个阶段时立即记录耗时；`?` 提前返回也保留失败路径的样本。
@@ -288,12 +297,28 @@ impl Drop for ComMta {
 /// `identity` 是调用者在后台读取的源修订；完成后再次校验，变化则返回错误。
 /// `record` 同步接收阶段耗时，包括提前失败的阶段；不得阻塞或写入大量日志。
 /// `is_current` 在同步 WIC 调用之间检查选择是否仍有效；不能抢占正在阻塞的调用。
+#[cfg(test)]
 pub(crate) fn decode_wic(
     path: &Path,
     identity: &SourceIdentity,
     budget: ImageBudget,
     record: impl Fn(crate::diagnostics::Metric, Duration),
     is_current: impl Fn() -> bool,
+) -> Result<DecodedImage> {
+    let pool = memory::CpuMemory::new(budget.cpu_cache_bytes);
+    decode_wic_reserved(path, identity, budget, record, is_current, &mut |len| {
+        memory::allocate(len, pool.reserve(len as u64, false)?)
+    })
+}
+
+/// 正式 Worker 从同一 CPU 池分配像素；回调只在分配点运行，可先淘汰自己的 LRU 条目。
+pub(crate) fn decode_wic_reserved(
+    path: &Path,
+    identity: &SourceIdentity,
+    budget: ImageBudget,
+    record: impl Fn(crate::diagnostics::Metric, Duration),
+    is_current: impl Fn() -> bool,
+    allocate: &mut impl FnMut(usize) -> Result<(Vec<u8>, memory::Charge)>,
 ) -> Result<DecodedImage> {
     use crate::diagnostics::Metric;
     let timer = |metric| StageTimer {
@@ -346,13 +371,13 @@ pub(crate) fn decode_wic(
         );
         drop(open_timer);
         return gif::decode_poster(
-            &factory,
-            &decoder,
+            (&factory, &decoder),
             &identity,
             &gif,
             budget,
             &record,
             &is_current,
+            allocate,
         );
     }
     anyhow::ensure!(
@@ -424,11 +449,7 @@ pub(crate) fn decode_wic(
     check_decode_current(&is_current)?;
 
     let allocation_timer = timer(Metric::PixelAllocation);
-    let mut pixels = Vec::new();
-    pixels
-        .try_reserve_exact(buffer_len)
-        .context("为图片像素缓冲区预留内存失败")?;
-    pixels.resize(buffer_len, 0);
+    let (mut pixels, charge) = allocate(buffer_len)?;
     drop(allocation_timer);
     check_decode_current(&is_current)?;
     let copy_timer = timer(Metric::WicCopyPixels);
@@ -452,6 +473,7 @@ pub(crate) fn decode_wic(
         format: PixelFormat::Bgra8Premultiplied,
         stride,
         pixels,
+        _charge: Some(charge),
     })
 }
 

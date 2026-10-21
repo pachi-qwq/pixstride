@@ -20,23 +20,28 @@ const MAX_FRAMES: u32 = 10_000;
 const MAX_BLOCKS: u32 = 1_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Frame {
-    rect: [u32; 4],
-    transparent: Option<u8>,
+pub(super) struct Frame {
+    pub(super) rect: [u32; 4],
+    pub(super) transparent: Option<u8>,
+    pub(super) delay: u16,
+    pub(super) disposal: u8,
 }
 
 /// 文件句柄在 WIC 返回前保持存活，拒绝其他写入/删除句柄；结构结果只保留首帧固定元数据。
 pub(super) struct CheckedGif {
     _file: File,
-    info: Info,
+    pub(super) info: Info,
 }
 
 #[derive(Debug)]
-struct Info {
-    size: [u32; 2],
+pub(super) struct Info {
+    pub(super) size: [u32; 2],
     first: Frame,
-    background: Option<[u8; 4]>,
-    frames: u32,
+    pub(super) background: Option<[u8; 4]>,
+    pub(super) frames: u32,
+    pub(super) loops: Option<u16>,
+    pub(super) max_patch: u64,
+    pub(super) max_restore: u64,
 }
 
 /// 只读完整扫描块边界。64 MiB 文件/4 MiB metadata/10,000 帧是本阶段的准入策略。
@@ -44,6 +49,24 @@ pub(super) fn check_file(
     path: &Path,
     budget: ImageBudget,
     current: &impl Fn() -> bool,
+) -> Result<CheckedGif> {
+    checked_file(path, budget, current, false)
+}
+
+/// 复用同一个 Parser；动画只额外解释 Loop 并汇总工作区大小，不保存整组 Frame 描述符。
+pub(super) fn check_animation_file(
+    path: &Path,
+    budget: ImageBudget,
+    current: &impl Fn() -> bool,
+) -> Result<CheckedGif> {
+    checked_file(path, budget, current, true)
+}
+
+fn checked_file(
+    path: &Path,
+    budget: ImageBudget,
+    current: &impl Fn() -> bool,
+    animation: bool,
 ) -> Result<CheckedGif> {
     // FILE_SHARE_READ=1：预检和 WIC 都可读；此 guard 存活期间不允许更改已预检的文件。
     let file = OpenOptions::new()
@@ -55,7 +78,12 @@ pub(super) fn check_file(
         file.metadata()?.len() <= MAX_SCAN,
         "GIF 结构扫描上限为 64 MiB，当前文件过大"
     );
-    let info = inspect(BufReader::with_capacity(8192, &file), budget, current)?;
+    let info = inspect_mode(
+        BufReader::with_capacity(8192, &file),
+        budget,
+        current,
+        animation,
+    )?;
     Ok(CheckedGif { _file: file, info })
 }
 
@@ -143,7 +171,17 @@ impl<R: Read, F: Fn() -> bool> Scan<'_, R, F> {
     }
 }
 
+#[cfg(test)]
 fn inspect(reader: impl Read, budget: ImageBudget, current: &impl Fn() -> bool) -> Result<Info> {
+    inspect_mode(reader, budget, current, false)
+}
+
+fn inspect_mode(
+    reader: impl Read,
+    budget: ImageBudget,
+    current: &impl Fn() -> bool,
+    animation: bool,
+) -> Result<Info> {
     let mut s = Scan {
         reader,
         current,
@@ -175,6 +213,8 @@ fn inspect(reader: impl Read, budget: ImageBudget, current: &impl Fn() -> bool) 
     let mut first = None;
     let mut transparent = None;
     let mut frames = 0;
+    let (mut delay, mut disposal) = (0, 0);
+    let (mut loops, mut max_patch, mut max_restore) = (None, 0, 0);
     loop {
         s.block()?;
         match s.fixed::<1>()?[0] {
@@ -186,6 +226,9 @@ fn inspect(reader: impl Read, budget: ImageBudget, current: &impl Fn() -> bool) 
                     first: first.context("GIF 缺少首帧")?,
                     background,
                     frames,
+                    loops,
+                    max_patch,
+                    max_restore,
                 });
             }
             0x21 => match s.fixed::<1>()?[0] {
@@ -198,14 +241,27 @@ fn inspect(reader: impl Read, budget: ImageBudget, current: &impl Fn() -> bool) 
                     );
                     ensure!(s.fixed::<1>()?[0] == 0, "GIF GCE 缺少结束标记");
                     transparent = (gce[0] & 1 != 0).then_some(gce[3]);
+                    delay = u16::from_le_bytes([gce[1], gce[2]]);
+                    disposal = (gce[0] >> 2) & 7;
                 }
                 0xff => {
                     ensure!(
                         s.fixed::<1>()?[0] == 11,
                         "GIF Application Header 长度必须为 11"
                     );
-                    s.fixed::<11>()?;
-                    s.subblocks(true)?; // Loop 等应用数据只验证边界，不建立播放语义。
+                    let application = s.fixed::<11>()?;
+                    if animation && [*b"NETSCAPE2.0", *b"ANIMEXTS1.0"].contains(&application) {
+                        ensure!(loops.is_none(), "动画含重复 Loop 扩展，语义不明确");
+                        ensure!(s.fixed::<1>()?[0] == 3, "动画 Loop 数据长度非法");
+                        let data = s.fixed::<3>()?;
+                        ensure!(
+                            data[0] == 1 && s.fixed::<1>()?[0] == 0,
+                            "动画 Loop 数据非法"
+                        );
+                        loops = Some(u16::from_le_bytes([data[1], data[2]]));
+                    } else {
+                        s.subblocks(true)?; // Poster 仍不解释 Loop，不改变原有兼容策略。
+                    }
                 }
                 0x01 => bail!("GIF poster 暂不支持 Plain Text Extension"),
                 _ => {
@@ -244,10 +300,22 @@ fn inspect(reader: impl Read, budget: ImageBudget, current: &impl Fn() -> bool) 
                     "GIF LZW 最小码宽非法"
                 );
                 ensure!(s.subblocks(false)? > 0, "GIF 缺少压缩像素数据");
+                let patch = u64::from(rect[2]) * u64::from(rect[3]) * 4;
+                max_patch = max_patch.max(patch);
+                if disposal == 3 {
+                    max_restore = max_restore.max(patch);
+                }
                 if first.is_none() {
-                    first = Some(Frame { rect, transparent });
+                    first = Some(Frame {
+                        rect,
+                        transparent,
+                        delay,
+                        disposal,
+                    });
                 }
                 transparent = None;
+                delay = 0;
+                disposal = 0;
             }
             _ => bail!("GIF 含未知块标记"),
         }
@@ -255,7 +323,7 @@ fn inspect(reader: impl Read, budget: ImageBudget, current: &impl Fn() -> bool) 
 }
 
 /// WIC 值在成功和失败路径均显式清理；接口始终留在调用线程。
-fn integer(reader: &IWICMetadataQueryReader, name: &str) -> Result<u32> {
+pub(super) fn integer(reader: &IWICMetadataQueryReader, name: &str) -> Result<u32> {
     let wide: Vec<_> = name.encode_utf16().chain(Some(0)).collect();
     let mut value = PROPVARIANT::default();
     // SAFETY: 字符串为有效 NUL UTF16，value 是可写输出；reader 属于当前 MTA。
@@ -271,14 +339,16 @@ fn integer(reader: &IWICMetadataQueryReader, name: &str) -> Result<u32> {
 
 /// 在调用线程的 WIC MTA 内合成透明 poster；只分配 Logical Screen 画布，拒绝过期结果。
 pub(super) fn decode_poster(
-    factory: &IWICImagingFactory,
-    decoder: &IWICBitmapDecoder,
+    wic: (&IWICImagingFactory, &IWICBitmapDecoder),
     identity: &SourceIdentity,
     checked: &CheckedGif,
     budget: ImageBudget,
     record: &impl Fn(crate::diagnostics::Metric, Duration),
     current: &impl Fn() -> bool,
+    allocate: &mut impl FnMut(usize) -> Result<(Vec<u8>, super::memory::Charge)>,
 ) -> Result<DecodedImage> {
+    // 同一 MTA 内的 Factory 与 Decoder 作为一组借用，不跨线程转移 COM。
+    let (factory, decoder) = wic;
     use crate::diagnostics::Metric;
     let timer = |metric| StageTimer {
         started: Instant::now(),
@@ -357,11 +427,7 @@ pub(super) fn decode_poster(
     drop(converter_timer);
     check_decode_current(current)?;
     let allocation_timer = timer(Metric::PixelAllocation);
-    let mut pixels = Vec::new();
-    pixels
-        .try_reserve_exact(len)
-        .context("GIF poster 画布分配失败")?;
-    pixels.resize(len, 0);
+    let (mut pixels, charge) = allocate(len)?;
     drop(allocation_timer);
     let copy_timer = timer(Metric::WicCopyPixels);
     if actual == [0, 0, width, height] {
@@ -401,6 +467,7 @@ pub(super) fn decode_poster(
         format: PixelFormat::Bgra8Premultiplied,
         stride,
         pixels,
+        _charge: Some(charge),
     })
 }
 

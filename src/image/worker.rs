@@ -25,7 +25,7 @@ use crate::{
 
 use super::{
     BudgetRejection, ComMta, DecodeCancelled, DecodedImage, ImageBudget, SourceIdentity,
-    cache::CpuCache, check_decode_current, decode_wic, navigation::ImageDirectory,
+    cache::CpuCache, check_decode_current, decode_wic_reserved, navigation::ImageDirectory,
 };
 
 const PRELOAD_IDLE_DELAY: Duration = Duration::from_millis(120);
@@ -257,6 +257,7 @@ pub(crate) struct ImageLoader {
     thread: Option<JoinHandle<()>>,
     identity_thread: Option<JoinHandle<()>>,
     detached_for_process_exit: bool,
+    animation: super::animation::AnimationWorker,
 }
 
 impl ImageLoader {
@@ -279,6 +280,8 @@ impl ImageLoader {
         (started_rx, release_tx)
     }
     pub(crate) fn start(budget: ImageBudget, shared: Arc<Shared>) -> Result<Self> {
+        let cpu = super::memory::CpuMemory::new(budget.cpu_cache_bytes);
+        let decode_cpu = cpu.clone();
         // SAFETY: 无名称 auto-reset event 仅由 UI 持有，worker 每次向 channel 写结果后置位。
         let ready_event = unsafe { CreateEventW(None, false, false, None) }
             .context("创建解码结果通知事件失败")?;
@@ -331,6 +334,7 @@ impl ImageLoader {
                         HANDLE(ready_value as _),
                         budget,
                         &decode_shared,
+                        decode_cpu,
                     ),
                     Err(error) => send(
                         &decode_sender,
@@ -398,7 +402,17 @@ impl ImageLoader {
             thread: Some(thread),
             identity_thread: Some(identity_thread),
             detached_for_process_exit: false,
+            animation: super::animation::AnimationWorker::new(cpu),
         })
+    }
+
+    /// 返回同一个惰性动画控制器；D1-b1 不从 UI 自动启动 Session。
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "正式播放入口在 D1-b2 接入；本轮只用测试消费者")
+    )]
+    pub(crate) fn animation(&mut self) -> &mut super::animation::AnimationWorker {
+        &mut self.animation
     }
 
     pub(crate) fn ready_handle(&self) -> HANDLE {
@@ -445,6 +459,8 @@ impl ImageLoader {
         preloads: Vec<PathBuf>,
         progress_floor: Option<u64>,
     ) {
+        // 文件选择变化严格取消旧动画；动画帧本身不递增文件 Generation。
+        self.animation.cancel();
         {
             let mut decode = self.control.lock();
             if decode.stopping {
@@ -552,6 +568,7 @@ impl ImageLoader {
     }
 
     pub(crate) fn request_stop(&self) {
+        self.animation.shutdown();
         let mut state = self.control.lock();
         state.stopping = true;
         state.current = None;
@@ -575,6 +592,8 @@ impl ImageLoader {
     }
 
     pub(crate) fn join(&mut self) -> Result<()> {
+        // 不在 UI 上等待不可抢占的动画 WIC；未完成线程由其 Arc 状态继续拥有资源。
+        self.animation.try_join()?;
         let decode = self.thread.take().map(JoinHandle::join);
         let identity = self.identity_thread.take().map(JoinHandle::join);
         let decode_error = decode.is_some_and(|result| result.is_err());
@@ -619,8 +638,9 @@ fn worker_loop(
     ready: HANDLE,
     budget: ImageBudget,
     shared: &Shared,
+    cpu: super::memory::CpuMemory,
 ) {
-    let mut cache = CpuCache::new(budget.cpu_cache_bytes);
+    let mut cache = CpuCache::with_pool(budget.cpu_cache_bytes, cpu);
     while let Some(work) = control.next() {
         match work {
             #[cfg(test)]
@@ -904,7 +924,9 @@ fn load_with_cache(
         }
     }
     let decode_started = Instant::now();
-    let result = decode_wic(path, &identity, budget, &record, is_current);
+    let result = decode_wic_reserved(path, &identity, budget, &record, is_current, &mut |len| {
+        cache.allocate(len)
+    });
     record(
         if current {
             Metric::CurrentWicTotal
