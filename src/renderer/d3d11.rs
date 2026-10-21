@@ -4,6 +4,10 @@
 #[path = "gif_tests.rs"]
 mod gif_tests;
 
+#[cfg(test)]
+#[path = "orientation_tests.rs"]
+mod orientation_tests;
+
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,

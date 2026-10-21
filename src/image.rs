@@ -5,6 +5,8 @@ mod gif;
 #[cfg(test)]
 pub(crate) mod gif_tests;
 pub(crate) mod navigation;
+#[cfg(test)]
+pub(crate) mod orientation_tests;
 pub(crate) mod worker;
 
 use std::{
@@ -486,11 +488,12 @@ fn orientation_transform(value: u16) -> WICBitmapTransformOptions {
         3 => WICBitmapTransformRotate180,
         4 => WICBitmapTransformFlipVertical,
         5 => WICBitmapTransformOptions(
-            WICBitmapTransformRotate90.0 | WICBitmapTransformFlipHorizontal.0,
+            // 像素实验确认此组合先翻转后旋转，EXIF 5 对应主对角线转置。
+            WICBitmapTransformRotate270.0 | WICBitmapTransformFlipHorizontal.0,
         ),
         6 => WICBitmapTransformRotate90,
         7 => WICBitmapTransformOptions(
-            WICBitmapTransformRotate270.0 | WICBitmapTransformFlipHorizontal.0,
+            WICBitmapTransformRotate90.0 | WICBitmapTransformFlipHorizontal.0,
         ),
         8 => WICBitmapTransformRotate270,
         _ => WICBitmapTransformRotate0,
