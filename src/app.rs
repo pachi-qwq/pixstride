@@ -1,5 +1,9 @@
 //! 创建应用状态、启动渲染线程并运行 Win32 消息循环。
 
+#[cfg(test)]
+#[path = "app/gif_tests.rs"]
+mod gif_tests;
+
 use std::{
     collections::VecDeque,
     ffi::OsString,
@@ -1310,7 +1314,7 @@ fn restore_navigation(context: &mut WindowContext, hwnd: windows::Win32::Foundat
 }
 
 fn choose_image(hwnd: windows::Win32::Foundation::HWND) -> Result<Option<PathBuf>> {
-    let filter: Vec<u16> = "图片文件\0*.jpg;*.jpeg;*.png;*.bmp\0所有文件\0*.*\0\0"
+    let filter: Vec<u16> = "图片文件\0*.jpg;*.jpeg;*.png;*.bmp;*.gif\0所有文件\0*.*\0\0"
         .encode_utf16()
         .collect();
     let mut file = vec![0u16; 32_768];
@@ -1781,7 +1785,7 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    fn pump(
+    pub(super) fn pump(
         context: &mut super::WindowContext,
         loader: &crate::image::worker::ImageLoader,
         hwnd: windows::Win32::Foundation::HWND,
@@ -1817,6 +1821,16 @@ pub(crate) mod tests {
     #[test]
     #[ignore = "需要 HWND 和 D3D11，显式运行 Release 长按诊断"]
     fn release_hold_navigation_probe() -> Result<()> {
+        hold_navigation_probe(false)
+    }
+
+    #[test]
+    #[ignore = "Release GIF 长按进度、反向与松键诊断，需要 HWND 和 D3D11"]
+    fn release_gif_hold_navigation_probe() -> Result<()> {
+        hold_navigation_probe(true)
+    }
+
+    fn hold_navigation_probe(gif: bool) -> Result<()> {
         use crate::{
             diagnostics::Counter,
             image::{ImageBudget, worker::ImageLoader},
@@ -1829,7 +1843,15 @@ pub(crate) mod tests {
             .context("设置 PIXSTRIDE_TEST_ROOT 指向仓库外诊断目录")?
             .join(format!("hold-probe-{}", std::process::id()));
         std::fs::create_dir_all(&root)?;
+        let extension = if gif { "gif" } else { "bmp" };
         for index in 0..40u8 {
+            if gif {
+                std::fs::write(
+                    root.join(format!("{index:02}.gif")),
+                    crate::image::gif_tests::generated([64, 64], [0, 0, 64, 64], true, true, false),
+                )?;
+                continue;
+            }
             let size = 54 + 64 * 64 * 4;
             let mut bmp = vec![index.saturating_mul(5); size];
             bmp[..54].fill(0);
@@ -1861,7 +1883,12 @@ pub(crate) mod tests {
             std::thread::spawn(move || crate::renderer::render_thread(raw_hwnd, render_shared));
         let count = |counter| shared.metrics.lock().unwrap().counter(counter);
         let result = (|| -> Result<()> {
-            super::request_open(&mut context, &loader, hwnd, root.join("00.bmp"))?;
+            super::request_open(
+                &mut context,
+                &loader,
+                hwnd,
+                root.join(format!("00.{extension}")),
+            )?;
             pump(&mut context, &loader, hwnd, || {
                 count(Counter::ImageSelectionPresented) > 0
             })?;
@@ -1873,7 +1900,7 @@ pub(crate) mod tests {
                 let progress_before = count(Counter::NavigationProgressPresented);
                 for index in 1..=30 {
                     let file_index = if direction == 1 { index } else { 39 - index };
-                    let target = root.join(format!("{file_index:02}.bmp"));
+                    let target = root.join(format!("{file_index:02}.{extension}"));
                     super::schedule_selection(&mut context, &loader, target.clone());
                     let deadline = Instant::now() + Duration::from_millis(20);
                     pump(&mut context, &loader, hwnd, || Instant::now() >= deadline)?;

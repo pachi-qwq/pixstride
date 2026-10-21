@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 8; status: stages-a-c-merged -->
+<!-- doc-id: readme; revision: 10; status: gif-poster-review -->
 
 # Pixstride
 
@@ -8,8 +8,8 @@ A native Windows image viewer project focused on fast startup, responsive input,
 
 Inspired by MassiGra's lightweight interface and fast interaction, Pixstride has completed and merged
 Stages A–C. [Stage C PR #4](https://github.com/pachi-qwq/pixstride/pull/4) includes the owner's six passed
-Windows manual acceptance scenarios. There is no public release. Stage D is the next planned phase;
-its scope still requires owner approval.
+Windows manual acceptance scenarios. There is no public release. Stage D has started with technical
+validation and GIF first-frame support in this branch; the remaining scope still requires approval.
 
 ## Current foundation
 
@@ -21,6 +21,10 @@ Swap Chain. The target is Windows 10/11 x64. The merged implementation includes:
   preloading, and a GPU-cache-hit fast path.
 - Large-PNG row streaming, a disk Tile Pyramid, viewport Tile rendering, zoom, and pan.
 - Generation-based stale-work protection and bounded CPU/GPU cache residency with separate large-image budgets.
+
+This branch also implements [D1-a GIF posters](docs/en/stage-d1a.md): bounded structural validation
+and a composed first image on a transparent canvas. GIF animation is not implemented. The maintainer
+has confirmed that all five Windows manual acceptance checks passed; code review is pending.
 
 The architecture keeps GPU resource ownership on a render thread and decodes images in
 bounded background work. Large images have a separate path. Threading, cache budgets, and Tile sizes

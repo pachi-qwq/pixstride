@@ -1,6 +1,9 @@
 //! 定义图片像素契约、WIC 解码和普通图片的资源预算。
 
 mod cache;
+mod gif;
+#[cfg(test)]
+pub(crate) mod gif_tests;
 pub(crate) mod navigation;
 #[cfg(test)]
 pub(crate) mod orientation_tests;
@@ -63,7 +66,14 @@ pub(crate) enum PixelFormat {
     Bgra8Premultiplied,
 }
 
-/// 由路径、文件长度和最后修改时间组成的源修订键。
+/// 缓存内容的固定语义；GIF poster 不与原始局部帧或未来动画帧共用身份。
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum ImageContent {
+    Static,
+    GifPosterV1,
+}
+
+/// 由路径、长度、修改时间和固定输出语义组成的内存缓存键。
 ///
 /// 它能识别常见的替换和修改，但元数据相同的原位内容更改仍可能碰撞；后续若实测需要，
 /// 可增加内容摘要。键用于缓存，不宣称是不可伪造的文件身份。
@@ -72,6 +82,7 @@ pub(crate) struct SourceIdentity {
     pub(crate) path: PathBuf,
     pub(crate) length: u64,
     modified_nanos: Option<u128>,
+    pub(crate) content: ImageContent,
 }
 
 impl SourceIdentity {
@@ -108,6 +119,14 @@ impl SourceIdentity {
             path: canonical,
             length: metadata.len(),
             modified_nanos,
+            content: if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("gif"))
+            {
+                ImageContent::GifPosterV1
+            } else {
+                ImageContent::Static
+            },
         })
     }
 }
@@ -239,7 +258,7 @@ pub(crate) fn is_supported_path(path: &Path) -> bool {
         .is_some_and(|extension| {
             matches!(
                 extension.to_ascii_lowercase().as_str(),
-                "jpg" | "jpeg" | "png" | "bmp"
+                "jpg" | "jpeg" | "png" | "bmp" | "gif"
             )
         })
 }
@@ -264,7 +283,7 @@ impl Drop for ComMta {
     }
 }
 
-/// 使用当前线程的 WIC MTA 解码 JPEG、PNG 或 BMP 的首帧。
+/// 使用当前线程的 WIC MTA 解码静态图或经有界预检的 GIF poster。
 ///
 /// `identity` 是调用者在后台读取的源修订；完成后再次校验，变化则返回错误。
 /// `record` 同步接收阶段耗时，包括提前失败的阶段；不得阻塞或写入大量日志。
@@ -288,6 +307,14 @@ pub(crate) fn decode_wic(
         bail!("不支持的图片扩展名：{}", path.display());
     }
     let identity = identity.clone();
+    let gif = if identity.content == ImageContent::GifPosterV1 {
+        let started = Instant::now();
+        let result = gif::check_file(&identity.path, budget, &is_current);
+        record(Metric::GifStructure, started.elapsed());
+        Some(result?)
+    } else {
+        None
+    };
     let wide_path = wide_nul(&identity.path);
     let open_timer = timer(Metric::WicOpen);
     let factory_timer = timer(Metric::WicFactoryCreation);
@@ -310,6 +337,28 @@ pub(crate) fn decode_wic(
     .with_context(|| format!("WIC 无法打开图片：{}", identity.path.display()))?;
     drop(decoder_timer);
     check_decode_current(&is_current)?;
+    // SAFETY: 当前线程拥有 decoder，返回 GUID 不借用 COM 内存。
+    let container = unsafe { decoder.GetContainerFormat() }?;
+    if let Some(gif) = gif {
+        anyhow::ensure!(
+            container == windows::Win32::Graphics::Imaging::GUID_ContainerFormatGif,
+            "GIF 扩展名与容器不符"
+        );
+        drop(open_timer);
+        return gif::decode_poster(
+            &factory,
+            &decoder,
+            &identity,
+            &gif,
+            budget,
+            &record,
+            &is_current,
+        );
+    }
+    anyhow::ensure!(
+        container != windows::Win32::Graphics::Imaging::GUID_ContainerFormatGif,
+        "GIF 内容需要使用 .gif 入口，已拒绝未预检的局部帧"
+    );
     let frame_timer = timer(Metric::WicFrameMetadata);
     let get_frame_timer = timer(Metric::WicGetFrame);
     // SAFETY: 当前支持格式按单帧静态图处理；索引 0 从 Decoder 的有效帧范围读取。
@@ -644,11 +693,17 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_stage_b_static_extensions_case_insensitively() {
-        for name in ["photo.JPG", "image.jpeg", "image.PnG", "scan.bmp"] {
+    fn accepts_static_and_gif_poster_extensions_case_insensitively() {
+        for name in [
+            "photo.JPG",
+            "image.jpeg",
+            "image.PnG",
+            "scan.bmp",
+            "poster.GiF",
+        ] {
             assert!(is_supported_path(Path::new(name)));
         }
-        for name in ["animation.gif", "camera.raw", "vector.svg", "text.png.exe"] {
+        for name in ["camera.raw", "vector.svg", "text.png.exe"] {
             assert!(!is_supported_path(Path::new(name)));
         }
     }
