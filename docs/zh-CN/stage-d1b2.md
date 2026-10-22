@@ -1,11 +1,12 @@
 [English](../en/stage-d1b2.md) | [简体中文](stage-d1b2.md)
 
-<!-- doc-id: animation-playback; revision: 1; status: animation-playback-review -->
+<!-- doc-id: animation-playback; revision: 2; status: animation-playback-review -->
 
 # D1-b2：在 D3D11 渲染线程播放 GIF
 
 本地分支将已合并的 [D1-b1 生产者](stage-d1b1.md)接入 Viewer。多帧 GIF 先显示静态 Poster，再播放动画；
-单帧 GIF 保持 Poster 路径。Windows 自动化检查通过，负责人目视验收和 PR 合并尚未完成。
+单帧 GIF 保持 Poster 路径。Windows 自动化检查通过，负责人报告 Windows 人工验收 8/8 项通过。
+代码评审和 PR 合并尚未完成。
 项目没有公开 Release，本轮没有新增依赖。
 
 ## 所有权与交接
@@ -58,9 +59,9 @@ Render Thread 维护可用虚拟时间测试的单调时钟。等待集依次包
 
 下一帧未就绪时保留当前画面。Underflow 只统计一次，随后移除计时器，由新数据或用户/窗口工作唤醒。
 顺序合成不跳过 Disposal 依赖。本实现不丢弃已解码帧来追赶固定墙钟位置，持续慢解码会减慢播放。
-因此跳过显示计数按设计为零，与过期 Session 拒收分别统计。短 Delay 的流畅程度仍待人工评审。
+因此跳过显示计数按设计为零，与过期 Session 拒收分别统计。负责人已验收本次构建的短 Delay 节奏。
 
-| 原始元数据 | 本地候选展示策略 |
+| 原始元数据 | 本分支展示策略 |
 |---|---|
 | Delay 为 0 或 1 个百分之一秒 | 100 ms。 |
 | Delay 为 2 / 3 / 10 个百分之一秒 | 20 / 30 / 100 ms。 |
@@ -69,11 +70,11 @@ Render Thread 维护可用虚拟时间测试的单调时钟。等待集依次包
 | Loop = 正整数 n | 首次播放后再重复 n 轮。 |
 
 GIF89a 将非零 Delay 定义为百分之一秒，但这本身并未规定零延迟兼容规则。
-候选策略依据独立检查的 [Chromium Delay 处理](https://raw.githubusercontent.com/chromium/chromium/main/third_party/blink/renderer/platform/graphics/deferred_image_decoder.cc)
+此策略依据独立检查的 [Chromium Delay 处理](https://raw.githubusercontent.com/chromium/chromium/main/third_party/blink/renderer/platform/graphics/deferred_image_decoder.cc)
 和 [Firefox FrameTimeout](https://raw.githubusercontent.com/mozilla-firefox/firefox/main/image/FrameTimeout.h)。
 Loop 依据 Firefox 的 [NETSCAPE 解析](https://raw.githubusercontent.com/mozilla-firefox/firefox/main/image/decoders/nsGIFDecoder2.cpp)
-及确定性浏览器样本核对。Worker 原始元数据不变。本地默认值仍待负责人在目视验收及评审时确认，
-没有采用此前 Prototype 建议的 20 ms 下限。
+及确定性浏览器样本核对。Worker 原始元数据不变。负责人已在人工测试中验收当前短 Delay 节奏和 Loop 行为，
+代码评审仍待完成；没有采用此前 Prototype 建议的 20 ms 下限。这些检查不代表兼容所有编码器。
 
 2026-10-22，隔离的 Headless Edge 155.0.4283.62 和 Firefox 153.5.0 分别播放自制三色 GIF 4.5 秒。
 宿主时间戳截图读取合成器像素，不测量光子。Firefox 取得 755 个样本，截图调用 P50 为 1.502 ms；
@@ -198,21 +199,29 @@ cargo build --release --locked
 ```
 
 其他已准备的播放场景为 `small`、`large`、`partial`。已准备的 `short` 样本将自制 GCE Delay 设为 0/1/2/3/10 个百分之一秒，没有使用外部 GIF。
-`loop-once`、`loop-twice`、`loop-thrice` 可用于人工有限循环检查。构建和测试日志输出分布、进程计数及最终计费。以下 GUI 验收均待负责人执行：
+`loop-once`、`loop-twice`、`loop-thrice` 可用于人工有限循环检查。构建和测试日志输出分布、进程计数及最终计费。
 
-1. 检查正常播放、透明区域和局部帧位置。
-2. 对照参考查看器检查短 Delay 与普通 Delay 的节奏。
-3. 检查一次播放、有限重复和无限 Loop 样本。
-4. Space 暂停/恢复，长按 Space 不连续切换。
-5. 最小化/恢复、Alt+Tab、打开/取消 Ctrl+O，并叠加手动暂停测试。
-6. GIF 与 JPEG/PNG/BMP 往返。
-7. GIF 与合成 Tile 路径 PNG 往返。
-8. 长按/反向导航、加载及播放中关闭，无卡死或残留进程。
-9. 播放中检查 Fit/100%、Resize 和窗口状态切换。
-10. 暂停、有限结束及切回静态图后，观察 CPU 和诊断，确认无周期刷新。
+### 负责人提供的 Windows 人工验收
+
+项目负责人报告，已在真实 Windows 桌面完成下列 8/8 项验收，全部通过。验收代码提交为
+`f7ad89465c4e3245bf70faa5a841b71c18c327a0`，后续验收记录提交只修改文档和配对元数据。
+这些是负责人提供的功能及目视观察，不构成像素级正确性证明、精确计时或长期 CPU 占用保证。
+
+| 验收项目 | 负责人提供的结果 |
+|---|---|
+| 正常 GIF 播放。 | 通过。 |
+| 短 Delay 节奏。 | 通过。 |
+| 无 Loop、有限 Loop、无限 Loop。 | 通过。 |
+| Space 暂停/恢复。 | 通过。 |
+| 最小化、恢复、Alt+Tab、Ctrl+O。 | 通过。 |
+| GIF 与 JPEG/PNG/BMP、合成大 PNG 往返。 | 通过。 |
+| 长按、反向、Resize、Fit/100%、播放中关闭。 | 通过。 |
+| 暂停、播放结束、静态空闲时未观察到持续异常占用。 | 通过。 |
+
+上述自动化证据和性能测量边界与人工验收记录分别保留。代码评审和 PR 合并仍待完成。
 
 广泛编码器兼容性、User Input Flag 语义、阻塞存储/codec、Device Lost、真实分配失败、长期稳定性及 Input-to-Photon
 仍未全面验证。不支持 Seek、调速、倒放、APNG/WebP 动画，本轮没有 HDR/ICC 或 Stage C 缓存改动。
 GIF 文件准入仍为 64 MiB，结构预检不能保证 LZW 正确性。
 Poster/动画画布和 Disposal 2 使用已显式测试的透明清除策略，全局背景与查看器背景仍是不同概念。
-评审时需确认此策略及短延迟节奏。
+人工验收不能证明所有真实 GIF 编码器的背景或时序行为均一致。

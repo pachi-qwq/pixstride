@@ -1,6 +1,6 @@
 [English](../en/development.md) | [简体中文](development.md)
 
-<!-- doc-id: development; revision: 15; status: animation-playback-review -->
+<!-- doc-id: development; revision: 16; status: animation-playback-review -->
 
 # 开发状态与检查
 
@@ -9,7 +9,7 @@ CPU/GPU 缓存。负责人已确认真实图片显示、缩放、键盘导航、
 阶段 C 提供独立预算的 PNG 流式处理、磁盘 Tile Pyramid 构建及支持缩放/平移的视口渲染，六项 Windows 人工验收全部通过。
 缓存变量、构建测量、支持的编码和人工检查见[阶段 C](stage-c.md)。项目尚无公开发行版；阶段 D 已合并 EXIF 1–8
 修正、GIF 静态首帧和后台 Worker。本分支增加 [D1-b2 GIF 播放](stage-d1b2.md)，
-Windows 自动化检查通过，负责人目视验收和 PR 合并尚未完成。
+Windows 自动化检查通过，负责人报告八项 Windows 人工验收全部通过。代码评审和 PR 合并仍待完成。
 后续阶段 D 范围仍需批准。
 
 ## 构建和运行

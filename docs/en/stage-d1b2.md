@@ -1,12 +1,13 @@
 [English](stage-d1b2.md) | [简体中文](../zh-CN/stage-d1b2.md)
 
-<!-- doc-id: animation-playback; revision: 1; status: animation-playback-review -->
+<!-- doc-id: animation-playback; revision: 2; status: animation-playback-review -->
 
 # D1-b2: GIF playback on the D3D11 render thread
 
 This local branch connects the merged [D1-b1 producer](stage-d1b1.md) to the Viewer. Multi-frame GIFs
 play after the static poster; single-frame GIFs keep the poster path. Windows automated checks pass.
-Owner-run visual acceptance and PR merge are pending. There is no public Release or new dependency.
+The project owner reports all 8/8 Windows manual acceptance scenarios passed. Code review and PR
+merge remain pending. There is no public Release or new dependency.
 
 ## Ownership and handoff
 
@@ -67,9 +68,9 @@ If the next frame is missing, the current frame stays visible. Underflow is coun
 timer is removed; only new data or user/window work wakes the renderer. Sequential composition never
 skips Disposal dependencies. This implementation does not discard decoded frames to chase a fixed
 wall-clock position; sustained slow decoding slows playback. Its skipped-display counter is zero by
-design, separately from stale-session rejection. Short-delay smoothness remains a manual-review item.
+design, separately from stale-session rejection. The owner accepted short-delay pacing on the tested build.
 
-| Raw metadata | Local candidate display policy |
+| Raw metadata | Branch display policy |
 |---|---|
 | Delay 0 or 1 centisecond | 100 ms. |
 | Delay 2 / 3 / 10 centiseconds | 20 / 30 / 100 ms. |
@@ -78,13 +79,14 @@ design, separately from stale-session rejection. Short-delay smoothness remains 
 | Loop = n, positive | First pass plus n repetitions. |
 
 GIF89a defines nonzero Delay in hundredths of a second; this alone does not mandate the zero-delay
-compatibility rule. The candidate follows independently inspected
+compatibility rule. This policy follows independently inspected
 [Chromium delay handling](https://raw.githubusercontent.com/chromium/chromium/main/third_party/blink/renderer/platform/graphics/deferred_image_decoder.cc)
 and [Firefox FrameTimeout](https://raw.githubusercontent.com/mozilla-firefox/firefox/main/image/FrameTimeout.h).
 Loop interpretation was checked against Firefox's
 [NETSCAPE parser](https://raw.githubusercontent.com/mozilla-firefox/firefox/main/image/decoders/nsGIFDecoder2.cpp)
-and deterministic browser samples. Raw Worker metadata is unchanged. These local defaults await
-owner confirmation during visual acceptance and review; the earlier 20 ms prototype suggestion is not used.
+and deterministic browser samples. Raw Worker metadata is unchanged. The owner accepted the current
+short-delay pacing and Loop behavior in manual testing; code review remains pending. The earlier
+20 ms prototype suggestion is not used. These checks do not establish compatibility with all encoders.
 
 On 2026-10-22, isolated headless Edge 155.0.4283.62 and Firefox 153.5.0 displayed self-authored
 three-color GIFs for 4.5 seconds. Host-timestamped screenshots sampled compositor pixels, not photons.
@@ -230,22 +232,33 @@ cargo build --release --locked
 
 Other prepared profile cases are `small`, `large` and `partial`. The prepared `short` case sets generated GCE delays to 0/1/2/3/10 centiseconds; it is not an external
 sample. `loop-once`, `loop-twice` and `loop-thrice` support manual finite-loop checks. Build and
-test logs report distributions, process counters and final charges. GUI acceptance remains pending:
+test logs report distributions, process counters and final charges.
 
-1. Check playback, transparent areas and local-frame placement.
-2. Compare short and ordinary Delay pacing with a reference viewer.
-3. Check one-pass, finite-repeat and infinite Loop samples.
-4. Pause/resume with Space; hold Space to check repeat suppression.
-5. Minimize/restore, Alt+Tab and open/cancel Ctrl+O, including while manually paused.
-6. Navigate between GIF and JPEG/PNG/BMP.
-7. Navigate between GIF and a generated Tile-path PNG.
-8. Hold/reverse navigation and close during loading/playback, with no freeze or leftover process.
-9. Check Fit/100%, Resize and window-state transitions during playback.
-10. Observe CPU and diagnostics after pause, finite finish and static selection; check no periodic refresh.
+### Owner-run Windows manual acceptance
+
+The project owner reports all 8/8 scenarios below passed on the real Windows desktop for code commit
+`f7ad89465c4e3245bf70faa5a841b71c18c327a0`. The subsequent acceptance-record changes only update
+documentation and pair metadata. These are owner-provided functional and visual observations, not
+pixel-level correctness proofs, precise timing measurements or long-duration CPU-utilization guarantees.
+
+| Scenario | Owner-reported result |
+|---|---|
+| Normal GIF playback. | Passed. |
+| Short Delay pacing. | Passed. |
+| No Loop extension, finite Loop and infinite Loop. | Passed. |
+| Space pause/resume. | Passed. |
+| Minimize, restore, Alt+Tab and Ctrl+O. | Passed. |
+| Navigate between GIF and JPEG/PNG/BMP or a generated large PNG. | Passed. |
+| Held/reverse navigation, Resize, Fit/100% and close during playback. | Passed. |
+| No sustained abnormal utilization observed while paused, after playback ends or during static idle. | Passed. |
+
+The automated evidence and performance boundaries above remain separate from this manual record.
+Code review and PR merge are still pending.
 
 Broad GIF encoder compatibility, User Input Flag semantics, blocked storage/codecs, Device Lost,
 actual allocation failures, long-duration stability and Input-to-Photon remain incomplete. There is
 no seek, speed control, reverse playback, APNG/WebP animation, HDR/ICC work or Stage C cache change.
 The GIF file admission limit remains 64 MiB. Structural preflight cannot guarantee LZW correctness.
 Poster/animation canvas and Disposal 2 use the explicitly tested transparent-clearing policy; global
-background and Viewer background remain distinct. Confirm this policy and short-delay pacing in review.
+background and Viewer background remain distinct. Manual acceptance does not establish identical
+background or timing behavior for every real-world GIF encoder.

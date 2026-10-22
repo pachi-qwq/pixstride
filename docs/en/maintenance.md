@@ -1,6 +1,6 @@
 [English](maintenance.md) | [简体中文](../zh-CN/maintenance.md)
 
-<!-- doc-id: maintenance; revision: 6; status: animation-playback-review -->
+<!-- doc-id: maintenance; revision: 7; status: animation-playback-review -->
 
 # Repository maintenance and publication
 
@@ -163,4 +163,6 @@ update policy and release publishing require separate decisions. No application-
 implemented in this documentation task.
 
 Repository initialization, protection, and the Stage A–C merges are complete. Stage D has merged EXIF correction, GIF posters and the background animation Worker;
-local D1-b2 playback still awaits owner visual acceptance and review; release and signing policies require separate approval. No public Release has been published.
+the owner reports all eight D1-b2 Windows manual scenarios passed on the feature branch.
+Code review and PR merge remain pending; release and signing policies require separate approval.
+No public Release has been published.

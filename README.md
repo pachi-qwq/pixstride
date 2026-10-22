@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 12; status: animation-playback-review -->
+<!-- doc-id: readme; revision: 13; status: animation-playback-review -->
 
 # Pixstride
 
@@ -27,7 +27,8 @@ Swap Chain. The target is Windows 10/11 x64. The merged implementation includes:
 first image on a transparent canvas. All five owner-run Windows manual checks passed.
 The [D1-b1 background animation worker](docs/en/stage-d1b1.md) is merged. This local branch adds
 [D1-b2 D3D11 GIF playback](docs/en/stage-d1b2.md), bounded frame handoff, Delay/Loop scheduling and
-Space pause/resume. Automated Windows checks pass; owner-run visual acceptance and PR merge are pending.
+Space pause/resume. Automated Windows checks pass, and the owner reports all eight Windows manual
+acceptance scenarios passed. Code review and PR merge remain pending.
 
 The architecture keeps GPU resource ownership on a render thread and decodes images in
 bounded background work. Large images have a separate path. Threading, cache budgets, and Tile sizes

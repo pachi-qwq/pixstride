@@ -1,6 +1,6 @@
 [English](development.md) | [简体中文](../zh-CN/development.md)
 
-<!-- doc-id: development; revision: 15; status: animation-playback-review -->
+<!-- doc-id: development; revision: 16; status: animation-playback-review -->
 
 # Development status and checks
 
@@ -12,7 +12,8 @@ and viewport rendering with zoom/pan. Its six owner-run Windows manual acceptanc
 See [Stage C](stage-c.md) for cache variables, build measurements, supported encodings, and manual checks.
 There is no public release. Stage D has merged EXIF 1–8 correction and static GIF posters. This branch
 adds [D1-b2 GIF playback](stage-d1b2.md) over the merged background Worker. Automated Windows
-checks pass; owner-run visual acceptance and PR merge are pending.
+checks pass, and the owner reports all eight Windows manual acceptance scenarios passed.
+Code review and PR merge remain pending.
 Further Stage D scope remains subject to approval.
 
 ## Build and run

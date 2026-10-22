@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 12; status: animation-playback-review -->
+<!-- doc-id: readme; revision: 13; status: animation-playback-review -->
 
 # Pixstride
 
@@ -24,7 +24,7 @@ Pixstride 是一个 Windows 原生图片查看器项目，目标是快速启动�
 先进行有界结构校验，再将首个图像帧合成到透明画布，负责人五项 Windows 人工验收全部通过。
 [D1-b1 动画后台 Worker](docs/zh-CN/stage-d1b1.md) 已合并。本地分支增加
 [D1-b2 D3D11 GIF 播放](docs/zh-CN/stage-d1b2.md)、有界帧交接、Delay/Loop 调度及 Space 暂停/恢复。
-Windows 自动化检查通过，负责人目视验收和 PR 合并尚未完成。
+Windows 自动化检查通过，负责人报告八项 Windows 人工验收全部通过。代码评审和 PR 合并仍待完成。
 
 目前由独立渲染线程管理 GPU 资源，通过有界后台任务解码图片，并为超大图片设置独立路径。
 线程方案、缓存预算和分块尺寸仍需实验验证；测试计划中列出的格式不代表已经支持。

@@ -1,6 +1,6 @@
 [English](architecture.md) | [简体中文](../zh-CN/architecture.md)
 
-<!-- doc-id: architecture; revision: 11; status: animation-playback-review -->
+<!-- doc-id: architecture; revision: 12; status: animation-playback-review -->
 
 # Architecture and implementation scope
 
@@ -134,7 +134,7 @@ The Render Thread waits for work, producer output, a single-shot timer or DXGI f
 The DXGI event is not a GPU completion fence. Pause/finish/static idle remove the timer from the wait set.
 UI asynchronously observes Worker completion and joins only after COM/data cleanup; blocked WIC retains
 the existing finite shutdown grace and safe detachment boundary. See [D1-b2](stage-d1b2.md) for
-policies, measurements, automated evidence and pending manual acceptance.
+policies, measurements, automated evidence and the eight Windows manual scenarios reported passed by the owner.
 
 ## Completed stage scope and deferred work
 
@@ -143,7 +143,7 @@ policies, measurements, automated evidence and pending manual acceptance.
 | A | Win32 lifecycle, one render owner, latest snapshot, simple sequence/Device Epoch if needed, embedded test texture, QPC events, resize/shutdown/recovery tests. | No file navigation, decoder pool, CPU/GPU image cache, IPC, Job Object, Color Cache, or Tile scheduler. |
 | B | Merged WIC JPEG/PNG/BMP decoding, checked pixel layout, source identity, one WIC worker plus one source-validation thread, CPU/GPU LRU caches, directory navigation, adjacent preloads, and stale-generation rejection. GUI acceptance and rapid-navigation retesting passed. | Keep one WIC worker, bounded source validation, and a two-image preload window; defer a general priority framework, ordinary-image panning, and pooled Texture allocator until measured. |
 | C | Merged sequential large-PNG streaming, preview, disk Tile Cache/Pyramid, visible-region rendering, zoom/pan, and resource-failure regressions; six owner-run GUI scenarios passed. | Progressive preview and comprehensive Device Lost/resource-exhaustion/stability validation remain open; worker IPC and Job Object isolation require evidence, with no stable plugin or IPC ABI. |
-| D (partial) | Merged EXIF 5/7 correction, static GIF posters and background production; local D1-b2 playback is automated-tested and awaits visual acceptance/review. | Further formats, basic ICC, configurable input and comic reading require separate approval. Add derived color caches only with a tested color path; HDR remains deferred. |
+| D (partial) | Merged EXIF 5/7 correction, static GIF posters and background production; branch D1-b2 playback passes automated tests and all eight owner-reported Windows manual scenarios. Code review and PR merge remain pending. | Further formats, basic ICC, configurable input and comic reading require separate approval. Add derived color caches only with a tested color path; HDR remains deferred. |
 
 Stages A–C are complete; further Stage D work requires separate approval. Existing
 pixel-layout, cancellation, budget-failure, and decoder-capability boundaries do not authorize extra runtime
