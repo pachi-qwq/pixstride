@@ -57,7 +57,37 @@ fn release_animation_prepare() -> Result<()> {
         &repeated([512, 512], 128, true),
         Some(0),
     )?;
-    for name in ["small", "medium", "large", "partial"] {
+    let mut short = repeated([512, 256], 128, false);
+    for (i, frame) in short.iter_mut().enumerate() {
+        frame.delay = [0, 1, 2, 3, 10][i % 5];
+    }
+    write(&root.join("short.gif"), [512, 256], &short, Some(0))?;
+    let mut loop_frames = sample();
+    for frame in &mut loop_frames {
+        frame.delay = 30;
+    }
+    for (name, loops) in [
+        ("loop-once", None),
+        ("loop-twice", Some(1)),
+        ("loop-thrice", Some(2)),
+    ] {
+        write(
+            &root.join(format!("{name}.gif")),
+            [4, 3],
+            &loop_frames,
+            loops,
+        )?;
+    }
+    for name in [
+        "small",
+        "medium",
+        "large",
+        "partial",
+        "short",
+        "loop-once",
+        "loop-twice",
+        "loop-thrice",
+    ] {
         println!(
             "generated {name} bytes={}",
             std::fs::metadata(root.join(format!("{name}.gif")))?.len()

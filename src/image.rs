@@ -1,9 +1,5 @@
 //! 定义图片像素契约、WIC 解码和普通图片的资源预算。
 
-#[expect(
-    dead_code,
-    reason = "D1-b1 后台协议由测试消费者验证；正式播放消费者在 D1-b2 接入"
-)]
 pub(crate) mod animation;
 mod cache;
 mod gif;
@@ -93,6 +89,12 @@ pub(crate) struct SourceIdentity {
 }
 
 impl SourceIdentity {
+    /// 比较同一文件修订，允许 Poster 与动画两种内容语义在显式交接处核对。
+    pub(crate) fn same_revision(&self, other: &Self) -> bool {
+        self.path == other.path
+            && self.length == other.length
+            && self.modified_nanos == other.modified_nanos
+    }
     pub(crate) fn read(path: &Path) -> Result<Self> {
         // PNG 可能被路由到大图路径；先查属性，避免 canonicalize 的句柄访问先触发云端取回。
         // 复用同一次 metadata 结果，不给有效 PNG 的 GPU 快速路径增加第二次元数据查询。
@@ -150,8 +152,16 @@ pub(crate) struct DecodedImage {
     pub(crate) format: PixelFormat,
     pub(crate) stride: u32,
     pub(crate) pixels: Vec<u8>,
+    pub(crate) gif_poster: Option<GifPoster>,
     // 正式解码始终持有票据；None 只供 cfg(test) 手工构造的极小像素 Fixture。
     pub(crate) _charge: Option<memory::Charge>,
+}
+
+/// 随 Poster 缓存保留固定元数据，避免单帧 GIF 启动动画线程或在 UI 重新读文件。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GifPoster {
+    pub(crate) frames: u32,
+    pub(crate) delay_cs: u16,
 }
 
 /// 离开一个阶段时立即记录耗时；`?` 提前返回也保留失败路径的样本。
@@ -473,6 +483,7 @@ pub(crate) fn decode_wic_reserved(
         format: PixelFormat::Bgra8Premultiplied,
         stride,
         pixels,
+        gif_poster: None,
         _charge: Some(charge),
     })
 }

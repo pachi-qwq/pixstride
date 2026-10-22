@@ -104,6 +104,12 @@ pub(crate) enum Metric {
     AnimationCompose,
     AnimationOutput,
     AnimationBackpressure,
+    AnimationFirstOutput,
+    AnimationFirstPresent,
+    AnimationUpload,
+    AnimationLateness,
+    AnimationWorkerShutdown,
+    AnimationOutputToPresent,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -128,10 +134,20 @@ pub(crate) enum Counter {
     DecodeCancelled,
     BudgetRejectionHit,
     NavigationProgressPresented,
+    AnimationStarted,
+    AnimationPresented,
+    AnimationRejected,
+    AnimationPosterReused,
+    AnimationUnderflow,
+    AnimationFailed,
+    AnimationRenderWake,
+    AnimationSkipped,
+    AnimationPaused,
+    AnimationCompleted,
 }
 
 impl Counter {
-    const ALL: [Self; 20] = [
+    const ALL: [Self; 30] = [
         Self::CpuCacheHit,
         Self::CpuCacheMiss,
         Self::GpuCacheHit,
@@ -152,6 +168,16 @@ impl Counter {
         Self::DecodeCancelled,
         Self::BudgetRejectionHit,
         Self::NavigationProgressPresented,
+        Self::AnimationStarted,
+        Self::AnimationPresented,
+        Self::AnimationRejected,
+        Self::AnimationPosterReused,
+        Self::AnimationUnderflow,
+        Self::AnimationFailed,
+        Self::AnimationRenderWake,
+        Self::AnimationSkipped,
+        Self::AnimationPaused,
+        Self::AnimationCompleted,
     ];
 
     fn index(self) -> usize {
@@ -176,11 +202,31 @@ impl Counter {
             Self::DecodeCancelled => 17,
             Self::BudgetRejectionHit => 18,
             Self::NavigationProgressPresented => 19,
+            Self::AnimationStarted => 20,
+            Self::AnimationPresented => 21,
+            Self::AnimationRejected => 22,
+            Self::AnimationPosterReused => 23,
+            Self::AnimationUnderflow => 24,
+            Self::AnimationFailed => 25,
+            Self::AnimationRenderWake => 26,
+            Self::AnimationSkipped => 27,
+            Self::AnimationPaused => 28,
+            Self::AnimationCompleted => 29,
         }
     }
 
     fn name(self) -> &'static str {
         match self {
+            Self::AnimationStarted => "动画 Session 启动",
+            Self::AnimationPresented => "动画帧 Present 返回",
+            Self::AnimationRejected => "动画过期帧拒收",
+            Self::AnimationPosterReused => "动画首帧复用 Poster",
+            Self::AnimationUnderflow => "动画 Frame Underflow",
+            Self::AnimationFailed => "动画失败并停止",
+            Self::AnimationRenderWake => "渲染线程等待返回次数",
+            Self::AnimationSkipped => "动画跳过显示帧数",
+            Self::AnimationPaused => "动画暂停状态确认次数",
+            Self::AnimationCompleted => "动画有限循环结束次数",
             Self::CpuCacheHit => "CPU 缓存命中",
             Self::CpuCacheMiss => "CPU 缓存未命中",
             Self::GpuCacheHit => "GPU 缓存命中",
@@ -206,7 +252,7 @@ impl Counter {
 }
 
 impl Metric {
-    const ALL: [Self; 71] = [
+    const ALL: [Self; 77] = [
         Self::Startup,
         Self::D3dInitialization,
         Self::DeviceCreation,
@@ -278,6 +324,12 @@ impl Metric {
         Self::AnimationCompose,
         Self::AnimationOutput,
         Self::AnimationBackpressure,
+        Self::AnimationFirstOutput,
+        Self::AnimationFirstPresent,
+        Self::AnimationUpload,
+        Self::AnimationLateness,
+        Self::AnimationWorkerShutdown,
+        Self::AnimationOutputToPresent,
     ];
 
     fn index(self) -> usize {
@@ -353,11 +405,23 @@ impl Metric {
             Self::AnimationCompose => 68,
             Self::AnimationOutput => 69,
             Self::AnimationBackpressure => 70,
+            Self::AnimationFirstOutput => 71,
+            Self::AnimationFirstPresent => 72,
+            Self::AnimationUpload => 73,
+            Self::AnimationLateness => 74,
+            Self::AnimationWorkerShutdown => 75,
+            Self::AnimationOutputToPresent => 76,
         }
     }
 
     fn name(self) -> &'static str {
         match self {
+            Self::AnimationFirstOutput => "选择到动画首份 CPU 输出",
+            Self::AnimationFirstPresent => "选择到首个更新动画帧 Present 返回",
+            Self::AnimationUpload => "动画 GPU 上传提交",
+            Self::AnimationLateness => "动画 Deadline Lateness",
+            Self::AnimationWorkerShutdown => "关闭请求到动画 Worker 清理完成",
+            Self::AnimationOutputToPresent => "首份动画 CPU 输出接收到首个更新帧 Present 返回",
             Self::GifStructure => "GIF 完整块结构预检（不校验 LZW 内容）",
             Self::GifPoster => "GIF WIC 首帧与透明画布合成",
             Self::AnimationInit => "动画 Session 预检与 WIC 初始化",
@@ -485,7 +549,7 @@ struct Summary {
 /// 记录渲染与窗口生命周期中的计时样本。
 pub(crate) struct Metrics {
     samples: Vec<Samples>,
-    counters: [u64; 20],
+    counters: [u64; Counter::ALL.len()],
     slow_image_tasks: VecDeque<ImageTaskTrace>,
     slow_tile_views: VecDeque<String>,
     cpu_cache_bytes: u64,
@@ -503,7 +567,7 @@ impl Default for Metrics {
             samples: std::iter::repeat_with(Samples::default)
                 .take(Metric::ALL.len())
                 .collect(),
-            counters: [0; 20],
+            counters: [0; Counter::ALL.len()],
             slow_image_tasks: VecDeque::new(),
             slow_tile_views: VecDeque::new(),
             cpu_cache_bytes: 0,

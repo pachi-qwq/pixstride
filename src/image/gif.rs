@@ -467,6 +467,10 @@ pub(super) fn decode_poster(
         format: PixelFormat::Bgra8Premultiplied,
         stride,
         pixels,
+        gif_poster: Some(super::GifPoster {
+            frames: checked.info.frames,
+            delay_cs: checked.info.first.delay,
+        }),
         _charge: Some(charge),
     })
 }

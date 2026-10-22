@@ -5,7 +5,7 @@
       "id": "readme",
       "en": "README.md",
       "zh-CN": "README.zh-CN.md",
-      "revision": 11,
+      "revision": 12,
       "shared_literals": [
         "Windows 10/11 x64",
         "LICENSE-MIT",
@@ -77,7 +77,7 @@
       "id": "architecture",
       "en": "docs/en/architecture.md",
       "zh-CN": "docs/zh-CN/architecture.md",
-      "revision": 10,
+      "revision": 11,
       "shared_literals": [
         "16384",
         "1024",
@@ -92,7 +92,7 @@
       "id": "development",
       "en": "docs/en/development.md",
       "zh-CN": "docs/zh-CN/development.md",
-      "revision": 14,
+      "revision": 15,
       "shared_literals": [
         "3.11",
         "1.96.0",
@@ -130,7 +130,7 @@
       "id": "maintenance",
       "en": "docs/en/maintenance.md",
       "zh-CN": "docs/zh-CN/maintenance.md",
-      "revision": 5,
+      "revision": 6,
       "shared_literals": [
         "2026-10-18",
         "master",
@@ -246,7 +246,7 @@
       "id": "animation-worker",
       "en": "docs/en/stage-d1b1.md",
       "zh-CN": "docs/zh-CN/stage-d1b1.md",
-      "revision": 2,
+      "revision": 3,
       "shared_literals": [
         "ImageContent::GifAnimationV1",
         "512 MiB",
@@ -259,6 +259,23 @@
         "10013/10573/10573",
         "33,554,432",
         "701/852/1150",
+        "PIXSTRIDE_TEST_ROOT"
+      ]
+    },
+    {
+      "id": "animation-playback",
+      "en": "docs/en/stage-d1b2.md",
+      "zh-CN": "docs/zh-CN/stage-d1b2.md",
+      "revision": 1,
+      "shared_literals": [
+        "512 MiB",
+        "256 MiB",
+        "128 MiB",
+        "64 MiB",
+        "UpdateSubresource",
+        "Space",
+        "Frame Ordinal",
+        "Present",
         "PIXSTRIDE_TEST_ROOT"
       ]
     }

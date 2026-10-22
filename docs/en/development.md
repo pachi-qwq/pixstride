@@ -1,6 +1,6 @@
 [English](development.md) | [简体中文](../zh-CN/development.md)
 
-<!-- doc-id: development; revision: 14; status: animation-worker-review -->
+<!-- doc-id: development; revision: 15; status: animation-playback-review -->
 
 # Development status and checks
 
@@ -11,7 +11,8 @@ Stages A–C are merged. Stage C provides separately budgeted PNG streaming, dis
 and viewport rendering with zoom/pan. Its six owner-run Windows manual acceptance scenarios passed.
 See [Stage C](stage-c.md) for cache variables, build measurements, supported encodings, and manual checks.
 There is no public release. Stage D has merged EXIF 1–8 correction and static GIF posters. This branch
-adds a [background animation worker](stage-d1b1.md) for test consumers, without Viewer playback.
+adds [D1-b2 GIF playback](stage-d1b2.md) over the merged background Worker. Automated Windows
+checks pass; owner-run visual acceptance and PR merge are pending.
 Further Stage D scope remains subject to approval.
 
 ## Build and run
@@ -30,7 +31,7 @@ cargo run --release
 ```
 
 With no argument, the program displays the Stage A generated test textures. Pass one image path to open
-JPEG, PNG, BMP, or a static GIF first frame; `Ctrl+O` opens the native file dialog, Left/Right navigate the current directory,
+JPEG, PNG, BMP, or GIF (multi-frame playback in this branch, Space to pause/resume); `Ctrl+O` opens the native file dialog, Left/Right navigate the current directory,
 `F` selects Fit, and `1` selects 1:1 pixels. Eligible large PNGs use the Tile path; wheel zoom and
 left-drag pan are available on that path. On exit, stdout prints bounded timing samples and cache
 counters. The Release executable is `target/release/pixstride.exe`. Feature details and limits are in

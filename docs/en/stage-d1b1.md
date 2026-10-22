@@ -1,8 +1,12 @@
 [English](stage-d1b1.md) | [简体中文](../zh-CN/stage-d1b1.md)
 
-<!-- doc-id: animation-worker; revision: 2; status: ci-review -->
+<!-- doc-id: animation-worker; revision: 3; status: merged-history -->
 
 # D1-b1: background GIF frame production
+
+This page records the merged D1-b1 scope and its original measurements. The current local
+[D1-b2 branch](stage-d1b2.md) adds Renderer consumption and transfers the controller to that thread;
+the no-playback statements below describe the D1-b1 milestone, not the current branch.
 
 This branch adds a testable animation backend. The Viewer still displays the static GIF poster from
 [D1-a](stage-d1a.md). It does not play animations, create animation GPU resources, change input

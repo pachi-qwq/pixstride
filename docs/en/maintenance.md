@@ -1,6 +1,6 @@
 [English](maintenance.md) | [简体中文](../zh-CN/maintenance.md)
 
-<!-- doc-id: maintenance; revision: 5; status: active -->
+<!-- doc-id: maintenance; revision: 6; status: animation-playback-review -->
 
 # Repository maintenance and publication
 
@@ -162,5 +162,5 @@ checksums/SBOM/notices, and upload a draft release for owner review. Installatio
 update policy and release publishing require separate decisions. No application-release workflow is
 implemented in this documentation task.
 
-Repository initialization, protection, and the Stage A–C merges are complete. Stage D remains the next
-planned phase; release and signing policies require separate approval. No public Release has been published.
+Repository initialization, protection, and the Stage A–C merges are complete. Stage D has merged EXIF correction, GIF posters and the background animation Worker;
+local D1-b2 playback still awaits owner visual acceptance and review; release and signing policies require separate approval. No public Release has been published.

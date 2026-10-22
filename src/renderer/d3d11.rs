@@ -1,5 +1,8 @@
 //! 在专属线程中创建 D3D11 设备、Swap Chain 和测试纹理，并按需绘制。
 
+#[path = "animation.rs"]
+mod animation;
+
 #[cfg(test)]
 #[path = "gif_tests.rs"]
 mod gif_tests;
@@ -17,8 +20,8 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use windows::{
     Win32::{
+        Foundation::WAIT_OBJECT_0,
         Foundation::{HANDLE, HWND},
-        Foundation::{WAIT_EVENT, WAIT_OBJECT_0},
         Graphics::{
             Direct3D::{
                 D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL,
@@ -58,26 +61,49 @@ use crate::{
 };
 
 const TEST_TEXTURE_SIZE: u32 = 256;
-const WAIT_HANDLES: usize = 2;
 const VERTEX_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/test_vs.cso"));
 const PIXEL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/test_ps.cso"));
 
+#[cfg(test)]
 pub(crate) fn render_thread(hwnd_value: isize, shared: Arc<Shared>) -> Result<()> {
+    render_thread_with_animation(hwnd_value, shared, None)
+}
+
+/// 动画控制器由 UI 移交；Device/Context 与 GPU 帧资源仍只在此 Render Thread 创建和使用。
+pub(crate) fn render_thread_with_animation(
+    hwnd_value: isize,
+    shared: Arc<Shared>,
+    worker: Option<crate::image::animation::AnimationWorker>,
+) -> Result<()> {
     // 线程边界上只传递 HWND 的整数表示；UI 收到渲染线程完成消息之前一直持有并保持原窗口有效。
     let hwnd = HWND(hwnd_value as _);
     let render_thread_started = Instant::now();
     let init_started = Instant::now();
     let mut renderer =
         Renderer::new(hwnd, &shared, render_thread_started).context("初始化 D3D11 渲染器失败")?;
+    renderer.playback = worker.map(animation::Player::new);
+    renderer.animation_owner = Some(Arc::clone(&shared));
     let init_elapsed = init_started.elapsed();
     shared.record(Metric::D3dInitialization, init_elapsed);
     println!("D3D11 initialization: {} us", init_elapsed.as_micros());
     let result = renderer.run(&shared);
+    drop(renderer);
     shared.set_gpu_cache_bytes(0);
     result
 }
 
 struct Renderer {
+    #[cfg(test)]
+    batch_gate: Option<(
+        std::sync::mpsc::SyncSender<()>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
+    animation_owner: Option<Arc<Shared>>,
+    playback: Option<animation::Player>,
+    animation_gpu: animation::GpuFrames,
+    gif_posters: HashMap<SourceIdentity, crate::image::GifPoster>,
+    poster_presented_at: Option<Instant>,
+    selection_started: Instant,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     swap_chain: IDXGISwapChain2,
@@ -184,6 +210,14 @@ impl Renderer {
         shared.record(Metric::TextureUpload, texture_upload_started.elapsed());
 
         let mut renderer = Self {
+            #[cfg(test)]
+            batch_gate: None,
+            animation_owner: None,
+            playback: None,
+            animation_gpu: animation::GpuFrames::default(),
+            gif_posters: HashMap::new(),
+            poster_presented_at: None,
+            selection_started: render_thread_started,
             device,
             context,
             swap_chain,
@@ -226,8 +260,18 @@ impl Renderer {
 
         loop {
             let wait_result = self.wait_for_work(shared, needs_render)?;
+            shared.increment(crate::diagnostics::Counter::AnimationRenderWake);
             if wait_result == WaitResult::Work {
                 let work = shared.take_pending();
+                #[cfg(test)]
+                if work.image.is_some() && work.gpu_probe.is_some() {
+                    if let Some((entered, release)) = self.batch_gate.take() {
+                        let _ = entered.send(());
+                        release
+                            .recv_timeout(std::time::Duration::from_secs(5))
+                            .context("渲染批次测试门控未放行")?;
+                    }
+                }
                 if work.shutdown {
                     break;
                 }
@@ -237,7 +281,7 @@ impl Renderer {
                     self.gpu_cache_budget = 0;
                     self.evict_gpu_cache();
                     self.gpu_cache_budget = budget;
-                    shared.set_gpu_cache_bytes(self.gpu_cache_bytes);
+                    shared.set_gpu_cache_bytes(self.gpu_cache_bytes + self.animation_gpu.bytes());
                 }
                 if work.cancel_preloads {
                     self.pending_preloads.clear();
@@ -273,10 +317,12 @@ impl Renderer {
                     };
                     shared.record(metric, delay);
                 }
-                if let Some((generation, image, cpu_cache_hit)) = work.image {
-                    if !shared.can_present_image_generation(generation) {
-                        continue;
-                    }
+                // 松键可能在 take_pending 后使进度图片过期。只丢弃该图片，不能跳过同批次
+                // 最新 GPU 探测；否则 UI 永远等不到 Miss，WIC 的最终目标也不会入队。
+                if let Some((generation, image, cpu_cache_hit)) = work
+                    .image
+                    .filter(|(generation, _, _)| shared.can_present_image_generation(*generation))
+                {
                     // 当前请求变更后，旧选择的 GPU 预加载不再有价值。
                     self.pending_preloads.clear();
                     self.pending_selection_present = Some((
@@ -287,8 +333,21 @@ impl Renderer {
                     if let Some(tiles) = self.tiles.as_mut() {
                         tiles.clear();
                     }
-                    self.upload_image(image, true, shared)?;
-                    self.selection_generation = Some(generation);
+                    self.selection_started = work.snapshot.requested_at;
+                    self.poster_presented_at = None;
+                    if let Err(error) = self.upload_image(image, true, shared) {
+                        self.pending_selection_present = None;
+                        // SAFETY: Device 仍归本 Render Thread；设备移除继续进入统一退出路径。
+                        if unsafe { self.device.GetDeviceRemovedReason() }.is_err() {
+                            return Err(error);
+                        }
+                        shared.publish_gpu_probe_reply(GpuProbeReply::AnimationError {
+                            generation,
+                            message: format!("图片上传失败：{error:#}"),
+                        });
+                    } else {
+                        self.selection_generation = Some(generation);
+                    }
                 }
                 for image in work.preloads {
                     if !self
@@ -327,6 +386,8 @@ impl Renderer {
                             shared.record(Metric::RequestToRender, delay);
                             shared.record(Metric::ImageRequestToRender, delay);
                             self.selection_generation = Some(selection.generation);
+                            self.selection_started = selection.requested_at;
+                            self.poster_presented_at = None;
                             snapshot.requested_at = selection.requested_at;
                             snapshot.request_origin = RequestOrigin::ImageReady;
                             shared.publish_gpu_probe_reply(GpuProbeReply::Hit {
@@ -357,9 +418,20 @@ impl Renderer {
                 needs_render = snapshot.width > 0
                     && snapshot.height > 0
                     && (needs_render || work.redraw || probe_hit);
+                needs_render |= self.pump_animation(shared, &snapshot)?;
                 if !needs_render {
                     self.upload_one_preload(shared)?;
                 }
+                continue;
+            }
+
+            if wait_result == WaitResult::Animation || wait_result == WaitResult::Deadline {
+                if wait_result == WaitResult::Deadline {
+                    if let Some(timer) = self.playback.as_mut().and_then(|p| p.timer.as_mut()) {
+                        timer.fired();
+                    }
+                }
+                needs_render |= self.pump_animation(shared, &snapshot)?;
                 continue;
             }
 
@@ -370,11 +442,17 @@ impl Renderer {
                     && self
                         .selection_generation
                         .is_some_and(|generation| !shared.can_present_image_generation(generation));
-                if !stale_candidate {
+                if !stale_candidate
+                    && self
+                        .playback
+                        .as_ref()
+                        .is_none_or(|p| p.pending_valid(shared))
+                {
                     self.draw(&snapshot, shared)?;
                 }
                 needs_render = false;
             }
+            needs_render |= self.pump_animation(shared, &snapshot)?;
             self.upload_one_preload(shared)?;
         }
 
@@ -387,23 +465,35 @@ impl Renderer {
         Ok(())
     }
 
-    fn wait_for_work(&self, shared: &Shared, needs_render: bool) -> Result<WaitResult> {
+    fn wait_for_work(&mut self, shared: &Shared, needs_render: bool) -> Result<WaitResult> {
         let wake = HANDLE(shared.wake_event() as _);
-        let (handles, count) = if needs_render && self.render_target.is_some() {
-            ([wake, self.frame_latency_handle], WAIT_HANDLES as u32)
-        } else {
-            ([wake, HANDLE::default()], 1)
-        };
-
-        // SAFETY: 两个句柄在调用期间都有效。唤醒事件在本线程 join 后才关闭；帧延迟句柄由 DXGI 所有，且 Swap Chain 活得更久。
-        let result = unsafe { WaitForMultipleObjects(&handles[..count as usize], false, INFINITE) };
-        if result == WAIT_OBJECT_0 {
-            Ok(WaitResult::Work)
-        } else if count == WAIT_HANDLES as u32 && result == WAIT_EVENT(WAIT_OBJECT_0.0 + 1) {
-            Ok(WaitResult::FrameReady)
-        } else {
-            Err(Error::from_thread()).context("等待渲染事件或帧就绪失败")
+        let mut handles = vec![wake];
+        let mut targets = vec![WaitResult::Work];
+        if let Some(player) = &mut self.playback {
+            if let Some(ready) = player.ready() {
+                handles.push(ready);
+                targets.push(WaitResult::Animation);
+            }
+            let deadline = player.deadline();
+            if let Some(timer) = &mut player.timer {
+                if let Some(timer) = timer.set(self.render_thread_started, deadline)? {
+                    handles.push(timer);
+                    targets.push(WaitResult::Deadline);
+                }
+            }
         }
+        if needs_render && self.render_target.is_some() {
+            handles.push(self.frame_latency_handle);
+            targets.push(WaitResult::FrameReady);
+        }
+
+        // SAFETY: Shared 的工作事件、Player 保活的 Worker/Timer 和 DXGI 句柄均活到本次等待返回。
+        // Render Thread 独占计时器和 Swap Chain，UI 在 Render join 后才释放工作事件。
+        let result = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
+        targets
+            .get(result.0.wrapping_sub(WAIT_OBJECT_0.0) as usize)
+            .copied()
+            .ok_or_else(|| anyhow!(Error::from_thread()).context("等待渲染事件、动画或帧就绪失败"))
     }
 
     fn resize_resources(
@@ -489,7 +579,9 @@ impl Renderer {
                 .get(key)
                 .context("当前图片纹理不在 GPU 缓存中")?;
             (
-                srv.clone(),
+                self.animation_gpu
+                    .view(key, self.selection_generation)
+                    .unwrap_or_else(|| srv.clone()),
                 self.current_dimensions.0,
                 self.current_dimensions.1,
             )
@@ -569,8 +661,12 @@ impl Renderer {
             .selection_generation
             .filter(|generation| Some(*generation) != self.presented_generation)
         {
+            self.poster_presented_at = Some(Instant::now());
             shared.record_presented_generation(generation);
             self.presented_generation = Some(generation);
+        }
+        if let Some(player) = &mut self.playback {
+            player.presented(self.render_thread_started, shared);
         }
         if self.current_image.is_some() && !self.first_image_present_reported {
             shared.record(Metric::ImageFirstPresent, snapshot.requested_at.elapsed());
@@ -617,7 +713,7 @@ impl Renderer {
                 self.current_image = Some(image.source.clone());
                 self.current_dimensions = (image.width, image.height);
                 self.evict_gpu_cache();
-                shared.set_gpu_cache_bytes(self.gpu_cache_bytes);
+                shared.set_gpu_cache_bytes(self.gpu_cache_bytes + self.animation_gpu.bytes());
             }
             self.touch_gpu(&image.source);
             return Ok(());
@@ -633,6 +729,15 @@ impl Renderer {
         }
         let started = Instant::now();
         let byte_cost = u64::from(image.stride) * u64::from(image.height);
+        self.animation_gpu.collect(&self.context)?;
+        self.evict_gpu_cache_for(byte_cost);
+        anyhow::ensure!(
+            byte_cost
+                .saturating_add(self.gpu_cache_bytes)
+                .saturating_add(self.animation_gpu.bytes())
+                <= self.gpu_cache_budget,
+            "GPU 共享缓存额度不足"
+        );
         let desc = D3D11_TEXTURE2D_DESC {
             Width: image.width,
             Height: image.height,
@@ -672,6 +777,9 @@ impl Renderer {
         let key = image.source.clone();
         self.image_cache
             .insert(key.clone(), (view, byte_cost, image.width, image.height));
+        if let Some(poster) = image.gif_poster {
+            self.gif_posters.insert(key.clone(), poster);
+        }
         self.image_lru.push_back(key.clone());
         self.gpu_cache_bytes = self.gpu_cache_bytes.saturating_add(byte_cost);
         if current {
@@ -679,7 +787,7 @@ impl Renderer {
             self.current_dimensions = (image.width, image.height);
         }
         self.evict_gpu_cache();
-        shared.set_gpu_cache_bytes(self.gpu_cache_bytes);
+        shared.set_gpu_cache_bytes(self.gpu_cache_bytes + self.animation_gpu.bytes());
         shared.record(Metric::ImageTextureUpload, started.elapsed());
         Ok(())
     }
@@ -687,7 +795,13 @@ impl Renderer {
     /// 每次最多上传一个预加载纹理；当前帧先 Present，随后再服务其余预加载。
     fn upload_one_preload(&mut self, shared: &Shared) -> Result<()> {
         if let Some(image) = self.pending_preloads.pop_front() {
-            self.upload_image(image, false, shared)?;
+            if let Err(error) = self.upload_image(image, false, shared) {
+                // SAFETY: 仍持有本线程 Device；设备移除不吞掉，资源预算不足只放弃这次预加载。
+                if unsafe { self.device.GetDeviceRemovedReason() }.is_err() {
+                    return Err(error);
+                }
+                eprintln!("Skipping GPU preload: {error:#}");
+            }
             if !self.pending_preloads.is_empty() {
                 shared.wake_render_thread();
             }
@@ -701,8 +815,17 @@ impl Renderer {
     }
 
     fn evict_gpu_cache(&mut self) {
+        self.evict_gpu_cache_for(0);
+    }
+
+    fn evict_gpu_cache_for(&mut self, additional: u64) {
         let mut skipped_current = false;
-        while self.gpu_cache_bytes > self.gpu_cache_budget {
+        while self
+            .gpu_cache_bytes
+            .saturating_add(self.animation_gpu.bytes())
+            .saturating_add(additional)
+            > self.gpu_cache_budget
+        {
             let Some(key) = self.image_lru.pop_front() else {
                 break;
             };
@@ -716,6 +839,7 @@ impl Renderer {
             }
             skipped_current = false;
             if let Some((_, cost, _, _)) = self.image_cache.remove(&key) {
+                self.gif_posters.remove(&key);
                 self.gpu_cache_bytes = self.gpu_cache_bytes.saturating_sub(cost);
             }
         }
@@ -738,10 +862,45 @@ fn fit_viewport(
     (width * scale, height * scale)
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum WaitResult {
     Work,
     FrameReady,
+    Animation,
+    Deadline,
+}
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        if let Some(mut player) = self.playback.take() {
+            player.cancel();
+            player.worker.shutdown();
+            let usage = player.worker.memory_usage();
+            let state = player.worker.snapshot();
+            if state.worker_started {
+                println!(
+                    "Animation CPU peak={} current={} credits={} credit_peak={} queued={} produced={} metadata_present={}; GPU payload peak={} current={} (retired resources remain charged)",
+                    usage.animation_peak,
+                    usage.animation,
+                    state.credits,
+                    state.credit_peak,
+                    state.queued,
+                    state.produced,
+                    state.metadata.is_some(),
+                    self.animation_gpu.peak,
+                    self.animation_gpu.bytes()
+                );
+            }
+            if let Some(owner) = &self.animation_owner {
+                owner.retire_animation_worker(player.worker);
+            }
+        }
+        // SAFETY: 全部 Context/GPU 资源仍在其所属 Render Thread；先解除绑定，再由字段析构释放 COM。
+        unsafe {
+            self.context.ClearState();
+            self.context.Flush();
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

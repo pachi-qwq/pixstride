@@ -18,7 +18,7 @@ pub(super) fn request(
         background,
     }
 }
-pub(super) fn wait_state(
+pub(crate) fn wait_state(
     worker: &AnimationWorker,
     predicate: impl Fn(&Snapshot) -> bool,
 ) -> Snapshot {
@@ -35,7 +35,7 @@ pub(super) fn wait_state(
         s = core.changed.wait_timeout(s, remaining).unwrap().0;
     }
 }
-pub(super) fn next(worker: &AnimationWorker, key: SessionKey) -> Result<Arc<FrameOutput>> {
+pub(crate) fn next(worker: &AnimationWorker, key: SessionKey) -> Result<Arc<FrameOutput>> {
     let at = Instant::now();
     loop {
         let (s, frame) = worker.poll(key);
@@ -52,7 +52,7 @@ pub(super) fn next(worker: &AnimationWorker, key: SessionKey) -> Result<Arc<Fram
         unsafe { WaitForSingleObject(handle, 5000) };
     }
 }
-pub(super) fn stop(worker: &mut AnimationWorker) -> Result<Duration> {
+pub(crate) fn stop(worker: &mut AnimationWorker) -> Result<Duration> {
     let at = Instant::now();
     worker.shutdown();
     if let Some(handle) = worker.done_handle() {

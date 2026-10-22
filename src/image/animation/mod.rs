@@ -4,11 +4,11 @@
 mod compose;
 mod decoder;
 #[cfg(test)]
-mod fixture;
+pub(crate) mod fixture;
 #[cfg(test)]
 mod performance;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use super::{
     SourceIdentity,
@@ -37,6 +37,10 @@ pub(crate) struct SessionKey {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum RestoreBackground {
     Transparent,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "保留已验证的显式背景策略；Viewer 沿用透明画布")
+    )]
     LogicalScreen,
 }
 /// 消费者请求的扫描轮数独立于 GIF 原始 Loop。None 持续生产，直至取消或关闭。
@@ -163,6 +167,24 @@ struct Core {
     #[cfg(test)]
     fail_init: bool,
 }
+
+/// UI 只观察资源清理完成；Arc 保活事件，不持有 COM、GPU 或 HWND。
+#[derive(Clone)]
+pub(crate) struct Completion(Arc<Core>);
+impl Completion {
+    /// 返回借用句柄；观察者必须活到 Windows 等待返回，不能关闭该句柄。
+    pub(crate) fn handle(&self) -> HANDLE {
+        self.0.done.handle()
+    }
+    /// done 置位后再核对最终 Credit 和计费；控制器析构时的快照还可能包含在途 WIC。
+    pub(crate) fn resources(&self) -> (super::memory::Usage, Snapshot) {
+        (self.0.pool.usage(), snapshot(&self.0.lock()))
+    }
+    /// 线程清理完成后输出完整 Worker 统计，避免遗漏退出时仍在完成的同步调用。
+    pub(crate) fn report(&self) -> String {
+        self.0.lock().metrics.report()
+    }
+}
 impl Core {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state
@@ -272,6 +294,19 @@ pub(crate) struct AnimationWorker {
     )>,
 }
 impl AnimationWorker {
+    /// 仅诊断：在真实 WIC 局部帧调用返回后门控发布，隔离慢 Worker 与 UI/Renderer 的生命周期。
+    #[cfg(test)]
+    pub(crate) fn hold_first_frame_for_test(
+        &mut self,
+    ) -> (
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (entered, notice) = std::sync::mpsc::sync_channel(1);
+        let (release, gate) = std::sync::mpsc::sync_channel(1);
+        self.initial_gate = Some((entered, gate));
+        (notice, release)
+    }
     pub(crate) fn new(pool: CpuMemory) -> Self {
         Self {
             pool,
@@ -409,13 +444,36 @@ impl AnimationWorker {
         }
         Ok(true)
     }
+    /// UI 收到 done 后回收线程句柄；done 在 COM、画布和队列清理后置位，不等待在途 WIC。
+    pub(crate) fn join_completed(&mut self) -> Result<bool> {
+        if let Some(core) = &self.core {
+            // SAFETY: Core 持有无名事件；零超时只查询完成状态，不阻塞 UI 等待解码。
+            if unsafe {
+                windows::Win32::System::Threading::WaitForSingleObject(core.done.handle(), 0)
+            } != windows::Win32::Foundation::WAIT_OBJECT_0
+            {
+                return Ok(false);
+            }
+        }
+        if let Some(thread) = self.thread.take() {
+            // done 后只剩线程函数返回和 Rust 线程尾声；UI 保活 Core，不在此析构外部资源。
+            thread
+                .join()
+                .map_err(|_| anyhow::anyhow!("动画 Worker panic"))?;
+        }
+        Ok(true)
+    }
     /// ready/done 是借用句柄；使用者必须保证控制器或其 Core 仍存活，不得关闭句柄。
     pub(crate) fn ready_handle(&self) -> Option<HANDLE> {
         self.core.as_ref().map(|c| c.ready.handle())
     }
     /// 整个 Worker 的退出事件；单个 Session Completed 后线程仍可复用，不置位此事件。
+    #[cfg(test)]
     pub(crate) fn done_handle(&self) -> Option<HANDLE> {
         self.core.as_ref().map(|c| c.done.handle())
+    }
+    pub(crate) fn completion(&self) -> Option<Completion> {
+        self.core.as_ref().map(|c| Completion(Arc::clone(c)))
     }
     /// 消费者在提交前复核；Completed 帧仍有效，Failed、取消和替换后的帧无效。
     pub(crate) fn is_current(&self, frame: &FrameOutput) -> bool {
@@ -468,6 +526,7 @@ impl AnimationWorker {
         self.pool.usage()
     }
     /// 汇总有界计时样本；仅诊断/退出时格式化，逐帧路径不写日志。
+    #[cfg(test)]
     pub(crate) fn report(&self) -> String {
         self.core
             .as_ref()
@@ -479,7 +538,7 @@ impl Drop for AnimationWorker {
     fn drop(&mut self) {
         self.shutdown();
         // 若 WIC 尚未返回，仅分离这一个线程。它独占 COM 并持有 Core/事件/额度的 Arc，
-        // 不访问 ImageLoader、HWND 或此控制器。未来 UI 必须先等 done，再调用 try_join。
+        // 不访问 ImageLoader、HWND 或此控制器。正常流程由 UI 等 done 后调用 join_completed。
         let _ = self.try_join();
     }
 }
