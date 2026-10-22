@@ -246,7 +246,7 @@
       "id": "animation-worker",
       "en": "docs/en/stage-d1b1.md",
       "zh-CN": "docs/zh-CN/stage-d1b1.md",
-      "revision": 1,
+      "revision": 2,
       "shared_literals": [
         "ImageContent::GifAnimationV1",
         "512 MiB",

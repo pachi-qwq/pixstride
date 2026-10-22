@@ -1,6 +1,6 @@
 [English](stage-d1b1.md) | [简体中文](../zh-CN/stage-d1b1.md)
 
-<!-- doc-id: animation-worker; revision: 1; status: local-review -->
+<!-- doc-id: animation-worker; revision: 2; status: ci-review -->
 
 # D1-b1: background GIF frame production
 
@@ -122,7 +122,7 @@ references can outlive worker exit and remain charged until their final release.
 
 ## Verification on Windows
 
-The local default suite passes 86 tests; 26 opt-in probes are ignored by that default run. Animation
+The local default suite passes 87 tests; 26 opt-in probes are ignored by that default run. Animation
 tests use manually specified expected pixels, independent of the compositor: 80 outputs / 960 pixel
 positions cover Disposal 0–3, local palettes, transparency, two passes and four raw Loop variants.
 Additional cases cover GIF87a without GCE, first-frame offsets, background alternatives, delay 65535,
@@ -136,6 +136,31 @@ large-PNG Viewer; Tile GPU readback. Existing static GPU texture reuse passed; T
 17,425 pixels including edges. The large-image regression uses a generated 20000 × 65 PNG and a
 dedicated test cache. No private extreme image or its cache was accessed. Window probes exercise
 Win32 APIs; this is not a new human visual acceptance or animation playback test.
+
+### Initial CI failure and deterministic repair
+
+The [initial Rust run](https://github.com/pachi-qwq/pixstride/actions/runs/39782121631) on
+`4631d82a5db95c16fea07cc3f80f3b60d38419c5` passed 85 tests and failed
+`animation_failure_discards_queued_frames_and_invalidates_held_output`. After five seconds its snapshot
+was Running, with three outputs produced, two outstanding Credits and one queued frame. Other WIC
+tests passed. The runner used Windows Server 2025 / Rust 1.99.1; local tests used Windows / Rust 1.96.0.
+The log provides no evidence that COM initialization, fixture collisions or the Node.js warning caused
+this failure.
+
+The test sampled remaining quota after receiving two outputs. Publishing an output does not imply
+the worker has destroyed its local patch. A deterministic allocation test shows that releasing a
+16-byte second patch and a 48-byte output after that snapshot leaves enough space for the next
+8-byte patch and 48-byte output. Waiting for Failed was therefore not guaranteed. This ordering is
+consistent with the CI snapshot; the log does not trace the exact instruction schedule.
+
+The repaired test uses existing post-CopyPixels gates to hold the second frame before composition,
+then fills the quota while pixel ownership is stable. It separately checks a queued first output and
+a consumer-held first output. It waits for failure plus the expected Credit count, since queue
+destruction happens outside the control mutex. The failure reason, stale-output rejection and final
+byte/Credit release are asserted. No production code, timeout, global budget or workflow was changed.
+The repaired target passed 512 repetitions across eight concurrent processes; 32 complete suites,
+each with 16 test threads and up to four concurrent processes, also passed. The original target had
+passed 128 local repetitions, illustrating why a passing stress run alone cannot establish ordering.
 
 ### Measured animation workload
 

@@ -559,22 +559,80 @@ fn animation_failure_discards_queued_frames_and_invalidates_held_output() -> Res
     let dir = Directory::new()?;
     let path = dir.0.join("pressure.gif");
     write(&path, [4, 3], &sample(), None)?;
+    for consume_first in [false, true] {
+        let pool = CpuMemory::new(4096);
+        let mut worker = AnimationWorker::new(pool.clone());
+        let (entered, started) = std::sync::mpsc::sync_channel(1);
+        let (release, finish) = std::sync::mpsc::channel();
+        worker.initial_gate = Some((entered, finish));
+        let key = worker.start(request(
+            path.clone(),
+            1,
+            None,
+            RestoreBackground::Transparent,
+        ))?;
+        started.recv_timeout(Duration::from_secs(5))?;
+        // 第一帧仍在既有 CopyPixels 后门控中，先为第二帧安放门控，避免抢先跑过检查点。
+        let (second_entered, second_started) = std::sync::mpsc::sync_channel(1);
+        let (second_release, second_finish) = std::sync::mpsc::channel();
+        worker.core.as_ref().unwrap().lock().gate = Some((second_entered, second_finish));
+        release.send(())?;
+        second_started.recv_timeout(Duration::from_secs(5))?;
+        assert_eq!(worker.snapshot().produced, 1);
+        assert_eq!(worker.snapshot().credits, 2);
+        let held = if consume_first {
+            Some(next(&worker, key)?)
+        } else {
+            assert_eq!(worker.snapshot().queued, 1);
+            None
+        };
+        // Worker 停在第二帧合成前，画布、局部帧和第一份输出都不再变化。
+        // 仅“收到输出”不能保证上一份局部帧已析构；必须在稳定分配边界注入压力。
+        let pressure = pool.reserve(4096 - pool.usage().total, false)?;
+        assert_eq!(pool.usage().total, 4096);
+        second_release.send(())?;
+        // Failed 先失效输出，队列像素随后在锁外析构；等 Credit 通知确认清理完成。
+        let failed = wait_state(&worker, |s| {
+            s.phase == Phase::Failed && s.credits == u8::from(consume_first)
+        });
+        assert!(failed.error.as_ref().unwrap().contains("CPU"));
+        assert!(worker.poll(key).1.is_none());
+        assert_eq!(worker.snapshot().queued, 0);
+        if let Some(frame) = &held {
+            assert!(!worker.is_current(frame));
+            assert_eq!(worker.snapshot().credits, 1);
+            assert_eq!(pool.usage().animation, 48);
+        } else {
+            assert_eq!(worker.snapshot().credits, 0);
+            assert_eq!(pool.usage().animation, 0);
+        }
+        drop(pressure);
+        drop(held);
+        assert_eq!(pool.usage().total, 0);
+        stop(&mut worker)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn animation_pressure_sample_can_be_invalidated_by_patch_release() -> Result<()> {
     let pool = CpuMemory::new(4096);
-    let mut worker = AnimationWorker::new(pool.clone());
-    let key = worker.start(request(path, 1, None, RestoreBackground::Transparent))?;
-    let one = next(&worker, key)?;
-    let held = next(&worker, key)?;
-    // 只制造额度压力，不分配大内存；像素的实际分配仍逐份计费。
+    let canvas = Pixels::new(&pool, 48)?;
+    let first_output = Pixels::new(&pool, 48)?;
+    let second_output = Pixels::new(&pool, 48)?;
+    let second_patch = Pixels::new(&pool, 16)?;
+    // 重现与原 CI 快照一致的顺序：发布第二份输出时局部帧仍存活，测试据此填满额度。
     let pressure = pool.reserve(4096 - pool.usage().total, false)?;
-    drop(one);
-    wait_state(&worker, |s| s.phase == Phase::Failed);
-    assert!(!worker.is_current(&held));
-    assert!(worker.poll(key).1.is_none());
-    assert_eq!(worker.snapshot().queued, 0);
-    drop(pressure);
-    drop(held);
+    assert_eq!(pool.usage().total, 4096);
+    drop(second_patch);
+    drop(first_output);
+    // 释放共 64 字节后，第三帧的 8 字节局部帧和 48 字节输出都能成功分配。
+    // 因此原测试等待 Failed 并不成立；此处额度和分配器的行为本来就是正确的。
+    let third_patch = Pixels::new(&pool, 8)?;
+    let third_output = Pixels::new(&pool, 48)?;
+    assert_eq!(pool.usage().total, 4088);
+    drop((canvas, second_output, third_patch, third_output, pressure));
     assert_eq!(pool.usage().total, 0);
-    stop(&mut worker)?;
     Ok(())
 }
 
