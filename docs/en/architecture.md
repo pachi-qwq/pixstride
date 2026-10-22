@@ -1,12 +1,13 @@
 [English](architecture.md) | [简体中文](../zh-CN/architecture.md)
 
-<!-- doc-id: architecture; revision: 9; status: active -->
+<!-- doc-id: architecture; revision: 10; status: active -->
 
 # Architecture and implementation scope
 
 Pixstride targets Windows 10/11 x64 with Rust Stable, Win32/windows-rs, D3D11, and DXGI Flip Model
 presentation. Stages A–C are merged. Stage C's static-PNG Tile path passed the owner's six Windows
-manual acceptance scenarios; later formats remain proposals. This page does not reproduce the early internal design drafts.
+manual acceptance scenarios. D1-a static GIF posters and the EXIF 5/7 fix are also merged; other
+format extensions remain proposals. This page does not reproduce the early internal design drafts.
 
 ## Stage A implementation
 
@@ -116,6 +117,19 @@ or an early complete preview. Disk write performance, sampled-source false negat
 disk exhaustion, driver hangs, and historical viewport-tail attribution remain review risks. The owner
 has accepted real desktop gestures; that acceptance does not establish long-duration stability or failure recovery.
 
+## D1-b1 background animation boundary
+
+This branch adds one lazy MTA animation Worker and a two-Credit CPU frame interface; the Viewer still
+uses its static GIF poster. The static WIC/GPU fast path and Stage C path retain their execution models.
+Animation and static pixel owners share a 512 MiB CPU ledger; animation may consume at most 256 MiB
+of it, including canvas, local patch, saved region and outputs. Arc-held pixels remain charged after
+cache eviction. WIC internal memory is outside this pixel ledger. GPU budgets are unchanged.
+
+The worker owns all animation COM and composition state. Selection Generation, Session ID and Frame
+Ordinal have distinct lifetimes. Cancel/replacement invalidates output immediately; Credit and pixel
+charges return on final ownership release. No clock, animation GPU resource or Renderer wait-loop
+change is included. See [D1-b1](stage-d1b1.md) for cancellation, delayed WIC exit and measured limits.
+
 ## Completed stage scope and deferred work
 
 | Stage | Implemented scope or planned candidates | Reserve or defer |
@@ -123,9 +137,9 @@ has accepted real desktop gestures; that acceptance does not establish long-dura
 | A | Win32 lifecycle, one render owner, latest snapshot, simple sequence/Device Epoch if needed, embedded test texture, QPC events, resize/shutdown/recovery tests. | No file navigation, decoder pool, CPU/GPU image cache, IPC, Job Object, Color Cache, or Tile scheduler. |
 | B | Merged WIC JPEG/PNG/BMP decoding, checked pixel layout, source identity, one WIC worker plus one source-validation thread, CPU/GPU LRU caches, directory navigation, adjacent preloads, and stale-generation rejection. GUI acceptance and rapid-navigation retesting passed. | Keep one WIC worker, bounded source validation, and a two-image preload window; defer a general priority framework, ordinary-image panning, and pooled Texture allocator until measured. |
 | C | Merged sequential large-PNG streaming, preview, disk Tile Cache/Pyramid, visible-region rendering, zoom/pan, and resource-failure regressions; six owner-run GUI scenarios passed. | Progressive preview and comprehensive Device Lost/resource-exhaustion/stability validation remain open; worker IPC and Job Object isolation require evidence, with no stable plugin or IPC ABI. |
-| D (planned) | Existing candidates: per-format capabilities, animation, basic ICC, configurable input and comic reading; scope is not finalized. | Add Color Key/derived caches only with a tested color path; HDR and complex filters remain later proposals. |
+| D (partial) | Merged EXIF 5/7 correction and static GIF posters; this branch adds a tested background frame producer. | Playback, further formats, basic ICC, configurable input and comic reading require separate approval. Add derived color caches only with a tested color path; HDR remains deferred. |
 
-Stages A–C are complete; Stage D is the next planned phase and requires separate approval. Existing
+Stages A–C are complete; further Stage D work requires separate approval. Existing
 pixel-layout, cancellation, budget-failure, and decoder-capability boundaries do not authorize extra runtime
 services or counters. Each later Generation must
 have one owner and a distinct invalidation reason before it is added.

@@ -1,12 +1,13 @@
 [English](../en/stage-d1a.md) | [简体中文](stage-d1a.md)
 
-<!-- doc-id: gif-poster; revision: 4; status: pr-review -->
+<!-- doc-id: gif-poster; revision: 5; status: merged -->
 
 # D1-a：GIF 静态首帧
 
-本分支为基本 GIF87a/GIF89a 文件实现静态首帧图（poster）：将第一个图像帧按偏移合成到逻辑画布
+已合并的 [PR #7](https://github.com/pachi-qwq/pixstride/pull/7) 为基本 GIF87a/GIF89a 文件实现静态首帧图（poster）：将第一个图像帧按偏移合成到逻辑画布
 （Logical Screen），后续帧不改变结果。本轮不实现动画、播放时钟、Loop 策略、暂停操作或动画缓存预留。
-EXIF 5/7 修复已通过 [PR #6](https://github.com/pachi-qwq/pixstride/pull/6) 合并，本分支也已包含该修复。
+EXIF 5/7 修复已通过 [PR #6](https://github.com/pachi-qwq/pixstride/pull/6) 合并，main 已包含该修复。
+后续后台帧生产见 [D1-b1](stage-d1b1.md)，Viewer 仍只显示静态首帧。
 
 ## 解码与缓存契约
 

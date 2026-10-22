@@ -5,7 +5,7 @@
       "id": "readme",
       "en": "README.md",
       "zh-CN": "README.zh-CN.md",
-      "revision": 10,
+      "revision": 11,
       "shared_literals": [
         "Windows 10/11 x64",
         "LICENSE-MIT",
@@ -77,7 +77,7 @@
       "id": "architecture",
       "en": "docs/en/architecture.md",
       "zh-CN": "docs/zh-CN/architecture.md",
-      "revision": 9,
+      "revision": 10,
       "shared_literals": [
         "16384",
         "1024",
@@ -92,7 +92,7 @@
       "id": "development",
       "en": "docs/en/development.md",
       "zh-CN": "docs/zh-CN/development.md",
-      "revision": 13,
+      "revision": 14,
       "shared_literals": [
         "3.11",
         "1.96.0",
@@ -223,7 +223,7 @@
       "id": "gif-poster",
       "en": "docs/en/stage-d1a.md",
       "zh-CN": "docs/zh-CN/stage-d1a.md",
-      "revision": 4,
+      "revision": 5,
       "shared_literals": [
         "GIF87a/GIF89a",
         "ImageContent::GifPosterV1",
@@ -239,6 +239,26 @@
         "167",
         "8 KiB",
         "ad1df3692d449dba87c0fa93baecd88d5f4f0172",
+        "PIXSTRIDE_TEST_ROOT"
+      ]
+    },
+    {
+      "id": "animation-worker",
+      "en": "docs/en/stage-d1b1.md",
+      "zh-CN": "docs/zh-CN/stage-d1b1.md",
+      "revision": 2,
+      "shared_literals": [
+        "ImageContent::GifAnimationV1",
+        "512 MiB",
+        "256 MiB",
+        "128 MiB",
+        "64 MiB",
+        "3C + P + R",
+        "17,425",
+        "693/943/1035",
+        "10013/10573/10573",
+        "33,554,432",
+        "701/852/1150",
         "PIXSTRIDE_TEST_ROOT"
       ]
     }

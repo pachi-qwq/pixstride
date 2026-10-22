@@ -122,7 +122,8 @@ unsafe extern "system" {
         size: u32,
     ) -> i32;
 }
-fn memory(label: &str) -> Result<()> {
+/// 测试诊断复用的进程内存采样；包含 WIC、DLL、allocator 和测试框架。
+pub(crate) fn memory(label: &str) -> Result<()> {
     let mut m = Memory {
         cb: std::mem::size_of::<Memory>() as u32,
         ..Default::default()

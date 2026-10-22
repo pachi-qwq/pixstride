@@ -99,6 +99,11 @@ pub(crate) enum Metric {
     TileViewDispatch,
     GifStructure,
     GifPoster,
+    AnimationInit,
+    AnimationDecode,
+    AnimationCompose,
+    AnimationOutput,
+    AnimationBackpressure,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -201,7 +206,7 @@ impl Counter {
 }
 
 impl Metric {
-    const ALL: [Self; 66] = [
+    const ALL: [Self; 71] = [
         Self::Startup,
         Self::D3dInitialization,
         Self::DeviceCreation,
@@ -268,6 +273,11 @@ impl Metric {
         Self::TileViewDispatch,
         Self::GifStructure,
         Self::GifPoster,
+        Self::AnimationInit,
+        Self::AnimationDecode,
+        Self::AnimationCompose,
+        Self::AnimationOutput,
+        Self::AnimationBackpressure,
     ];
 
     fn index(self) -> usize {
@@ -338,6 +348,11 @@ impl Metric {
             Self::TileViewDispatch => 63,
             Self::GifStructure => 64,
             Self::GifPoster => 65,
+            Self::AnimationInit => 66,
+            Self::AnimationDecode => 67,
+            Self::AnimationCompose => 68,
+            Self::AnimationOutput => 69,
+            Self::AnimationBackpressure => 70,
         }
     }
 
@@ -345,6 +360,11 @@ impl Metric {
         match self {
             Self::GifStructure => "GIF 完整块结构预检（不校验 LZW 内容）",
             Self::GifPoster => "GIF WIC 首帧与透明画布合成",
+            Self::AnimationInit => "动画 Session 预检与 WIC 初始化",
+            Self::AnimationDecode => "动画 WIC 局部帧解码与分配",
+            Self::AnimationCompose => "动画 CPU Disposal 与合成",
+            Self::AnimationOutput => "动画完整输出分配与复制",
+            Self::AnimationBackpressure => "动画 Credit 等待（不含暂停）",
             Self::TileRead => "Tile CPU 查询或磁盘读取与 CRC 校验",
             Self::TileUpload => "Tile GPU 创建与上传提交",
             Self::LargePreview => "大图选择到预览 Present 返回",
