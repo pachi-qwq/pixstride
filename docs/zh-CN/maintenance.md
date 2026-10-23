@@ -1,6 +1,6 @@
 [English](../en/maintenance.md) | [简体中文](maintenance.md)
 
-<!-- doc-id: maintenance; revision: 7; status: animation-playback-review -->
+<!-- doc-id: maintenance; revision: 9; status: view-transform-review -->
 
 # 仓库维护与发布
 
@@ -151,7 +151,7 @@ Apache [官方完整文本](https://www.apache.org/licenses/LICENSE-2.0)保持�
 上传草稿 Release 供负责人检查。安装、签名、文件关联、更新策略和正式发布需要另行决定。
 本轮不实现应用发布流水线。
 
-仓库初始化、保护配置及阶段 A–C 合并均已完成。阶段 D 已合并 EXIF 修正、GIF 首帧和后台动画 Worker；
-负责人报告功能分支 D1-b2 的八项 Windows 人工验收全部通过。代码评审和 PR 合并仍待完成。
-Release 和签名策略需要另行批准。
+仓库初始化、保护配置及阶段 A–C 合并均已完成。阶段 D 已合并 EXIF 修正、GIF 首帧、后台 Worker 及 D1-b2 播放，
+负责人报告 D1-b2 八项 Windows 人工验收全部通过，也确认本分支 D3-a1 十项 Windows 人工验收全部通过；PR 审核和合并待完成。
+验收记录见 [D3-a1](stage-d3a1.md)，保留未单独记录的显示器/DPI 组合限制，并区分 GPU 回读与桌面操作结果。Release 和签名策略需要另行批准。
 项目尚未发布公开 Release。

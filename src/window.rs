@@ -5,8 +5,8 @@ use std::{ffi::c_void, time::Instant};
 use anyhow::{Context, Result};
 use windows::{
     Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::Gdi::{BeginPaint, EndPaint, HBRUSH, PAINTSTRUCT},
+        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::Gdi::{BeginPaint, EndPaint, HBRUSH, PAINTSTRUCT, ScreenToClient},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Input::KeyboardAndMouse::{
@@ -17,10 +17,10 @@ use windows::{
                 CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
                 DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, IDC_ARROW, LoadCursorW,
                 RegisterClassW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
-                ShowWindow, WM_CAPTURECHANGED, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
-                WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-                WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSW,
-                WS_OVERLAPPEDWINDOW,
+                ShowWindow, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_DESTROY, WM_DPICHANGED,
+                WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+                WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE,
+                WNDCLASSW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -116,9 +116,16 @@ unsafe extern "system" fn window_proc(
     match message {
         WM_MOUSEWHEEL if !context.close_started => {
             let delta = ((wparam.0 >> 16) as u16) as i16;
-            context
-                .shared
-                .zoom_by(1.2f32.powf(f32::from(delta) / 120.0));
+            let (x, y) = mouse_position(lparam);
+            let mut point = POINT { x, y };
+            // SAFETY: HWND 属于本 UI 线程且仍有效；point 是栈上的可写 POINT。
+            // WM_MOUSEWHEEL 是有符号屏幕坐标；Per-Monitor V2 下转换结果为客户区物理像素。
+            if unsafe { ScreenToClient(hwnd, &mut point) }.as_bool() {
+                context.shared.zoom_at(
+                    1.2f64.powf(f64::from(delta) / 120.0),
+                    (f64::from(point.x), f64::from(point.y)),
+                );
+            }
             LRESULT(0)
         }
         WM_LBUTTONDOWN if !context.close_started => {
@@ -132,19 +139,24 @@ unsafe extern "system" fn window_proc(
         WM_MOUSEMOVE if !context.close_started => {
             if let Some(previous) = context.drag_position {
                 let next = mouse_position(lparam);
-                context
-                    .shared
-                    .pan_by((next.0 - previous.0) as f32, (next.1 - previous.1) as f32);
+                context.shared.pan_by(
+                    f64::from(next.0 - previous.0),
+                    f64::from(next.1 - previous.1),
+                );
                 context.drag_position = Some(next);
             }
             LRESULT(0)
         }
         WM_LBUTTONUP | WM_CAPTURECHANGED => {
-            context.drag_position = None;
             if message == WM_LBUTTONUP {
-                // SAFETY: ReleaseCapture 只释放当前线程鼠标捕获，不访问外部缓冲区。
-                let _ = unsafe { ReleaseCapture() };
+                cancel_drag(context);
+            } else {
+                context.drag_position = None;
             }
+            LRESULT(0)
+        }
+        WM_CANCELMODE => {
+            cancel_drag(context);
             LRESULT(0)
         }
         WM_SIZE => {
@@ -181,14 +193,14 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_KILLFOCUS if !context.close_started => {
-            context.drag_position = None;
-            // SAFETY: 失焦时放弃当前线程的捕获，避免恢复焦点后错误延续旧拖动。
-            let _ = unsafe { ReleaseCapture() };
+            cancel_drag(context);
             context.shared.end_navigation_progress();
             context.action = Some(WindowAction::StopNavigation);
             LRESULT(0)
         }
         WM_DPICHANGED if !context.close_started => {
+            // DPI 切换会改变客户区坐标系，不能延续旧拖动的起点。
+            cancel_drag(context);
             // SAFETY: WM_DPICHANGED 规定 lParam 指向建议的 RECT，且仅在本回调期间有效；SetWindowPos 会同步复制坐标。
             let suggested = unsafe { &*(lparam.0 as *const RECT) };
             let width = suggested.right - suggested.left;
@@ -222,6 +234,7 @@ unsafe extern "system" fn window_proc(
         WM_ERASEBKGND => LRESULT(1),
         WM_CLOSE => {
             if !context.close_started {
+                cancel_drag(context);
                 context.close_started = true;
                 context.shared.request_shutdown();
             }
@@ -245,9 +258,27 @@ unsafe extern "system" fn window_proc(
     }
 }
 
+/// UI 切图、失焦或系统取消时终止左键拖动；不影响导航和播放状态。
+pub(crate) fn cancel_drag(context: &mut WindowContext) {
+    if context.drag_position.take().is_some() {
+        // SAFETY: 仅 UI 消息/动作处理调用；只释放当前线程的捕获，先清空位置以处理重入的 CaptureChanged。
+        let _ = unsafe { ReleaseCapture() };
+    }
+}
+
 fn mouse_position(value: LPARAM) -> (i32, i32) {
     (
         (value.0 as u16 as i16) as i32,
         ((value.0 >> 16) as u16 as i16) as i32,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn packed_mouse_coordinates_keep_both_signs() {
+        let packed = u32::from((-1537i16) as u16) | (u32::from((-281i16) as u16) << 16);
+        assert_eq!(mouse_position(LPARAM(packed as isize)), (-1537, -281));
+    }
 }

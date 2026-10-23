@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 13; status: animation-playback-review -->
+<!-- doc-id: readme; revision: 15; status: view-transform-review -->
 
 # Pixstride
 
@@ -25,10 +25,14 @@ Swap Chain. The target is Windows 10/11 x64. The merged implementation includes:
 [D1-a GIF posters](docs/en/stage-d1a.md) are merged through
 [PR #7](https://github.com/pachi-qwq/pixstride/pull/7): bounded structural validation and a composed
 first image on a transparent canvas. All five owner-run Windows manual checks passed.
-The [D1-b1 background animation worker](docs/en/stage-d1b1.md) is merged. This local branch adds
-[D1-b2 D3D11 GIF playback](docs/en/stage-d1b2.md), bounded frame handoff, Delay/Loop scheduling and
-Space pause/resume. Automated Windows checks pass, and the owner reports all eight Windows manual
-acceptance scenarios passed. Code review and PR merge remain pending.
+The [D1-b1 background animation worker](docs/en/stage-d1b1.md) is merged.
+[D1-b2 D3D11 GIF playback](docs/en/stage-d1b2.md) is merged through PR #9, including bounded frame
+handoff, Delay/Loop scheduling and Space pause/resume. The owner reports all eight Windows manual
+acceptance scenarios passed for D1-b2.
+
+This branch adds [D3-a1 shared view geometry](docs/en/stage-d3a1.md): cursor-anchored wheel zoom,
+left-drag pan, and consistent Fit/100% for ordinary images, GIF frames and Tiles.
+The project owner reports all 10/10 D3-a1 Windows manual checks passed. PR review and merge remain pending.
 
 The architecture keeps GPU resource ownership on a render thread and decodes images in
 bounded background work. Large images have a separate path. Threading, cache budgets, and Tile sizes

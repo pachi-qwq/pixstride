@@ -1,6 +1,6 @@
 [English](development.md) | [简体中文](../zh-CN/development.md)
 
-<!-- doc-id: development; revision: 16; status: animation-playback-review -->
+<!-- doc-id: development; revision: 18; status: view-transform-review -->
 
 # Development status and checks
 
@@ -10,10 +10,10 @@ real-image display, zoom, keyboard navigation, the native file dialog, and windo
 Stages A–C are merged. Stage C provides separately budgeted PNG streaming, disk Tile Pyramid construction,
 and viewport rendering with zoom/pan. Its six owner-run Windows manual acceptance scenarios passed.
 See [Stage C](stage-c.md) for cache variables, build measurements, supported encodings, and manual checks.
-There is no public release. Stage D has merged EXIF 1–8 correction and static GIF posters. This branch
-adds [D1-b2 GIF playback](stage-d1b2.md) over the merged background Worker. Automated Windows
-checks pass, and the owner reports all eight Windows manual acceptance scenarios passed.
-Code review and PR merge remain pending.
+There is no public release. Stage D has merged EXIF 1–8 correction, static GIF posters and
+[D1-b2 GIF playback](stage-d1b2.md), including all eight owner-reported Windows manual scenarios.
+This branch adds [D3-a1 shared view geometry](stage-d3a1.md). The project owner reports all ten
+Windows manual checks passed; PR review and merge remain pending.
 Further Stage D scope remains subject to approval.
 
 ## Build and run
@@ -32,11 +32,35 @@ cargo run --release
 ```
 
 With no argument, the program displays the Stage A generated test textures. Pass one image path to open
-JPEG, PNG, BMP, or GIF (multi-frame playback in this branch, Space to pause/resume); `Ctrl+O` opens the native file dialog, Left/Right navigate the current directory,
-`F` selects Fit, and `1` selects 1:1 pixels. Eligible large PNGs use the Tile path; wheel zoom and
-left-drag pan are available on that path. On exit, stdout prints bounded timing samples and cache
+JPEG, PNG, BMP, or GIF (multi-frame playback, Space to pause/resume); `Ctrl+O` opens the native file dialog, Left/Right navigate the current directory,
+`F` selects Fit, and `1` selects 1:1 physical pixels. On this branch, ordinary images, GIF and eligible
+large-PNG Tiles share cursor-anchored wheel zoom and left-drag pan. New images retain the mode and
+reset extra Zoom/Pan; GIF frame changes retain the view. Resize keeps the image point under the client center. On exit, stdout prints bounded timing samples and cache
 counters. The Release executable is `target/release/pixstride.exe`. Feature details and limits are in
 [Stage B](stage-b.md) and [Stage C](stage-c.md).
+
+## D3-a1 view regression
+
+From the repository root, use a dedicated directory outside Git for generated fixtures and Tile data.
+These probes use synthetic inputs and do not open private stress images:
+
+```powershell
+$env:PIXSTRIDE_TEST_ROOT = [IO.Path]::GetFullPath('..\..\logs\pixstride-d3a1\samples')
+$env:PIXSTRIDE_TILE_CACHE = [IO.Path]::GetFullPath('..\..\logs\pixstride-d3a1\tile-cache')
+cargo test --release --locked release_view_transform_gpu_pixels -- --ignored --nocapture
+cargo test --release --locked release_view_transform_input_and_playback -- --ignored --nocapture
+cargo test --release --locked release_frame_admission_survives_stale_selection -- --ignored --nocapture
+cargo test --release --locked release_animation_prepare -- --ignored --nocapture
+cargo test --release --locked release_prepare_gif_poster_samples -- --ignored --nocapture
+cargo test --release --locked release_prepare_gui_samples -- --ignored --nocapture
+```
+
+The geometry probe reports `pixels_checked=7869`; the input probe reports 120 transform steps with
+no additional decode/upload. Generators print their retained output directories. For manual checks,
+open `animation-fixtures/partial.gif`, the poster directory's JPEG/PNG/BMP and `wide.png` under the
+printed large-image sample directory. Use Ctrl+O to switch between those directories. Keep the dedicated
+Tile cache; never point these probes at an existing private cache. Acceptance criteria are in
+[D3-a1](stage-d3a1.md#manual-acceptance-and-remaining-limits).
 
 ## Run the current checks
 

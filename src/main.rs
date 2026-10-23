@@ -7,6 +7,7 @@ mod diagnostics;
 mod image;
 mod large;
 mod renderer;
+mod view_transform;
 mod window;
 
 fn main() -> anyhow::Result<()> {

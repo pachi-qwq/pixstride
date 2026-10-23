@@ -5,7 +5,7 @@
       "id": "readme",
       "en": "README.md",
       "zh-CN": "README.zh-CN.md",
-      "revision": 13,
+      "revision": 15,
       "shared_literals": [
         "Windows 10/11 x64",
         "LICENSE-MIT",
@@ -77,7 +77,7 @@
       "id": "architecture",
       "en": "docs/en/architecture.md",
       "zh-CN": "docs/zh-CN/architecture.md",
-      "revision": 12,
+      "revision": 14,
       "shared_literals": [
         "16384",
         "1024",
@@ -92,7 +92,7 @@
       "id": "development",
       "en": "docs/en/development.md",
       "zh-CN": "docs/zh-CN/development.md",
-      "revision": 16,
+      "revision": 18,
       "shared_literals": [
         "3.11",
         "1.96.0",
@@ -130,7 +130,7 @@
       "id": "maintenance",
       "en": "docs/en/maintenance.md",
       "zh-CN": "docs/zh-CN/maintenance.md",
-      "revision": 7,
+      "revision": 9,
       "shared_literals": [
         "2026-10-18",
         "master",
@@ -266,7 +266,7 @@
       "id": "animation-playback",
       "en": "docs/en/stage-d1b2.md",
       "zh-CN": "docs/zh-CN/stage-d1b2.md",
-      "revision": 2,
+      "revision": 3,
       "shared_literals": [
         "512 MiB",
         "256 MiB",
@@ -279,6 +279,27 @@
         "PIXSTRIDE_TEST_ROOT",
         "8/8",
         "f7ad89465c4e3245bf70faa5a841b71c18c327a0"
+      ]
+    },
+    {
+      "id": "view-transform",
+      "en": "docs/en/stage-d3a1.md",
+      "zh-CN": "docs/zh-CN/stage-d3a1.md",
+      "revision": 2,
+      "shared_literals": [
+        "ViewTransform",
+        "0.01",
+        "64",
+        "256 MiB",
+        "512 MiB",
+        "128 MiB",
+        "7,869",
+        "120",
+        "Present",
+        "PIXSTRIDE_TEST_ROOT",
+        "release_view_transform_gpu_pixels",
+        "release_view_transform_input_and_playback",
+        "10/10"
       ]
     }
   ],

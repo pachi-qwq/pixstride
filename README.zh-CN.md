@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 13; status: animation-playback-review -->
+<!-- doc-id: readme; revision: 15; status: view-transform-review -->
 
 # Pixstride
 
@@ -22,9 +22,12 @@ Pixstride 是一个 Windows 原生图片查看器项目，目标是快速启动�
 
 [D1-a GIF 首帧](docs/zh-CN/stage-d1a.md)已通过 [PR #7](https://github.com/pachi-qwq/pixstride/pull/7) 合并：
 先进行有界结构校验，再将首个图像帧合成到透明画布，负责人五项 Windows 人工验收全部通过。
-[D1-b1 动画后台 Worker](docs/zh-CN/stage-d1b1.md) 已合并。本地分支增加
-[D1-b2 D3D11 GIF 播放](docs/zh-CN/stage-d1b2.md)、有界帧交接、Delay/Loop 调度及 Space 暂停/恢复。
-Windows 自动化检查通过，负责人报告八项 Windows 人工验收全部通过。代码评审和 PR 合并仍待完成。
+[D1-b1 动画后台 Worker](docs/zh-CN/stage-d1b1.md) 已合并；
+[D1-b2 D3D11 GIF 播放](docs/zh-CN/stage-d1b2.md)通过 PR #9 合并，包括有界帧交接、Delay/Loop 调度及 Space 暂停/恢复。
+负责人报告 D1-b2 八项 Windows 人工验收全部通过。
+
+本分支增加 [D3-a1 统一视口几何](docs/zh-CN/stage-d3a1.md)：鼠标锚点滚轮缩放、左键拖动，以及普通图、GIF 帧和 Tile 一致的
+Fit/100% 行为。负责人报告 D3-a1 Windows 人工验收 10/10 项通过，PR 审核和合并待完成。
 
 目前由独立渲染线程管理 GPU 资源，通过有界后台任务解码图片，并为超大图片设置独立路径。
 线程方案、缓存预算和分块尺寸仍需实验验证；测试计划中列出的格式不代表已经支持。

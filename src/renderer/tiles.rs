@@ -123,6 +123,7 @@ impl Tiles {
         shared: &Shared,
         snapshot: &RenderSnapshot,
     ) -> Result<Option<u64>> {
+        let mut snapshot = *snapshot;
         let mut changed = None;
         for reply in self.worker.drain() {
             match reply {
@@ -140,6 +141,11 @@ impl Tiles {
                         }
                     };
                     let bytes = preview.bytes.len() as u64;
+                    let size = (cache.plan.size.width, cache.plan.size.height);
+                    let Some(view) = shared.activate_view(generation, size) else {
+                        continue;
+                    };
+                    snapshot = view;
                     let mut textures = HashMap::new();
                     textures.insert(preview.id, (srv, bytes));
                     self.scene = Some(Scene {
@@ -261,7 +267,7 @@ impl Tiles {
             if scene.sequence != Some(snapshot.sequence)
                 && shared.is_image_generation_current(scene.generation)
             {
-                scene.pieces = view::pieces(&scene.cache.plan, snapshot, scene.preview);
+                scene.pieces = view::pieces(&scene.cache.plan, &snapshot, scene.preview);
                 scene.sequence = Some(snapshot.sequence);
                 scene.view_started = snapshot.requested_at;
                 scene.view_reported = false;
