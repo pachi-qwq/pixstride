@@ -1,5 +1,7 @@
 //! 创建 Win32 主窗口，并把输入和尺寸变化转换为最新渲染状态。
 
+pub(crate) mod fullscreen;
+
 use std::{ffi::c_void, time::Instant};
 
 use anyhow::{Context, Result};
@@ -15,12 +17,12 @@ use windows::{
             },
             WindowsAndMessaging::{
                 CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
-                DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, IDC_ARROW, LoadCursorW,
-                RegisterClassW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
-                ShowWindow, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_DESTROY, WM_DPICHANGED,
-                WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
-                WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE,
-                WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                DefWindowProcW, GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, IDC_ARROW,
+                LoadCursorW, RegisterClassW, SIZE_MINIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
+                SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CANCELMODE, WM_CAPTURECHANGED,
+                WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP,
+                WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+                WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -110,6 +112,14 @@ unsafe extern "system" fn window_proc(
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
     }
 
+    // SAFETY: 指针来自本 HWND 的活动 Box，当前线程即其 UI 所有者。
+    // 全屏 API 会同步发送 WM_SIZE/DPI；先处理事务，避免独占 context 借用跨越这些回调。
+    if let Some(result) =
+        unsafe { fullscreen::handle_message(hwnd, message, wparam, lparam, context_pointer) }
+    {
+        return result;
+    }
+
     // SAFETY: 该指针指向 WM_NCCREATE 安装的活动 Box；回调由窗口所属 UI 线程串行执行，不会并发修改它。
     let context = unsafe { &mut *context_pointer };
 
@@ -161,8 +171,16 @@ unsafe extern "system" fn window_proc(
         }
         WM_SIZE => {
             if !context.close_started {
-                let dimensions = lparam.0 as u32;
-                context.shared.resize(dimensions & 0xffff, dimensions >> 16);
+                let mut client = RECT::default();
+                if wparam.0 == SIZE_MINIMIZED as usize {
+                    context.shared.resize(0, 0);
+                // SAFETY: HWND 由本 UI 线程拥有，查询真实客户区物理像素，避免 WM_SIZE 的 16 位打包截断。
+                } else if unsafe { GetClientRect(hwnd, &mut client) }.is_ok() {
+                    context.shared.resize(
+                        (client.right - client.left).max(0) as u32,
+                        (client.bottom - client.top).max(0) as u32,
+                    );
+                }
             }
             LRESULT(0)
         }

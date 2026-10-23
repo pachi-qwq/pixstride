@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 15; status: view-transform-review -->
+<!-- doc-id: readme; revision: 16; status: fullscreen-review -->
 
 # Pixstride
 
@@ -9,7 +9,7 @@ A native Windows image viewer project focused on fast startup, responsive input,
 Inspired by MassiGra's lightweight interface and fast interaction, Pixstride has completed and merged
 Stages A–C. [Stage C PR #4](https://github.com/pachi-qwq/pixstride/pull/4) includes the owner's six passed
 Windows manual acceptance scenarios. There is no public release. Stage D has started with technical
-validation and merged GIF first-frame support; the remaining scope still requires approval.
+validation and merged EXIF correction, GIF playback and shared view geometry. Further scope requires approval.
 
 ## Current foundation
 
@@ -30,9 +30,11 @@ The [D1-b1 background animation worker](docs/en/stage-d1b1.md) is merged.
 handoff, Delay/Loop scheduling and Space pause/resume. The owner reports all eight Windows manual
 acceptance scenarios passed for D1-b2.
 
-This branch adds [D3-a1 shared view geometry](docs/en/stage-d3a1.md): cursor-anchored wheel zoom,
+[D3-a1 shared view geometry](docs/en/stage-d3a1.md) is merged through PR #10: cursor-anchored wheel zoom,
 left-drag pan, and consistent Fit/100% for ordinary images, GIF frames and Tiles.
-The project owner reports all 10/10 D3-a1 Windows manual checks passed. PR review and merge remain pending.
+The project owner reports all 10/10 D3-a1 Windows manual checks passed.
+This local branch adds [D3-a2 borderless fullscreen](docs/en/stage-d3a2.md), using F11/Esc and native
+window restoration. Automated verification passes; owner desktop acceptance, PR review and merge remain pending.
 
 The architecture keeps GPU resource ownership on a render thread and decodes images in
 bounded background work. Large images have a separate path. Threading, cache budgets, and Tile sizes

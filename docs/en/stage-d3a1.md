@@ -1,13 +1,13 @@
 [English](stage-d3a1.md) | [简体中文](../zh-CN/stage-d3a1.md)
 
-<!-- doc-id: view-transform; revision: 2; status: view-transform-review -->
+<!-- doc-id: view-transform; revision: 3; status: view-transform-merged -->
 
 # D3-a1: shared zoom, pan and view geometry
 
-This branch makes ordinary images, GIF posters/animation frames and large-PNG Tiles consume the
-same view geometry. The project owner reports all 10/10 Windows manual checks passed; PR review
-and merge remain pending. D1-b2 playback is already merged; this work changes its geometry,
-not its clock or decoder.
+D3-a1 is merged through [PR #10](https://github.com/pachi-qwq/pixstride/pull/10), Squash Commit
+`614ce9fcf2303b8b9ea3266c096c4c921b0a6948`. Ordinary images, GIF posters/frames and large-PNG Tiles
+share the geometry described below. The project owner reported all 10/10 Windows manual checks passed.
+This page retains the original validation, controlled performance data and limits.
 
 ## Original defect and implementation boundary
 

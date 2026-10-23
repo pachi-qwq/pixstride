@@ -1,6 +1,6 @@
 [English](maintenance.md) | [简体中文](../zh-CN/maintenance.md)
 
-<!-- doc-id: maintenance; revision: 9; status: view-transform-review -->
+<!-- doc-id: maintenance; revision: 10; status: fullscreen-review -->
 
 # Repository maintenance and publication
 
@@ -164,7 +164,8 @@ implemented in this documentation task.
 
 Repository initialization, protection, and the Stage A–C merges are complete. Stage D has merged EXIF
 correction, GIF posters, the background Worker and D1-b2 playback; all eight owner-reported D1-b2
-Windows manual scenarios passed. The owner also reports all ten D3-a1 Windows manual checks passed;
-PR review and merge remain pending. See [D3-a1](stage-d3a1.md) for the acceptance record, including
+Windows manual scenarios passed. D3-a1 is merged through PR #10 with all ten owner-reported Windows
+manual checks passed. Local D3-a2 borderless fullscreen has automated evidence; owner desktop acceptance
+and PR review remain pending. See [D3-a1](stage-d3a1.md) for the acceptance record, including
 unrecorded monitor/DPI combinations and the distinction between GPU readback and desktop observations. Release and signing require separate approval.
 No public Release has been published.

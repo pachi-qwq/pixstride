@@ -1,11 +1,13 @@
 [English](../en/stage-d3a1.md) | [简体中文](stage-d3a1.md)
 
-<!-- doc-id: view-transform; revision: 2; status: view-transform-review -->
+<!-- doc-id: view-transform; revision: 3; status: view-transform-merged -->
 
 # D3-a1：统一缩放、平移与视口几何
 
-本分支让普通图片、GIF Poster/动画帧及超大 PNG Tile 使用相同视口几何。
-负责人报告 Windows 人工验收 10/10 项通过，PR 审核和合并待完成。D1-b2 播放已经合并，本轮改变其几何，不改变播放时钟或解码器。
+D3-a1 已通过 [PR #10](https://github.com/pachi-qwq/pixstride/pull/10) 合并，Squash Commit 为
+`614ce9fcf2303b8b9ea3266c096c4c921b0a6948`。普通图片、GIF Poster/动画帧及超大 PNG Tile
+共用下述几何；负责人报告 Windows 人工验收 10/10 项通过。
+本页保留原始验证、受控性能数据和限制。
 
 ## 原有缺陷与修改边界
 

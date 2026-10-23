@@ -1,6 +1,6 @@
 [English](development.md) | [简体中文](../zh-CN/development.md)
 
-<!-- doc-id: development; revision: 18; status: view-transform-review -->
+<!-- doc-id: development; revision: 19; status: fullscreen-review -->
 
 # Development status and checks
 
@@ -12,8 +12,9 @@ and viewport rendering with zoom/pan. Its six owner-run Windows manual acceptanc
 See [Stage C](stage-c.md) for cache variables, build measurements, supported encodings, and manual checks.
 There is no public release. Stage D has merged EXIF 1–8 correction, static GIF posters and
 [D1-b2 GIF playback](stage-d1b2.md), including all eight owner-reported Windows manual scenarios.
-This branch adds [D3-a1 shared view geometry](stage-d3a1.md). The project owner reports all ten
-Windows manual checks passed; PR review and merge remain pending.
+[D3-a1 shared view geometry](stage-d3a1.md) is merged through PR #10; the owner reports all ten
+Windows manual checks passed. This local branch adds [D3-a2 borderless fullscreen](stage-d3a2.md).
+Its automated verification passes; owner Windows desktop acceptance and PR review remain pending.
 Further Stage D scope remains subject to approval.
 
 ## Build and run
@@ -33,7 +34,8 @@ cargo run --release
 
 With no argument, the program displays the Stage A generated test textures. Pass one image path to open
 JPEG, PNG, BMP, or GIF (multi-frame playback, Space to pause/resume); `Ctrl+O` opens the native file dialog, Left/Right navigate the current directory,
-`F` selects Fit, and `1` selects 1:1 physical pixels. On this branch, ordinary images, GIF and eligible
+`F` selects Fit, and `1` selects 1:1 physical pixels. This branch adds F11 fullscreen toggle and Esc
+fullscreen exit. Ordinary images, GIF and eligible
 large-PNG Tiles share cursor-anchored wheel zoom and left-drag pan. New images retain the mode and
 reset extra Zoom/Pan; GIF frame changes retain the view. Resize keeps the image point under the client center. On exit, stdout prints bounded timing samples and cache
 counters. The Release executable is `target/release/pixstride.exe`. Feature details and limits are in
@@ -61,6 +63,28 @@ open `animation-fixtures/partial.gif`, the poster directory's JPEG/PNG/BMP and `
 printed large-image sample directory. Use Ctrl+O to switch between those directories. Keep the dedicated
 Tile cache; never point these probes at an existing private cache. Acceptance criteria are in
 [D3-a1](stage-d3a1.md#manual-acceptance-and-remaining-limits).
+
+## D3-a2 fullscreen regression
+
+Run each diagnostic in a separate process from the repository root with a dedicated generated-fixture
+and cache directory. Do not run an unrestricted ignored-test filter, which also includes private probes.
+
+```powershell
+$env:PIXSTRIDE_TEST_ROOT = [IO.Path]::GetFullPath('..\..\logs\pixstride-d3a2\samples')
+$env:PIXSTRIDE_TILE_CACHE = [IO.Path]::GetFullPath('..\..\logs\pixstride-d3a2\tile-cache')
+cargo test --release --locked release_fullscreen_window_lifecycle -- --ignored --nocapture
+cargo test --release --locked release_fullscreen_gpu_pixels -- --ignored --nocapture
+cargo test --release --locked release_fullscreen_viewer -- --ignored --nocapture
+cargo test --release --locked release_fullscreen_hold_navigation -- --ignored --nocapture
+cargo test --release --locked release_fullscreen_gif_hold_navigation -- --ignored --nocapture
+cargo test --release --locked release_prepare_fullscreen_samples -- --ignored --nocapture
+cargo build --release --locked
+& '.\target\release\pixstride.exe' (Join-Path $env:PIXSTRIDE_TEST_ROOT 'fullscreen-gui\infinite.gif')
+```
+
+The generator retains JPEG/PNG/BMP, finite/infinite GIF and a synthetic 20000×65 Tile PNG in
+`fullscreen-gui`. Use Ctrl+O to select those files. Keep the generated cache separate from private data.
+Owner visual acceptance remains pending; use the [D3-a2 checklist](stage-d3a2.md#windows-manual-acceptance-pending).
 
 ## Run the current checks
 

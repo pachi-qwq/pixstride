@@ -1,6 +1,6 @@
 [English](../en/development.md) | [简体中文](development.md)
 
-<!-- doc-id: development; revision: 18; status: view-transform-review -->
+<!-- doc-id: development; revision: 19; status: fullscreen-review -->
 
 # 开发状态与检查
 
@@ -9,7 +9,8 @@ CPU/GPU 缓存。负责人已确认真实图片显示、缩放、键盘导航、
 阶段 C 提供独立预算的 PNG 流式处理、磁盘 Tile Pyramid 构建及支持缩放/平移的视口渲染，六项 Windows 人工验收全部通过。
 缓存变量、构建测量、支持的编码和人工检查见[阶段 C](stage-c.md)。项目尚无公开发行版；阶段 D 已合并 EXIF 1–8
 修正、GIF 静态首帧、后台 Worker 和 [D1-b2 GIF 播放](stage-d1b2.md)，负责人报告其八项 Windows 人工验收全部通过。
-本分支增加 [D3-a1 统一视口几何](stage-d3a1.md)，负责人报告十项 Windows 人工验收全部通过；PR 审核和合并仍待完成。
+[D3-a1 统一视口几何](stage-d3a1.md) 已通过 PR #10 合并，负责人报告十项 Windows 人工验收全部通过。
+本地分支增加 [D3-a2 无边框全屏](stage-d3a2.md)，自动化验证通过，负责人 Windows 桌面验收及 PR 审核待完成。
 后续阶段 D 范围仍需批准。
 
 ## 构建和运行
@@ -28,7 +29,8 @@ cargo run --release
 ```
 
 不带参数时，程序显示阶段 A 生成的测试纹理。传入一个图片路径可打开 JPEG、PNG、BMP 或 GIF（支持多帧播放，Space 暂停/恢复）；按 `Ctrl+O` 打开原生文件对话框，
-按 Left/Right 浏览当前目录，按 `F` 选择 Fit，按 `1` 选择 1:1 物理像素。本分支普通图、GIF 及符合条件的超大 PNG Tile
+按 Left/Right 浏览当前目录，按 `F` 选择 Fit，按 `1` 选择 1:1 物理像素。本分支新增 F11 全屏切换和 Esc 退出全屏。
+普通图、GIF 及符合条件的超大 PNG Tile
 共用鼠标锚点缩放和左键拖动平移。切图保留模式、重置额外 Zoom/Pan；GIF 换帧保留视图。Resize 保持客户区中心下的图像位置。退出时，stdout 输出有界计时样本和缓存计数。
 Release 可执行文件为 `target/release/pixstride.exe`。功能范围和限制见 [阶段 B](stage-b.md) 与 [阶段 C](stage-c.md)。
 
@@ -51,6 +53,27 @@ cargo test --release --locked release_prepare_gui_samples -- --ignored --nocaptu
 人工检查时打开 `animation-fixtures/partial.gif`、Poster 目录的 JPEG/PNG/BMP，以及大图样本输出目录内的 `wide.png`，
 用 Ctrl+O 在这些目录间切换。保留独立 Tile 缓存，不要将探针指向既有私人缓存。
 验收标准见 [D3-a1](stage-d3a1.md#人工验收与限制)。
+
+## D3-a2 全屏回归
+
+从仓库根目录逐进程执行各专项，使用独立的生成样本和缓存目录。不要使用不受限的 ignored 测试筛选，
+其中还包括私人压力探针。
+
+```powershell
+$env:PIXSTRIDE_TEST_ROOT = [IO.Path]::GetFullPath('..\..\logs\pixstride-d3a2\samples')
+$env:PIXSTRIDE_TILE_CACHE = [IO.Path]::GetFullPath('..\..\logs\pixstride-d3a2\tile-cache')
+cargo test --release --locked release_fullscreen_window_lifecycle -- --ignored --nocapture
+cargo test --release --locked release_fullscreen_gpu_pixels -- --ignored --nocapture
+cargo test --release --locked release_fullscreen_viewer -- --ignored --nocapture
+cargo test --release --locked release_fullscreen_hold_navigation -- --ignored --nocapture
+cargo test --release --locked release_fullscreen_gif_hold_navigation -- --ignored --nocapture
+cargo test --release --locked release_prepare_fullscreen_samples -- --ignored --nocapture
+cargo build --release --locked
+& '.\target\release\pixstride.exe' (Join-Path $env:PIXSTRIDE_TEST_ROOT 'fullscreen-gui\infinite.gif')
+```
+
+生成器在 `fullscreen-gui` 中保留 JPEG/PNG/BMP、有限/无限循环 GIF 和合成的 20000×65 Tile PNG。
+用 Ctrl+O 选择这些文件，缓存与私人数据分开。负责人目视验收待完成，清单见 [D3-a2](stage-d3a2.md#windows-人工验收待完成)。
 
 ## 当前可执行的检查
 

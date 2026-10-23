@@ -94,6 +94,7 @@ fn release_gif_poster_viewer() -> Result<()> {
         shared: Arc::clone(&shared),
         close_started: false,
         drag_position: None,
+        fullscreen: Default::default(),
         action: None,
         navigation: UiNavigation::default(),
     });
