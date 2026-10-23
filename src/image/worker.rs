@@ -257,7 +257,7 @@ pub(crate) struct ImageLoader {
     thread: Option<JoinHandle<()>>,
     identity_thread: Option<JoinHandle<()>>,
     detached_for_process_exit: bool,
-    animation: super::animation::AnimationWorker,
+    animation: Option<super::animation::AnimationWorker>,
 }
 
 impl ImageLoader {
@@ -402,17 +402,19 @@ impl ImageLoader {
             thread: Some(thread),
             identity_thread: Some(identity_thread),
             detached_for_process_exit: false,
-            animation: super::animation::AnimationWorker::new(cpu),
+            animation: Some(super::animation::AnimationWorker::new(cpu)),
         })
     }
 
     /// 返回同一个惰性动画控制器；D1-b1 不从 UI 自动启动 Session。
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "正式播放入口在 D1-b2 接入；本轮只用测试消费者")
-    )]
+    #[cfg(test)]
     pub(crate) fn animation(&mut self) -> &mut super::animation::AnimationWorker {
-        &mut self.animation
+        self.animation.as_mut().expect("测试控制器未移交")
+    }
+
+    /// 将唯一控制器移交 Render Thread；共同 CPU 池由两侧的 Arc 保活。
+    pub(crate) fn take_animation(&mut self) -> Option<super::animation::AnimationWorker> {
+        self.animation.take()
     }
 
     pub(crate) fn ready_handle(&self) -> HANDLE {
@@ -460,7 +462,9 @@ impl ImageLoader {
         progress_floor: Option<u64>,
     ) {
         // 文件选择变化严格取消旧动画；动画帧本身不递增文件 Generation。
-        self.animation.cancel();
+        if let Some(animation) = &self.animation {
+            animation.cancel();
+        }
         {
             let mut decode = self.control.lock();
             if decode.stopping {
@@ -568,7 +572,9 @@ impl ImageLoader {
     }
 
     pub(crate) fn request_stop(&self) {
-        self.animation.shutdown();
+        if let Some(animation) = &self.animation {
+            animation.shutdown();
+        }
         let mut state = self.control.lock();
         state.stopping = true;
         state.current = None;
@@ -593,7 +599,9 @@ impl ImageLoader {
 
     pub(crate) fn join(&mut self) -> Result<()> {
         // 不在 UI 上等待不可抢占的动画 WIC；未完成线程由其 Arc 状态继续拥有资源。
-        self.animation.try_join()?;
+        if let Some(animation) = &mut self.animation {
+            animation.try_join()?;
+        }
         let decode = self.thread.take().map(JoinHandle::join);
         let identity = self.identity_thread.take().map(JoinHandle::join);
         let decode_error = decode.is_some_and(|result| result.is_err());

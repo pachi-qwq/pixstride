@@ -1,6 +1,6 @@
 [English](../en/maintenance.md) | [简体中文](maintenance.md)
 
-<!-- doc-id: maintenance; revision: 5; status: active -->
+<!-- doc-id: maintenance; revision: 7; status: animation-playback-review -->
 
 # 仓库维护与发布
 
@@ -151,5 +151,7 @@ Apache [官方完整文本](https://www.apache.org/licenses/LICENSE-2.0)保持�
 上传草稿 Release 供负责人检查。安装、签名、文件关联、更新策略和正式发布需要另行决定。
 本轮不实现应用发布流水线。
 
-仓库初始化、保护配置及阶段 A–C 合并均已完成。阶段 D 是下一阶段规划，Release 和签名策略需要另行批准。
+仓库初始化、保护配置及阶段 A–C 合并均已完成。阶段 D 已合并 EXIF 修正、GIF 首帧和后台动画 Worker；
+负责人报告功能分支 D1-b2 的八项 Windows 人工验收全部通过。代码评审和 PR 合并仍待完成。
+Release 和签名策略需要另行批准。
 项目尚未发布公开 Release。

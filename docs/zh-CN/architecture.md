@@ -1,6 +1,6 @@
 [English](../en/architecture.md) | [简体中文](architecture.md)
 
-<!-- doc-id: architecture; revision: 10; status: active -->
+<!-- doc-id: architecture; revision: 12; status: animation-playback-review -->
 
 # 架构与实现范围
 
@@ -95,16 +95,20 @@ Tile CPU/GPU 驻留预算分别为 64/128 MiB，独立于普通图片各 512 MiB
 此方案优先保证清晰的所有权边界和可测量分配，以磁盘空间和首开完整预览等待为代价。磁盘写入性能、源抽样漏检、OS
 缓存增长、磁盘耗尽、驱动阻塞及历史视口长尾归因仍需评审。负责人已验收真实桌面手势，不能据此认定长期稳定性或故障恢复通过。
 
-## D1-b1 动画后台边界
+## D1-b2 播放边界
 
-本分支增加一个惰性 MTA 动画 Worker 和最多两个 Credit 的 CPU 帧接口，Viewer 仍使用静态 GIF 首帧。
-静态 WIC/GPU 快速路径和 Stage C 保持原有执行模型。动画和静态像素所有者共用 512 MiB CPU 账本，
-动画最多使用其中 256 MiB，包括画布、局部帧、保存区域及输出。缓存淘汰后，Arc 仍持有的像素继续计费。
-WIC 内部内存不在像素账本内，GPU 预算不变。
+D1-b1 已合并。本分支将 `ImageLoader` 的唯一惰性动画控制器移交 Render Thread；
+WIC COM 与顺序合成仍由单个 MTA Worker 独占。Render Thread 管理播放时钟、一个未来 CPU 帧和一个复用的动画 Texture/SRV。
+两个输出 Credit 仍覆盖排队、消费端持有和生产中的帧，没有第二个上传队列。
 
-Worker 独占动画 COM 与合成状态，文件选择 Generation、Session ID 和 Frame Ordinal 的生命周期不同。
-取消或替换立即失效输出，最后所有者释放时才归还 Credit 和像素额度。本轮不增加时钟、动画 GPU 资源，
-也不修改 Renderer 等待循环。取消、WIC 延迟退出和实测限制见 [D1-b1](stage-d1b1.md)。
+动画像素最多占共同 512 MiB CPU 账本中的 256 MiB。动画 GPU 载荷包括等待 Query 的退役资源，
+最多占共同 512 MiB GPU 限制中的 128 MiB。静态 LRU 准入计入动画载荷，可淘汰未固定的条目。
+这些是应用载荷限制，不能硬限制进程内存或驱动分配。Stage C 保持不变。
+
+文件选择 Generation、Source Revision、Session ID 和 Frame Ordinal 分别验证。
+Render Thread 等待工作、生产者输出、单次计时器或 DXGI 帧可用事件；DXGI 事件不充当 GPU 完成 Fence。
+暂停、结束和静态空闲时，计时器移出等待集。UI 异步观察 Worker 完成，在 COM/数据清理后 join；
+WIC 阻塞仍沿用有限关闭宽限与安全分离边界。策略、测量、自动化证据及负责人报告通过的八项 Windows 人工验收见 [D1-b2](stage-d1b2.md)。
 
 ## 已完成阶段范围与延后工作
 
@@ -113,7 +117,7 @@ Worker 独占动画 COM 与合成状态，文件选择 Generation、Session ID �
 | A | Win32 生命周期、单一渲染维护线程、最新快照、按需使用的简单快照序号和设备代际、内嵌测试纹理、QPC 事件、尺寸变化/关闭/恢复测试。 | 不加入文件导航、解码池、CPU/GPU 图片缓存、IPC、Job Object、Color Cache 或分块调度器。 |
 | B | 已合并 WIC JPEG/PNG/BMP 解码、检查过的像素布局、源身份、一个 WIC Worker 和一个源校验线程、CPU/GPU LRU 缓存、目录导航、相邻预加载和过期 Generation 丢弃；图形界面和快速导航复测已通过。 | 保持单个 WIC Worker、有界源校验和两个相邻预加载；通用优先级框架、普通图片平移和纹理池待测量后再评估。 |
 | C | 已合并超大 PNG 顺序流式处理、预览、磁盘 Tile Cache/Pyramid、可见区域渲染、缩放/平移和资源失败回归；负责人六项 GUI 验收通过。 | 渐进预览及全面 Device Lost、资源耗尽和稳定性验证仍未完成；工作进程 IPC 与 Job Object 隔离需有实测依据，暂不固定插件或 IPC ABI。 |
-| D（部分完成） | EXIF 5/7 修复和 GIF 静态首帧已合并；本分支增加已测试的后台帧生产者。 | 播放、更多格式、基本 ICC、可配置输入及漫画阅读需单独批准；有可验证的颜色路径后再加派生颜色缓存，HDR 继续延后。 |
+| D（部分完成） | EXIF 5/7 修复、GIF 静态首帧和后台生产已合并；分支 D1-b2 播放通过自动化测试，负责人报告八项 Windows 人工验收全部通过。代码评审和 PR 合并仍待完成。 | 更多格式、基本 ICC、可配置输入及漫画阅读需单独批准；有可验证的颜色路径后再加派生颜色缓存，HDR 继续延后。 |
 
 阶段 A–C 已完成，后续阶段 D 工作需单独批准。现有像素布局、取消、预算不足和解码能力边界不代表可以新增
 额外运行时服务或计数器。每种新增代际编号都必须有唯一维护模块和独立的失效原因。

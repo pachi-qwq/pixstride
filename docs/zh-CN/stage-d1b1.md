@@ -1,8 +1,11 @@
 [English](../en/stage-d1b1.md) | [简体中文](stage-d1b1.md)
 
-<!-- doc-id: animation-worker; revision: 2; status: ci-review -->
+<!-- doc-id: animation-worker; revision: 3; status: merged-history -->
 
 # D1-b1：GIF 后台帧生产流水线
+
+本页保留已合并 D1-b1 的阶段范围和原始测量。当前本地 [D1-b2 分支](stage-d1b2.md)
+增加 Renderer 消费并将控制器移交该线程；下文“不播放”的表述描述 D1-b1 阶段，不代表当前分支能力。
 
 本分支增加可独立测试的动画后台。Viewer 仍显示 [D1-a](stage-d1a.md) 的 GIF 静态首帧，
 不播放动画、不创建动画 GPU 资源、不改变快捷键，也不安排 Present 截止时间。本轮没有新增依赖。

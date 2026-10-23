@@ -3,6 +3,9 @@
 #[cfg(test)]
 #[path = "app/gif_tests.rs"]
 mod gif_tests;
+#[cfg(test)]
+#[path = "app/playback_tests.rs"]
+mod playback_tests;
 
 use std::{
     collections::VecDeque,
@@ -75,6 +78,7 @@ pub(crate) enum RequestOrigin {
 }
 
 struct PendingState {
+    animation_control: AnimationControl,
     snapshot: RenderSnapshot,
     image_generation: u64,
     // UI 设置同方向长按的首个选择代际；松键、反向、失焦或打开文件时清除。
@@ -92,6 +96,14 @@ struct PendingState {
     gpu_probe: Option<ResolvedSelection>,
     preload_uploads: VecDeque<Arc<DecodedImage>>,
     cancel_preloads: bool,
+}
+
+/// 用户意图与对话框暂停独立；最小化由窗口尺寸推导，失焦不暂停动画。
+#[derive(Clone, Copy, Default)]
+pub(crate) struct AnimationControl {
+    pub(crate) user_paused: bool,
+    pub(crate) dialog: bool,
+    pub(crate) available: bool,
 }
 
 /// 一次从 UI 状态中取出的有界渲染工作批次。
@@ -120,6 +132,8 @@ pub(crate) struct Shared {
     fatal_error: Mutex<Option<String>>,
     gpu_probe_reply: Mutex<Option<GpuProbeReply>>,
     ui_ready_event: Mutex<isize>,
+    animation_completion: Mutex<Option<crate::image::animation::Completion>>,
+    retired_animation_worker: Mutex<Option<crate::image::animation::AnimationWorker>>,
 }
 
 /// 后台已校验的选择请求；只携带源修订和路径，不跨线程传递任何 COM 对象。
@@ -133,12 +147,107 @@ pub(crate) struct ResolvedSelection {
 
 /// 渲染线程只返回缓存判断，不把 GPU 接口交给 UI；单槽邮箱允许过期答复被较新的答复覆盖。
 pub(crate) enum GpuProbeReply {
+    AnimationError { generation: u64, message: String },
     Hit { generation: u64, path: PathBuf },
     Miss(ResolvedSelection),
     LargeError { generation: u64, message: String },
 }
 
 impl Shared {
+    /// 观察者保活完成事件，UI 等待期间 Render Thread 可以先退出并释放控制器。
+    pub(crate) fn set_animation_completion(&self, completion: crate::image::animation::Completion) {
+        *self
+            .animation_completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(completion);
+        let event = *self
+            .ui_ready_event
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if event != 0 {
+            // SAFETY: UI 的 ImageLoader ready event 在渲染线程退出前保持存活。
+            let _ = unsafe { SetEvent(HANDLE(event as _)) };
+        }
+    }
+    fn animation_done_handle(&self) -> Option<HANDLE> {
+        self.animation_completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|c| c.handle())
+    }
+    /// 完成事件之后记录最终回收量；与 Render Thread 退出前的在途快照区分。
+    fn report_animation_completion(&self) {
+        if let Some(completion) = self
+            .animation_completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            let (usage, state) = completion.resources();
+            println!(
+                "Animation Worker completed: animation_bytes={} shared_cpu_bytes={} credits={} queued={} phase={:?} shared_cpu_peak={} animation_peak={}",
+                usage.animation,
+                usage.total,
+                state.credits,
+                state.queued,
+                state.phase,
+                usage.peak,
+                usage.animation_peak
+            );
+            print!("{}", completion.report());
+        }
+    }
+    /// Render 退出时只交还控制器；它不携带 COM/GPU/HWND，UI 根据完成事件决定何时 join。
+    pub(crate) fn retire_animation_worker(&self, worker: crate::image::animation::AnimationWorker) {
+        *self
+            .retired_animation_worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(worker);
+    }
+    fn join_completed_animation(&self) -> Result<bool> {
+        let mut slot = self
+            .retired_animation_worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(worker) = slot.as_mut() {
+            if !worker.join_completed()? {
+                return Ok(false);
+            }
+        }
+        slot.take();
+        Ok(true)
+    }
+    /// Render Thread 在同一锁下读取选择与播放意图；长按进度和关闭均禁止启动 Session。
+    pub(crate) fn animation_control(&self) -> (u64, bool, AnimationControl) {
+        let p = self.pending();
+        (
+            p.image_generation,
+            !p.shutdown && p.progress_floor.is_none(),
+            p.animation_control,
+        )
+    }
+    /// 标记 Space 是否有活动播放目标；有限结束及新选择会关闭入口。
+    pub(crate) fn animation_available(&self, generation: u64, value: bool) {
+        let mut pending = self.pending();
+        if pending.image_generation == generation && !pending.shutdown {
+            pending.animation_control.available = value;
+        }
+    }
+    /// UI 只改变手动播放意图，Render Thread 决定何时暂停生产与计时。
+    pub(crate) fn toggle_animation_pause(&self) {
+        let mut p = self.pending();
+        if p.animation_control.available && !p.shutdown {
+            p.animation_control.user_paused = !p.animation_control.user_paused;
+            drop(p);
+            self.wake_render_thread();
+        }
+    }
+    /// 模态文件对话框使用独立的临时暂停原因，取消对话框不改变手动暂停。
+    pub(crate) fn animation_dialog(&self, value: bool) {
+        self.pending().animation_control.dialog = value;
+        self.wake_render_thread();
+    }
     fn pending(&self) -> MutexGuard<'_, PendingState> {
         self.pending
             .lock()
@@ -182,6 +291,8 @@ impl Shared {
     pub(crate) fn set_navigation_generation(&self, generation: u64, progress_floor: Option<u64>) {
         let mut pending = self.pending();
         pending.image_generation = generation;
+        pending.animation_control.user_paused = false;
+        pending.animation_control.available = false;
         pending.progress_floor = progress_floor;
         if pending
             .image_update
@@ -197,6 +308,7 @@ impl Shared {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .set_target_generation(generation);
+        self.wake_render_thread();
     }
 
     /// 松键、反向或失焦时立即停止旧进度；当前最新目标继续加载。
@@ -592,6 +704,7 @@ pub(crate) struct WindowContext {
 
 #[derive(Clone, Copy)]
 pub(crate) enum WindowAction {
+    ToggleAnimation,
     Open,
     Previous,
     Next,
@@ -720,6 +833,7 @@ pub(crate) fn run() -> Result<()> {
     };
     let shared = Arc::new(Shared {
         pending: Mutex::new(PendingState {
+            animation_control: AnimationControl::default(),
             snapshot: initial_snapshot,
             image_generation: 0,
             progress_floor: None,
@@ -740,6 +854,8 @@ pub(crate) fn run() -> Result<()> {
         fatal_error: Mutex::new(None),
         gpu_probe_reply: Mutex::new(None),
         ui_ready_event: Mutex::new(0),
+        animation_completion: Mutex::new(None),
+        retired_animation_worker: Mutex::new(None),
     });
 
     let mut loader = ImageLoader::start(ImageBudget::default(), Arc::clone(&shared))?;
@@ -760,6 +876,7 @@ pub(crate) fn run() -> Result<()> {
     );
 
     let render_shared = Arc::clone(&shared);
+    let animation_worker = loader.take_animation();
     let raw_hwnd = hwnd.0 as isize;
     // SAFETY: 此 ID 属于当前 UI 线程；创建窗口后其消息队列已建立，并在 render thread 退出前保持存活。
     let ui_thread_id = unsafe { GetCurrentThreadId() };
@@ -773,7 +890,11 @@ pub(crate) fn run() -> Result<()> {
                     ui_thread_id,
                 };
                 run_render_worker(&render_shared, || {
-                    renderer::render_thread(raw_hwnd, Arc::clone(&render_shared))
+                    renderer::render_thread_with_animation(
+                        raw_hwnd,
+                        Arc::clone(&render_shared),
+                        animation_worker,
+                    )
                 });
             }) {
             Ok(thread) => thread,
@@ -814,17 +935,23 @@ pub(crate) fn run() -> Result<()> {
     let mut render_done = false;
     let mut loader_done = false;
     let mut identity_done = false;
+    let mut animation_done = false;
     let mut loader_stop_sent = false;
     let mut loader_shutdown_started = None;
     let mut render_join_error = None;
 
-    while !render_done || !loader_done || !identity_done {
+    while !render_done
+        || !loader_done
+        || !identity_done
+        || (!animation_done && shared.animation_done_handle().is_some())
+    {
         #[derive(Clone, Copy)]
         enum WaitTarget {
             Render,
             LoaderReady,
             LoaderDone,
             IdentityDone,
+            AnimationDone,
         }
         let mut handles = Vec::with_capacity(4);
         let mut targets = Vec::with_capacity(4);
@@ -842,6 +969,12 @@ pub(crate) fn run() -> Result<()> {
             handles.push(loader.identity_completed_handle());
             targets.push(WaitTarget::IdentityDone);
         }
+        if !animation_done {
+            if let Some(handle) = shared.animation_done_handle() {
+                handles.push(handle);
+                targets.push(WaitTarget::AnimationDone);
+            }
+        }
         let timeout = loader_shutdown_started
             .map(remaining_worker_shutdown_ms)
             .unwrap_or(INFINITE);
@@ -854,6 +987,16 @@ pub(crate) fn run() -> Result<()> {
             None
         };
         match signaled_target.and_then(|index| targets.get(index).copied()) {
+            Some(WaitTarget::AnimationDone) => {
+                animation_done = true;
+                shared.report_animation_completion();
+                if let Err(error) = shared.join_completed_animation() {
+                    loop_error = Some(error);
+                }
+                if let Some(at) = shared.pending().shutdown_started {
+                    shared.record(Metric::AnimationWorkerShutdown, at.elapsed());
+                }
+            }
             Some(WaitTarget::Render) => {
                 if let Some(thread) = render_thread.take() {
                     render_join_error = thread.join().err();
@@ -901,7 +1044,9 @@ pub(crate) fn run() -> Result<()> {
             }
             None if result == WAIT_TIMEOUT
                 && loader_shutdown_started.is_some()
-                && (!loader_done || !identity_done) =>
+                && (!loader_done
+                    || !identity_done
+                    || (!animation_done && shared.animation_done_handle().is_some())) =>
             {
                 eprintln!(
                     "Image workers did not stop within {} ms; detaching them until process exit",
@@ -910,6 +1055,7 @@ pub(crate) fn run() -> Result<()> {
                 loader.detach_for_process_exit();
                 loader_done = true;
                 identity_done = true;
+                animation_done = true;
             }
             None if result == WAIT_FAILED => {
                 loop_error = Some(
@@ -937,6 +1083,9 @@ pub(crate) fn run() -> Result<()> {
     }
     if let Err(error) = loader.join() {
         loop_error.get_or_insert_with(|| error.context("等待图片后台线程退出失败"));
+    }
+    if let Err(error) = shared.join_completed_animation() {
+        loop_error.get_or_insert(error);
     }
     // SAFETY: Render Thread 已 join；WIC Worker 已 join，或已分离且从未持有 HWND/WindowContext；HWND 仍由 UI 线程拥有。
     let destroy_result = unsafe { DestroyWindow(hwnd) };
@@ -1010,9 +1159,13 @@ fn process_window_action(
         return;
     };
     match action {
+        WindowAction::ToggleAnimation => context.shared.toggle_animation_pause(),
         WindowAction::Open => {
             stop_navigation(context, loader);
-            match choose_image(hwnd) {
+            context.shared.animation_dialog(true);
+            let chosen = choose_image(hwnd);
+            context.shared.animation_dialog(false);
+            match chosen {
                 Ok(Some(path)) => {
                     if let Err(error) = request_open(context, loader, hwnd, path) {
                         show_error(hwnd, &format!("无法打开图片：{error:#}"));
@@ -1105,6 +1258,14 @@ fn process_gpu_probe_reply(
         return;
     };
     match reply {
+        GpuProbeReply::AnimationError {
+            generation,
+            message,
+        } => {
+            if context.shared.is_image_generation_current(generation) {
+                show_non_modal_error(hwnd, &message);
+            }
+        }
         GpuProbeReply::Hit { generation, path } => {
             if generation == context.navigation.generation
                 && context.navigation.current_path.as_deref() == Some(path.as_path())
@@ -1392,6 +1553,7 @@ pub(crate) mod tests {
         let event = WakeEvent(unsafe { CreateEventW(None, false, false, None)? });
         let shared = Arc::new(Shared {
             pending: Mutex::new(PendingState {
+                animation_control: super::AnimationControl::default(),
                 snapshot: RenderSnapshot {
                     sequence: 0,
                     texture_index: 0,
@@ -1421,6 +1583,8 @@ pub(crate) mod tests {
             fatal_error: Mutex::new(None),
             gpu_probe_reply: Mutex::new(None),
             ui_ready_event: Mutex::new(0),
+            animation_completion: Mutex::new(None),
+            retired_animation_worker: Mutex::new(None),
         });
         Ok((shared, event))
     }
@@ -1596,6 +1760,7 @@ pub(crate) mod tests {
             format: crate::image::PixelFormat::Bgra8Premultiplied,
             stride: 4,
             pixels: vec![0; 4],
+            gif_poster: None,
             _charge: None,
         });
         shared.set_navigation_generation(8, Some(3));
@@ -1778,6 +1943,7 @@ pub(crate) mod tests {
             format: crate::image::PixelFormat::Bgra8Premultiplied,
             stride: 4,
             pixels: vec![0; 4],
+            gif_poster: None,
             _charge: None,
         });
         shared.set_image(1, Arc::clone(&image), Instant::now(), false);
@@ -1881,8 +2047,10 @@ pub(crate) mod tests {
         window::show_main_window(hwnd);
         let render_shared = Arc::clone(&shared);
         let raw_hwnd = hwnd.0 as isize;
-        let render_thread =
-            std::thread::spawn(move || crate::renderer::render_thread(raw_hwnd, render_shared));
+        let animation = if gif { loader.take_animation() } else { None };
+        let render_thread = std::thread::spawn(move || {
+            crate::renderer::render_thread_with_animation(raw_hwnd, render_shared, animation)
+        });
         let count = |counter| shared.metrics.lock().unwrap().counter(counter);
         let result = (|| -> Result<()> {
             super::request_open(
@@ -1894,8 +2062,14 @@ pub(crate) mod tests {
             pump(&mut context, &loader, hwnd, || {
                 count(Counter::ImageSelectionPresented) > 0
             })?;
+            if gif {
+                pump(&mut context, &loader, hwnd, || {
+                    count(Counter::AnimationStarted) > 0
+                })?;
+            }
             loader.set_copy_delay_for_test(Duration::from_millis(80));
             for direction in [1, -1] {
+                let starts = count(Counter::AnimationStarted);
                 context.navigation.direction = Some(direction);
                 context.navigation.progress_floor =
                     (!strict_reference).then_some(context.navigation.generation + 1);
@@ -1921,6 +2095,13 @@ pub(crate) mod tests {
                     );
                 }
                 let target_generation = context.navigation.generation;
+                if gif {
+                    assert_eq!(
+                        count(Counter::AnimationStarted),
+                        starts,
+                        "长按进度期间不得反复激活动画"
+                    );
+                }
                 context.navigation_key_released(direction, Instant::now());
                 super::process_window_action(&mut context, &loader, hwnd);
                 assert!(shared.pending().progress_floor.is_none());
@@ -1929,6 +2110,11 @@ pub(crate) mod tests {
                     shared.metrics.lock().unwrap().presented_generation() == target_generation
                 })?;
                 assert_eq!(context.navigation.generation, target_generation);
+                if gif {
+                    pump(&mut context, &loader, hwnd, || {
+                        count(Counter::AnimationStarted) > starts
+                    })?;
+                }
             }
             Ok(())
         })();
@@ -1938,6 +2124,14 @@ pub(crate) mod tests {
             .join()
             .map_err(|_| anyhow::anyhow!("诊断渲染线程 panic"))?;
         loader.join()?;
+        if let Some(done) = shared.animation_done_handle() {
+            // SAFETY: Shared 的 Completion 保活事件；本诊断只等待自制 GIF 的正常清理。
+            anyhow::ensure!(
+                unsafe { WaitForSingleObject(done, 5000) } == WAIT_OBJECT_0,
+                "长按诊断动画清理超时"
+            );
+            assert!(shared.join_completed_animation()?);
+        }
         // SAFETY: 两个后台文件线程与渲染线程均已退出，当前 UI 线程仍拥有 HWND 和 WindowContext。
         unsafe {
             windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd)?;
@@ -1995,8 +2189,10 @@ pub(crate) mod tests {
         window::show_main_window(hwnd);
         let render_shared = Arc::clone(&shared);
         let raw_hwnd = hwnd.0 as isize;
-        let render_thread =
-            std::thread::spawn(move || crate::renderer::render_thread(raw_hwnd, render_shared));
+        let animation = loader.take_animation();
+        let render_thread = std::thread::spawn(move || {
+            crate::renderer::render_thread_with_animation(raw_hwnd, render_shared, animation)
+        });
         let count = |counter| shared.metrics.lock().unwrap().counter(counter);
         let result = (|| -> Result<()> {
             super::request_open(&mut context, &loader, hwnd, root.join("0.bmp"))?;
@@ -2030,6 +2226,11 @@ pub(crate) mod tests {
                 "GPU 命中不应进入 WIC"
             );
             assert!(count(Counter::GpuCurrentHit) >= 100);
+            assert_eq!(
+                count(Counter::AnimationStarted),
+                0,
+                "普通图片不得启动动画 Worker"
+            );
             // 不等待中间画面，模拟快速往返后停在最后一张；只能最终提交最新 Generation。
             for index in 0..200 {
                 super::schedule_selection(

@@ -1,6 +1,6 @@
 [English](architecture.md) | [简体中文](../zh-CN/architecture.md)
 
-<!-- doc-id: architecture; revision: 10; status: active -->
+<!-- doc-id: architecture; revision: 12; status: animation-playback-review -->
 
 # Architecture and implementation scope
 
@@ -117,18 +117,24 @@ or an early complete preview. Disk write performance, sampled-source false negat
 disk exhaustion, driver hangs, and historical viewport-tail attribution remain review risks. The owner
 has accepted real desktop gestures; that acceptance does not establish long-duration stability or failure recovery.
 
-## D1-b1 background animation boundary
+## D1-b2 playback boundary
 
-This branch adds one lazy MTA animation Worker and a two-Credit CPU frame interface; the Viewer still
-uses its static GIF poster. The static WIC/GPU fast path and Stage C path retain their execution models.
-Animation and static pixel owners share a 512 MiB CPU ledger; animation may consume at most 256 MiB
-of it, including canvas, local patch, saved region and outputs. Arc-held pixels remain charged after
-cache eviction. WIC internal memory is outside this pixel ledger. GPU budgets are unchanged.
+D1-b1 is merged. This branch transfers its unique lazy animation controller from `ImageLoader`
+to the Render Thread; WIC COM and sequential composition remain on the single MTA Worker.
+The Render Thread owns the playback clock, one future CPU frame and one reusable animation Texture/SRV.
+The two output Credits still cover queued, held and in-production frames. No second upload queue exists.
 
-The worker owns all animation COM and composition state. Selection Generation, Session ID and Frame
-Ordinal have distinct lifetimes. Cancel/replacement invalidates output immediately; Credit and pixel
-charges return on final ownership release. No clock, animation GPU resource or Renderer wait-loop
-change is included. See [D1-b1](stage-d1b1.md) for cancellation, delayed WIC exit and measured limits.
+Animation pixels use up to 256 MiB inside the shared 512 MiB CPU ledger. Animation GPU payload,
+including Query-retired resources, uses up to 128 MiB inside the shared 512 MiB GPU limit.
+Static LRU admission accounts for animation payload and may evict unpinned entries. These are
+application payload limits, not hard process-memory or driver-allocation limits. Stage C is unchanged.
+
+Selection Generation, Source Revision, Session ID and Frame Ordinal are checked independently.
+The Render Thread waits for work, producer output, a single-shot timer or DXGI frame availability.
+The DXGI event is not a GPU completion fence. Pause/finish/static idle remove the timer from the wait set.
+UI asynchronously observes Worker completion and joins only after COM/data cleanup; blocked WIC retains
+the existing finite shutdown grace and safe detachment boundary. See [D1-b2](stage-d1b2.md) for
+policies, measurements, automated evidence and the eight Windows manual scenarios reported passed by the owner.
 
 ## Completed stage scope and deferred work
 
@@ -137,7 +143,7 @@ change is included. See [D1-b1](stage-d1b1.md) for cancellation, delayed WIC exi
 | A | Win32 lifecycle, one render owner, latest snapshot, simple sequence/Device Epoch if needed, embedded test texture, QPC events, resize/shutdown/recovery tests. | No file navigation, decoder pool, CPU/GPU image cache, IPC, Job Object, Color Cache, or Tile scheduler. |
 | B | Merged WIC JPEG/PNG/BMP decoding, checked pixel layout, source identity, one WIC worker plus one source-validation thread, CPU/GPU LRU caches, directory navigation, adjacent preloads, and stale-generation rejection. GUI acceptance and rapid-navigation retesting passed. | Keep one WIC worker, bounded source validation, and a two-image preload window; defer a general priority framework, ordinary-image panning, and pooled Texture allocator until measured. |
 | C | Merged sequential large-PNG streaming, preview, disk Tile Cache/Pyramid, visible-region rendering, zoom/pan, and resource-failure regressions; six owner-run GUI scenarios passed. | Progressive preview and comprehensive Device Lost/resource-exhaustion/stability validation remain open; worker IPC and Job Object isolation require evidence, with no stable plugin or IPC ABI. |
-| D (partial) | Merged EXIF 5/7 correction and static GIF posters; this branch adds a tested background frame producer. | Playback, further formats, basic ICC, configurable input and comic reading require separate approval. Add derived color caches only with a tested color path; HDR remains deferred. |
+| D (partial) | Merged EXIF 5/7 correction, static GIF posters and background production; branch D1-b2 playback passes automated tests and all eight owner-reported Windows manual scenarios. Code review and PR merge remain pending. | Further formats, basic ICC, configurable input and comic reading require separate approval. Add derived color caches only with a tested color path; HDR remains deferred. |
 
 Stages A–C are complete; further Stage D work requires separate approval. Existing
 pixel-layout, cancellation, budget-failure, and decoder-capability boundaries do not authorize extra runtime

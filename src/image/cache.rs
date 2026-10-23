@@ -154,6 +154,7 @@ mod tests {
             format: PixelFormat::Bgra8Premultiplied,
             stride: 4,
             pixels: vec![byte; 4],
+            gif_poster: None,
             _charge: None,
         })
     }

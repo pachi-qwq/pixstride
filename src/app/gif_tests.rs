@@ -39,7 +39,7 @@ fn release_prepare_gif_poster_samples() -> Result<()> {
 }
 
 /// 自行编码普通图片，供 GIF 与 JPEG/PNG/BMP 实际往返诊断使用。
-fn ordinary_files(root: &std::path::Path) -> Result<()> {
+pub(super) fn ordinary_files(root: &std::path::Path) -> Result<()> {
     use windows::Win32::{Foundation::GENERIC_WRITE, Graphics::Imaging::*, System::Com::*};
     use windows::core::PCWSTR;
     let _com = crate::image::ComMta::initialize()?;

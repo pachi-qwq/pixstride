@@ -159,6 +159,7 @@ unsafe extern "system" fn window_proc(
             // SAFETY: GetKeyState 查询当前 UI 线程键盘状态，不接收指针或外部缓冲区。
             let control_down = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
             context.action = match (wparam.0 as u32, control_down) {
+                (0x20, false) if lparam.0 & (1 << 30) == 0 => Some(WindowAction::ToggleAnimation),
                 (key, true) if key == VK_O.0 as u32 => Some(WindowAction::Open),
                 (key, _) if key == VK_LEFT.0 as u32 => Some(WindowAction::Previous),
                 (key, _) if key == VK_RIGHT.0 as u32 => Some(WindowAction::Next),
