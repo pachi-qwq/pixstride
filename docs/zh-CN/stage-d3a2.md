@@ -1,6 +1,6 @@
 [English](../en/stage-d3a2.md) | [简体中文](stage-d3a2.md)
 
-<!-- doc-id: borderless-fullscreen; revision: 1; status: fullscreen-review -->
+<!-- doc-id: borderless-fullscreen; revision: 2; status: fullscreen-review -->
 
 # D3-a2：无边框全屏与窗口状态恢复
 
@@ -76,25 +76,27 @@ Tile LOD/缓存格式及全部额度保持原样：普通单图 256 MiB，CPU/GP
 | 空闲/资源 | 门控静态/暂停/结束观察期不新增 Present 或渲染唤醒；预热后 40 次原生往返的进程/GDI/USER 句柄计数不变。 |
 
 原生计时探针测量同步按键分发到 UI 事务完成，包含期间产生的原生消息，不启动 Renderer。
-另一个 Viewer 探针测量实际 Swap Chain Resize 和 GIF Deadline。以下为单机结果，不是基线对照。
+另一个 Viewer 探针测量实际 Swap Chain Resize 和 GIF Deadline。以下为单机两轮验证中每轮分位数/最大值的范围，
+不是合并样本的分位数或基线对照。
 环境为 Windows、RTX 4080 SUPER、Feature Level 11.1、Rust 1.96.0、Release/locked，
 3840×2160 显示器、DPI 168（175%）。合成 DPI-144 消息不能证明真实 150% 场景通过。
 
-| 指标 | 样本数 | P50 / P95 / 最大值（ms） |
+| 指标 | 每轮样本数 | P50 / P95 / 最大值范围（ms） |
 |---|---|---|
-| UI 进入事务 | 40 | 0.494 / 3.449 / 4.240 |
-| UI 退出事务 | 40 | 0.881 / 3.686 / 3.840 |
-| Viewer Swap Chain Resize | 36 | 1.086 / 1.954 / 2.280 |
-| Viewer GIF Deadline Lateness | 25 | 5.373 / 14.379 / 15.039 |
-| 独立普通图暖 GPU 命中 → Present 返回 | 110 | 0.235 / 6.594 / 7.095 |
+| UI 进入事务 | 40 | 0.494–0.724 / 3.449–13.153 / 4.240–18.816 |
+| UI 退出事务 | 40 | 0.881–1.276 / 3.686–14.832 / 3.840–19.970 |
+| Viewer Swap Chain Resize | 36 | 1.086–1.103 / 1.690–1.954 / 1.769–2.280 |
+| Viewer GIF Deadline Lateness | 25 | 5.137–5.373 / 12.773–14.379 / 15.039–15.424 |
+| 独立普通图暖 GPU 命中 → Present 返回 | 110 | 0.235–0.253 / 6.594–6.731 / 7.095–7.164 |
 
 原生探针预热后往返，进程/GDI/USER 计数均保持 144/2/4。
-Viewer 在全屏 GIF 播放中关闭，完成清理耗时 22.844 ms（一个样本）。
+Viewer 在全屏 GIF 播放中关闭，完成清理耗时 19.388/22.844 ms（每轮一个样本）。
 动画字节、共享 CPU 字节、Credit 和排队输出最终均为零。小样本报告普通 CPU/GPU 峰值为 672/720 字节，
 动画峰值 192/48 字节，Credit 峰值 2；Tile CPU/GPU 峰值为 1,374,840/1,387,380 字节。
 独立 Tile 回归达到 63,197,532/93,206,000 字节，仍在既有限制内。
 这些是报告的载荷类别，不能相加后作为进程/VRAM 总量；计数器不隔离 Swap Chain、WIC、驱动及 OS 分配。
-小负载和单轮计时不能证明长期稳定、延迟等价或性能提升。
+后一次验证仅在测试断言补充后运行，生产代码和输入序列相同。未隔离桌面调度，原生事务 P95 的波动未作归因。
+小负载和两轮计时不能证明长期稳定、延迟等价或性能提升。
 
 所有计时均结束于应用侧事件，Present 返回不代表实际显示完成或 Input-to-Photon。
 本轮未归因或优化 [Issue #11](https://github.com/pachi-qwq/pixstride/issues/11)，

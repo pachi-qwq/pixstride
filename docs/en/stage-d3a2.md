@@ -1,6 +1,6 @@
 [English](stage-d3a2.md) | [简体中文](../zh-CN/stage-d3a2.md)
 
-<!-- doc-id: borderless-fullscreen; revision: 1; status: fullscreen-review -->
+<!-- doc-id: borderless-fullscreen; revision: 2; status: fullscreen-review -->
 
 # D3-a2: borderless fullscreen and window restoration
 
@@ -88,26 +88,29 @@ probes/preparation commands and the 17 D3-a1 regression probes.
 
 The native timing probe measures synchronous key dispatch through the completed UI transaction,
 including generated native messages, without a Renderer. A separate Viewer probe measures real
-Swap Chain Resize and GIF deadlines. Single-machine results are recorded below, not a baseline comparison.
+Swap Chain Resize and GIF deadlines. Two verification runs on one machine are recorded below;
+these are ranges of per-run percentiles/maxima, not pooled samples or a baseline comparison.
 The environment is Windows, RTX 4080 SUPER, Feature Level 11.1, Rust 1.96.0, Release/locked,
 with a 3840×2160 display at DPI 168 (175%). A synthetic DPI-144 message does not establish a real 150% test.
 
-| Metric | Samples | P50 / P95 / maximum (ms) |
+| Metric | Samples per run | P50 / P95 / maximum ranges (ms) |
 |---|---|---|
-| UI entry transaction | 40 | 0.494 / 3.449 / 4.240 |
-| UI exit transaction | 40 | 0.881 / 3.686 / 3.840 |
-| Viewer Swap Chain Resize | 36 | 1.086 / 1.954 / 2.280 |
-| Viewer GIF Deadline Lateness | 25 | 5.373 / 14.379 / 15.039 |
-| Separate ordinary warm GPU hit → Present return | 110 | 0.235 / 6.594 / 7.095 |
+| UI entry transaction | 40 | 0.494–0.724 / 3.449–13.153 / 4.240–18.816 |
+| UI exit transaction | 40 | 0.881–1.276 / 3.686–14.832 / 3.840–19.970 |
+| Viewer Swap Chain Resize | 36 | 1.086–1.103 / 1.690–1.954 / 1.769–2.280 |
+| Viewer GIF Deadline Lateness | 25 | 5.137–5.373 / 12.773–14.379 / 15.039–15.424 |
+| Separate ordinary warm GPU hit → Present return | 110 | 0.235–0.253 / 6.594–6.731 / 7.095–7.164 |
 
 The native probe's process/GDI/USER counts remain 144/2/4 before and after its warmed loop.
-The Viewer closes during fullscreen GIF playback and completes cleanup in 22.844 ms (one sample).
+The Viewer closes during fullscreen GIF playback and completes cleanup in 19.388/22.844 ms (one sample per run).
 Final animation bytes, shared CPU bytes, Credits and queued outputs are zero. Its tiny fixtures report
 ordinary CPU/GPU peaks of 672/720 bytes, animation peaks of 192/48 bytes and Credit peak 2;
 Tile CPU/GPU peaks are 1,374,840/1,387,380 bytes. Separate Tile regression reaches
 63,197,532/93,206,000 bytes within existing limits. These are reported payload categories, not additive
 process/VRAM totals; Swap Chain, WIC, driver and OS allocations are not isolated by these counters.
-The small workloads and single timing run do not establish stability, latency equivalence or performance improvement.
+The later verification used the same production code and input sequence after a test-only assertion
+addition. Desktop scheduling was not isolated; the native transaction P95 variation is not attributed.
+The small workloads and two timing runs do not establish stability, latency equivalence or performance improvement.
 
 All durations end at application-side events. Present return is not displayed-frame completion or
 Input-to-Photon. There is no new attribution or optimization claim for [Issue #11](https://github.com/pachi-qwq/pixstride/issues/11);

@@ -306,7 +306,7 @@
       "id": "borderless-fullscreen",
       "en": "docs/en/stage-d3a2.md",
       "zh-CN": "docs/zh-CN/stage-d3a2.md",
-      "revision": 1,
+      "revision": 2,
       "shared_literals": [
         "F11",
         "Esc",
