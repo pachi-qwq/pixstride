@@ -1,6 +1,6 @@
 [English](development.md) | [简体中文](../zh-CN/development.md)
 
-<!-- doc-id: development; revision: 17; status: view-transform-review -->
+<!-- doc-id: development; revision: 18; status: view-transform-review -->
 
 # Development status and checks
 
@@ -12,7 +12,8 @@ and viewport rendering with zoom/pan. Its six owner-run Windows manual acceptanc
 See [Stage C](stage-c.md) for cache variables, build measurements, supported encodings, and manual checks.
 There is no public release. Stage D has merged EXIF 1–8 correction, static GIF posters and
 [D1-b2 GIF playback](stage-d1b2.md), including all eight owner-reported Windows manual scenarios.
-This branch adds [D3-a1 shared view geometry](stage-d3a1.md); owner acceptance and PR review remain pending.
+This branch adds [D3-a1 shared view geometry](stage-d3a1.md). The project owner reports all ten
+Windows manual checks passed; PR review and merge remain pending.
 Further Stage D scope remains subject to approval.
 
 ## Build and run
@@ -59,7 +60,7 @@ no additional decode/upload. Generators print their retained output directories.
 open `animation-fixtures/partial.gif`, the poster directory's JPEG/PNG/BMP and `wide.png` under the
 printed large-image sample directory. Use Ctrl+O to switch between those directories. Keep the dedicated
 Tile cache; never point these probes at an existing private cache. Acceptance criteria are in
-[D3-a1](stage-d3a1.md#remaining-acceptance-and-limits).
+[D3-a1](stage-d3a1.md#manual-acceptance-and-remaining-limits).
 
 ## Run the current checks
 

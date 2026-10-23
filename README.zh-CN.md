@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 14; status: view-transform-review -->
+<!-- doc-id: readme; revision: 15; status: view-transform-review -->
 
 # Pixstride
 
@@ -27,7 +27,7 @@ Pixstride 是一个 Windows 原生图片查看器项目，目标是快速启动�
 负责人报告 D1-b2 八项 Windows 人工验收全部通过。
 
 本分支增加 [D3-a1 统一视口几何](docs/zh-CN/stage-d3a1.md)：鼠标锚点滚轮缩放、左键拖动，以及普通图、GIF 帧和 Tile 一致的
-Fit/100% 行为。D3-a1 负责人 Windows 人工验收和 PR 审核待完成。
+Fit/100% 行为。负责人报告 D3-a1 Windows 人工验收 10/10 项通过，PR 审核和合并待完成。
 
 目前由独立渲染线程管理 GPU 资源，通过有界后台任务解码图片，并为超大图片设置独立路径。
 线程方案、缓存预算和分块尺寸仍需实验验证；测试计划中列出的格式不代表已经支持。

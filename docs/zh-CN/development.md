@@ -1,6 +1,6 @@
 [English](../en/development.md) | [简体中文](development.md)
 
-<!-- doc-id: development; revision: 17; status: view-transform-review -->
+<!-- doc-id: development; revision: 18; status: view-transform-review -->
 
 # 开发状态与检查
 
@@ -9,7 +9,7 @@ CPU/GPU 缓存。负责人已确认真实图片显示、缩放、键盘导航、
 阶段 C 提供独立预算的 PNG 流式处理、磁盘 Tile Pyramid 构建及支持缩放/平移的视口渲染，六项 Windows 人工验收全部通过。
 缓存变量、构建测量、支持的编码和人工检查见[阶段 C](stage-c.md)。项目尚无公开发行版；阶段 D 已合并 EXIF 1–8
 修正、GIF 静态首帧、后台 Worker 和 [D1-b2 GIF 播放](stage-d1b2.md)，负责人报告其八项 Windows 人工验收全部通过。
-本分支增加 [D3-a1 统一视口几何](stage-d3a1.md)，负责人验收和 PR 审核仍待完成。
+本分支增加 [D3-a1 统一视口几何](stage-d3a1.md)，负责人报告十项 Windows 人工验收全部通过；PR 审核和合并仍待完成。
 后续阶段 D 范围仍需批准。
 
 ## 构建和运行
@@ -50,7 +50,7 @@ cargo test --release --locked release_prepare_gui_samples -- --ignored --nocaptu
 几何探针输出 `pixels_checked=7869`，输入探针核对 120 次变换未新增解码/上传。生成器会输出保留样本的目录。
 人工检查时打开 `animation-fixtures/partial.gif`、Poster 目录的 JPEG/PNG/BMP，以及大图样本输出目录内的 `wide.png`，
 用 Ctrl+O 在这些目录间切换。保留独立 Tile 缓存，不要将探针指向既有私人缓存。
-验收标准见 [D3-a1](stage-d3a1.md#待验收与限制)。
+验收标准见 [D3-a1](stage-d3a1.md#人工验收与限制)。
 
 ## 当前可执行的检查
 

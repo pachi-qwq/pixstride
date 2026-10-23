@@ -1,6 +1,6 @@
 [English](architecture.md) | [简体中文](../zh-CN/architecture.md)
 
-<!-- doc-id: architecture; revision: 13; status: view-transform-review -->
+<!-- doc-id: architecture; revision: 14; status: view-transform-review -->
 
 # Architecture and implementation scope
 
@@ -147,7 +147,7 @@ animation deadlines do not change when only the view changes.
 The Render Thread acknowledges accepted Generation and final dimensions under the existing shared
 state lock; it resets extra Zoom/Pan only for a new accepted selection. GIF frame advancement does
 not acknowledge a new image. Input remains on the UI thread and performs no file I/O. See
-[D3-a1](stage-d3a1.md) for coordinates, resource boundaries and pending manual acceptance.
+[D3-a1](stage-d3a1.md) for coordinates, resource boundaries and the ten Windows manual checks reported passed by the project owner.
 
 ## Completed stage scope and deferred work
 
@@ -156,7 +156,7 @@ not acknowledge a new image. Input remains on the UI thread and performs no file
 | A | Win32 lifecycle, one render owner, latest snapshot, simple sequence/Device Epoch if needed, embedded test texture, QPC events, resize/shutdown/recovery tests. | No file navigation, decoder pool, CPU/GPU image cache, IPC, Job Object, Color Cache, or Tile scheduler. |
 | B | Merged WIC JPEG/PNG/BMP decoding, checked pixel layout, source identity, one WIC worker plus one source-validation thread, CPU/GPU LRU caches, directory navigation, adjacent preloads, and stale-generation rejection. GUI acceptance and rapid-navigation retesting passed. | Keep one WIC worker, bounded source validation, and a two-image preload window; defer a general priority framework and pooled Texture allocator until measured. D3-a1 adds ordinary-image pan on this branch. |
 | C | Merged sequential large-PNG streaming, preview, disk Tile Cache/Pyramid, visible-region rendering, zoom/pan, and resource-failure regressions; six owner-run GUI scenarios passed. | Progressive preview and comprehensive Device Lost/resource-exhaustion/stability validation remain open; worker IPC and Job Object isolation require evidence, with no stable plugin or IPC ABI. |
-| D (partial) | Merged EXIF 5/7 correction, static GIF posters and background production; merged D1-b2 playback passed automated tests and all eight owner-reported Windows manual scenarios. D3-a1 shared view geometry is implemented on this branch, pending owner acceptance and review. | Further formats, basic ICC, configurable input and comic reading require separate approval. Add derived color caches only with a tested color path; HDR remains deferred. |
+| D (partial) | Merged EXIF 5/7 correction, static GIF posters and background production; merged D1-b2 playback passed automated tests and all eight owner-reported Windows manual scenarios. D3-a1 shared view geometry is implemented on this branch; all ten owner-reported Windows manual checks passed. PR review and merge remain pending. | Further formats, basic ICC, configurable input and comic reading require separate approval. Add derived color caches only with a tested color path; HDR remains deferred. |
 
 Stages A–C are complete; further Stage D work requires separate approval. Existing
 pixel-layout, cancellation, budget-failure, and decoder-capability boundaries do not authorize extra runtime

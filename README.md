@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 14; status: view-transform-review -->
+<!-- doc-id: readme; revision: 15; status: view-transform-review -->
 
 # Pixstride
 
@@ -32,7 +32,7 @@ acceptance scenarios passed for D1-b2.
 
 This branch adds [D3-a1 shared view geometry](docs/en/stage-d3a1.md): cursor-anchored wheel zoom,
 left-drag pan, and consistent Fit/100% for ordinary images, GIF frames and Tiles.
-D3-a1 owner-run Windows acceptance and PR review remain pending.
+The project owner reports all 10/10 D3-a1 Windows manual checks passed. PR review and merge remain pending.
 
 The architecture keeps GPU resource ownership on a render thread and decodes images in
 bounded background work. Large images have a separate path. Threading, cache budgets, and Tile sizes

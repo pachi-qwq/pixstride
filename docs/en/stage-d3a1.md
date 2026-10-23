@@ -1,12 +1,13 @@
 [English](stage-d3a1.md) | [简体中文](../zh-CN/stage-d3a1.md)
 
-<!-- doc-id: view-transform; revision: 1; status: view-transform-review -->
+<!-- doc-id: view-transform; revision: 2; status: view-transform-review -->
 
 # D3-a1: shared zoom, pan and view geometry
 
 This branch makes ordinary images, GIF posters/animation frames and large-PNG Tiles consume the
-same view geometry. Owner-run Windows acceptance and PR review are pending. D1-b2 playback is
-already merged; this work changes its geometry, not its clock or decoder.
+same view geometry. The project owner reports all 10/10 Windows manual checks passed; PR review
+and merge remain pending. D1-b2 playback is already merged; this work changes its geometry,
+not its clock or decoder.
 
 ## Original defect and implementation boundary
 
@@ -118,9 +119,10 @@ complete at 113/123 µs P50/P95 without additional Tile reads/uploads. Peak Tile
 63,197,532 bytes and GPU payload 93,206,000 bytes, within existing limits. This run includes a cold
 build and is not a strict comparison with historical Stage C timings.
 
-## Remaining acceptance and limits
+## Manual acceptance and remaining limits
 
-The project owner must run these ten Windows checks before D3-a1 can be described as manually accepted:
+The project owner confirmed that all ten checklist items behaved normally: **10/10 passed**.
+These are owner-provided Windows desktop observations, not new automated measurements or pixel-level proofs:
 
 1. Zoom/pan ordinary JPEG, PNG and BMP with the wheel and left drag.
 2. Keep a chosen detail under the cursor while zooming in/out, including blank-space anchors.
@@ -133,8 +135,9 @@ The project owner must run these ten Windows checks before D3-a1 can be describe
 9. Hold/reverse navigation, Ctrl+O/cancel, lose capture during dragging, and close while loading.
 10. Leave a static image idle; confirm no sustained abnormal CPU use or periodic refresh.
 
-Real multi-monitor/DPI migration, extreme physical input devices and long-duration stability remain
-unverified. Free pan can move an image completely outside the window; F/1 recovers it. WIC cancellation,
+The specific monitor/DPI combinations were not separately recorded. Full coverage of display/DPI
+combinations, extreme physical input devices and long-duration stability remains unverified.
+Free pan can move an image completely outside the window; F/1 recovers it. WIC cancellation,
 Device Lost recovery, resource-exhaustion and Stage C first-build/viewport-tail limits remain as documented.
 All timings are application-side; Present return is not screen completion or Input-to-Photon.
 
