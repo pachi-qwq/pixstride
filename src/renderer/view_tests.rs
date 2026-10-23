@@ -396,6 +396,31 @@ fn release_fullscreen_gpu_pixels() -> Result<()> {
     let device = r.device.as_raw();
     let chain = r.swap_chain.as_raw();
     let srv = r.image_cache[&image.source].0.as_raw();
+    fn is_exclusive(r: &Renderer) -> Result<bool> {
+        let mut exclusive = windows::core::BOOL::default();
+        // SAFETY: Swap Chain 仍由本线程独占，BOOL 输出在本次同步查询期间可写；无需输出显示器接口。
+        unsafe { r.swap_chain.GetFullscreenState(Some(&mut exclusive), None) }?;
+        Ok(exclusive.as_bool())
+    }
+    assert!(!is_exclusive(&r)?);
+    // SAFETY: 只向自有 HWND 注入系统 Alt+Enter；Factory 已禁止 DXGI 自动模式切换，不修改显示配置。
+    unsafe {
+        SendMessageW(
+            hwnd,
+            WM_SYSKEYDOWN,
+            Some(WPARAM(0x0d)),
+            Some(LPARAM(1 | (1 << 29))),
+        )
+    };
+    let mut message = MSG::default();
+    // SAFETY: 分发本测试线程的消息以检验实际关联，不依赖 Sleep 或只检查调用返回值。
+    unsafe {
+        while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+            DispatchMessageW(&message);
+        }
+    }
+    assert!(!context.fullscreen.is_fullscreen());
+    assert!(!is_exclusive(&r)?);
     let mut checked = 0u64;
     for mode in [ViewMode::Fit, ViewMode::NativePixels] {
         shared.set_view_mode(mode);
@@ -436,6 +461,7 @@ fn release_fullscreen_gpu_pixels() -> Result<()> {
             r.draw(&s, &shared)?;
             assert_eq!(r.device.as_raw(), device);
             assert_eq!(r.swap_chain.as_raw(), chain);
+            assert!(!is_exclusive(&r)?);
             assert_eq!(r.image_cache[&image.source].0.as_raw(), srv);
             assert_eq!(r.gpu_cache_bytes, 16);
             assert_eq!(shared.image_generation(), 1);
@@ -452,7 +478,7 @@ fn release_fullscreen_gpu_pixels() -> Result<()> {
         assert!(!context.fullscreen.is_fullscreen());
     }
     println!(
-        "FULLSCREEN GPU pixels_checked={checked} cases=8 tolerance=2 device_swap_chain_srv_reused=true static_payload=16 bytes"
+        "FULLSCREEN GPU pixels_checked={checked} cases=8 tolerance=2 device_swap_chain_srv_reused=true dxgi_exclusive=false alt_enter_ignored=true static_payload=16 bytes"
     );
     drop(r);
     drop(window);

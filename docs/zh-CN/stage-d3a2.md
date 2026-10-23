@@ -1,6 +1,6 @@
 [English](../en/stage-d3a2.md) | [简体中文](stage-d3a2.md)
 
-<!-- doc-id: borderless-fullscreen; revision: 2; status: fullscreen-review -->
+<!-- doc-id: borderless-fullscreen; revision: 3; status: fullscreen-review -->
 
 # D3-a2：无边框全屏与窗口状态恢复
 
@@ -32,6 +32,12 @@ F11/Esc 可再次尝试恢复。错误写入 stderr，不弹出模态框，不�
 rcWork 仅用于普通窗口恢复。边框刷新遵循
 [SetWindowPos 契约](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos)。
 保留激活、Owner 和 Z 序，不增加永久 Topmost，也不修改 Explorer 设置。
+
+Swap Chain 所属 Factory 显式调用 `MakeWindowAssociation`，使用 `DXGI_MWA_NO_ALT_ENTER` 和
+`DXGI_MWA_NO_WINDOW_CHANGES`，避免 DXGI 自动模式处理介入 UI 窗口事务。
+基线未配置这些标志；这是保证纯窗口模式的正确性保护，不是已复现独占故障或计时优化。
+GPU 探针对自有 HWND 发送 Alt+Enter，并查询 `GetFullscreenState`；Alt+Enter 前后及每个 F11 场景都保持 windowed。
+依据见 [MakeWindowAssociation](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgifactory-makewindowassociation)。
 
 退出恢复原样式和曾修改的扩展边框位，用保存的 WINDOWPLACEMENT 调用 `SetWindowPlacement`，
 再刷新非客户区，不额外移动或调整尺寸。普通位置、尺寸及最大化状态以原生 Placement 为准，不另建一套位置模型。
@@ -76,7 +82,7 @@ Tile LOD/缓存格式及全部额度保持原样：普通单图 256 MiB，CPU/GP
 | 空闲/资源 | 门控静态/暂停/结束观察期不新增 Present 或渲染唤醒；预热后 40 次原生往返的进程/GDI/USER 句柄计数不变。 |
 
 原生计时探针测量同步按键分发到 UI 事务完成，包含期间产生的原生消息，不启动 Renderer。
-另一个 Viewer 探针测量实际 Swap Chain Resize 和 GIF Deadline。以下为单机两轮验证中每轮分位数/最大值的范围，
+另一个 Viewer 探针测量实际 Swap Chain Resize 和 GIF Deadline。以下为补充 Factory 保护前，单机两轮验证中每轮分位数/最大值的范围，
 不是合并样本的分位数或基线对照。
 环境为 Windows、RTX 4080 SUPER、Feature Level 11.1、Rust 1.96.0、Release/locked，
 3840×2160 显示器、DPI 168（175%）。合成 DPI-144 消息不能证明真实 150% 场景通过。
@@ -97,6 +103,21 @@ Viewer 在全屏 GIF 播放中关闭，完成清理耗时 19.388/22.844 ms（每
 这些是报告的载荷类别，不能相加后作为进程/VRAM 总量；计数器不隔离 Swap Chain、WIC、驱动及 OS 分配。
 后一次验证仅在测试断言补充后运行，生产代码和输入序列相同。未隔离桌面调度，原生事务 P95 的波动未作归因。
 小负载和两轮计时不能证明长期稳定、延迟等价或性能提升。
+
+补充 Factory 保护后，23 项诊断再次全部通过，包括实际 windowed 状态查询及相同的独立像素参考。
+这轮最终验证记录如下：
+
+| 指标 | 样本数 | P50 / P95 / 最大值（ms） |
+|---|---|---|
+| UI 进入事务 | 40 | 0.503 / 2.044 / 9.011 |
+| UI 退出事务 | 40 | 0.911 / 3.006 / 3.188 |
+| Viewer Swap Chain Resize | 37 | 1.075 / 1.464 / 1.498 |
+| Viewer GIF Deadline Lateness | 26 | 4.095 / 14.665 / 15.421 |
+| 独立普通图暖 GPU 命中 → Present 返回 | 110 | 0.264 / 6.632 / 7.248 |
+
+关闭清理为 22.771 ms（一个样本），预热前后进程/GDI/USER 计数仍为 144/2/4。
+这些验证轮次不是 A/B 实验：未隔离桌面时序，实际 Resize/提交样本数会随消息合并而变化，原生探针也不创建 Renderer。
+增加 Factory 保护的依据是模式正确性，不能据这些数字认定计时改善。
 
 所有计时均结束于应用侧事件，Present 返回不代表实际显示完成或 Input-to-Photon。
 本轮未归因或优化 [Issue #11](https://github.com/pachi-qwq/pixstride/issues/11)，

@@ -1,6 +1,6 @@
 [English](../en/architecture.md) | [简体中文](architecture.md)
 
-<!-- doc-id: architecture; revision: 15; status: fullscreen-review -->
+<!-- doc-id: architecture; revision: 16; status: fullscreen-review -->
 
 # 架构与实现范围
 
@@ -126,7 +126,8 @@ F11/Esc 由 UI 线程处理，保留 Z 序，覆盖 rcMonitor，并恢复普通/
 显式过渡及恢复待重试状态处理同步消息重入和回滚失败；显示器/DPI 变化采用当前物理矩形，
 失效的普通窗口位置回退到可见工作区。只有真实客户区尺寸变化才进入既有 Render Snapshot。
 ViewTransform 保持观察中心，GIF Session/Loop 及 GPU 资源继续由原组件维护。
-没有 DXGI 独占全屏、新渲染循环或预算变化。失败语义、实测及待人工验收见 [D3-a2](stage-d3a2.md)。
+没有 DXGI 独占全屏、新渲染循环或预算变化。Swap Chain Factory 显式禁止 DXGI 自动模式/Alt+Enter 处理，
+原生窗口样式仍由 UI 维护。失败语义、实测及待人工验收见 [D3-a2](stage-d3a2.md)。
 
 ## 已完成阶段范围与延后工作
 

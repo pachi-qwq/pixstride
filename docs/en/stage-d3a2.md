@@ -1,6 +1,6 @@
 [English](stage-d3a2.md) | [简体中文](../zh-CN/stage-d3a2.md)
 
-<!-- doc-id: borderless-fullscreen; revision: 2; status: fullscreen-review -->
+<!-- doc-id: borderless-fullscreen; revision: 3; status: fullscreen-review -->
 
 # D3-a2: borderless fullscreen and window restoration
 
@@ -36,6 +36,13 @@ then calls `SetWindowPos` over **rcMonitor**, including the taskbar area, with S
 The rcWork rectangle remains reserved for windowed recovery. Frame refresh follows the
 [SetWindowPos contract](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos).
 It preserves activation, owner and Z order; it never adds Topmost or changes Explorer settings.
+
+The Swap Chain's own Factory explicitly uses `MakeWindowAssociation` with `DXGI_MWA_NO_ALT_ENTER`
+and `DXGI_MWA_NO_WINDOW_CHANGES`, keeping automatic DXGI mode handling out of the UI's window
+transactions. The baseline did not set these flags; this is a correctness guard for the windowed-only
+design, not a reproduced exclusive-mode failure or a timing optimization. The GPU probe sends
+Alt+Enter to its own HWND and queries `GetFullscreenState`; the Swap Chain stays windowed before
+and after Alt+Enter and each F11 case. See [MakeWindowAssociation](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgifactory-makewindowassociation).
 
 Exit restores the saved style and the extended frame bits it modified, calls `SetWindowPlacement`
 with the saved WINDOWPLACEMENT, and refreshes the non-client frame without another move/resize.
@@ -89,7 +96,7 @@ probes/preparation commands and the 17 D3-a1 regression probes.
 The native timing probe measures synchronous key dispatch through the completed UI transaction,
 including generated native messages, without a Renderer. A separate Viewer probe measures real
 Swap Chain Resize and GIF deadlines. Two verification runs on one machine are recorded below;
-these are ranges of per-run percentiles/maxima, not pooled samples or a baseline comparison.
+these are ranges of per-run percentiles/maxima before the Factory guard, not pooled samples or a baseline comparison.
 The environment is Windows, RTX 4080 SUPER, Feature Level 11.1, Rust 1.96.0, Release/locked,
 with a 3840×2160 display at DPI 168 (175%). A synthetic DPI-144 message does not establish a real 150% test.
 
@@ -111,6 +118,22 @@ process/VRAM totals; Swap Chain, WIC, driver and OS allocations are not isolated
 The later verification used the same production code and input sequence after a test-only assertion
 addition. Desktop scheduling was not isolated; the native transaction P95 variation is not attributed.
 The small workloads and two timing runs do not establish stability, latency equivalence or performance improvement.
+
+After adding the Factory guard, all 23 diagnostics pass again, including actual windowed-state
+queries and the same independent pixel oracle. This separate final verification records:
+
+| Metric | Samples | P50 / P95 / maximum (ms) |
+|---|---|---|
+| UI entry transaction | 40 | 0.503 / 2.044 / 9.011 |
+| UI exit transaction | 40 | 0.911 / 3.006 / 3.188 |
+| Viewer Swap Chain Resize | 37 | 1.075 / 1.464 / 1.498 |
+| Viewer GIF Deadline Lateness | 26 | 4.095 / 14.665 / 15.421 |
+| Separate ordinary warm GPU hit → Present return | 110 | 0.264 / 6.632 / 7.248 |
+
+Cleanup takes 22.771 ms (one sample); warmed process/GDI/USER counts remain 144/2/4.
+These verification rounds are not an A/B experiment: desktop timing is not isolated and actual
+Resize/presentation sample counts vary with message coalescing. The native probe does not create
+a Renderer. The guard was added for mode correctness; the numbers do not establish a timing benefit.
 
 All durations end at application-side events. Present return is not displayed-frame completion or
 Input-to-Photon. There is no new attribution or optimization claim for [Issue #11](https://github.com/pachi-qwq/pixstride/issues/11);

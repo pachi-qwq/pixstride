@@ -1,6 +1,6 @@
 [English](architecture.md) | [简体中文](../zh-CN/architecture.md)
 
-<!-- doc-id: architecture; revision: 15; status: fullscreen-review -->
+<!-- doc-id: architecture; revision: 16; status: fullscreen-review -->
 
 # Architecture and implementation scope
 
@@ -157,7 +157,9 @@ Explicit transition/recovery states handle synchronous message reentry and faile
 changes use current physical rectangles; obsolete normal placement falls back to a visible work area.
 Only actual client-size changes reach the existing Render Snapshot. ViewTransform keeps the observed
 center; GIF Session/Loop and GPU resources remain owned by their existing components. No exclusive
-DXGI fullscreen, new rendering loop or budget change is introduced. See [D3-a2](stage-d3a2.md) for
+DXGI fullscreen, new rendering loop or budget change is introduced. The Swap Chain Factory explicitly
+disables automatic DXGI mode/Alt+Enter handling; native window styles remain the UI's responsibility.
+See [D3-a2](stage-d3a2.md) for
 failure semantics, measured evidence and pending desktop acceptance.
 
 ## Completed stage scope and deferred work
