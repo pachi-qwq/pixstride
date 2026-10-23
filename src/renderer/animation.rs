@@ -182,7 +182,8 @@ impl GpuFrames {
         }
         Ok(())
     }
-    fn upload(
+    /// 调用者先校验 Session/Generation；在 Render Thread 上传完整画布并复用现有纹理。
+    pub(super) fn upload(
         &mut self,
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,

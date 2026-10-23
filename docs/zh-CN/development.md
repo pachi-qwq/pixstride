@@ -1,6 +1,6 @@
 [English](../en/development.md) | [简体中文](development.md)
 
-<!-- doc-id: development; revision: 16; status: animation-playback-review -->
+<!-- doc-id: development; revision: 17; status: view-transform-review -->
 
 # 开发状态与检查
 
@@ -8,8 +8,8 @@
 CPU/GPU 缓存。负责人已确认真实图片显示、缩放、键盘导航、原生文件对话框和窗口 Resize 正常。阶段 A–C 均已合并，
 阶段 C 提供独立预算的 PNG 流式处理、磁盘 Tile Pyramid 构建及支持缩放/平移的视口渲染，六项 Windows 人工验收全部通过。
 缓存变量、构建测量、支持的编码和人工检查见[阶段 C](stage-c.md)。项目尚无公开发行版；阶段 D 已合并 EXIF 1–8
-修正、GIF 静态首帧和后台 Worker。本分支增加 [D1-b2 GIF 播放](stage-d1b2.md)，
-Windows 自动化检查通过，负责人报告八项 Windows 人工验收全部通过。代码评审和 PR 合并仍待完成。
+修正、GIF 静态首帧、后台 Worker 和 [D1-b2 GIF 播放](stage-d1b2.md)，负责人报告其八项 Windows 人工验收全部通过。
+本分支增加 [D3-a1 统一视口几何](stage-d3a1.md)，负责人验收和 PR 审核仍待完成。
 后续阶段 D 范围仍需批准。
 
 ## 构建和运行
@@ -27,10 +27,30 @@ cargo doc --no-deps --locked
 cargo run --release
 ```
 
-不带参数时，程序显示阶段 A 生成的测试纹理。传入一个图片路径可打开 JPEG、PNG、BMP 或 GIF（本分支支持多帧播放，Space 暂停/恢复）；按 `Ctrl+O` 打开原生文件对话框，
-按 Left/Right 浏览当前目录，按 `F` 选择 Fit，按 `1` 选择 1:1 像素。符合条件的超大 PNG 使用 Tile 路径，支持滚轮缩放和
-鼠标左键拖动平移。退出时，stdout 输出有界计时样本和缓存计数。
+不带参数时，程序显示阶段 A 生成的测试纹理。传入一个图片路径可打开 JPEG、PNG、BMP 或 GIF（支持多帧播放，Space 暂停/恢复）；按 `Ctrl+O` 打开原生文件对话框，
+按 Left/Right 浏览当前目录，按 `F` 选择 Fit，按 `1` 选择 1:1 物理像素。本分支普通图、GIF 及符合条件的超大 PNG Tile
+共用鼠标锚点缩放和左键拖动平移。切图保留模式、重置额外 Zoom/Pan；GIF 换帧保留视图。Resize 保持客户区中心下的图像位置。退出时，stdout 输出有界计时样本和缓存计数。
 Release 可执行文件为 `target/release/pixstride.exe`。功能范围和限制见 [阶段 B](stage-b.md) 与 [阶段 C](stage-c.md)。
+
+## D3-a1 视图回归
+
+从仓库根目录运行，使用 Git 外独立目录存放生成样本和 Tile 数据。以下探针只使用合成输入，不打开私人压力图片：
+
+```powershell
+$env:PIXSTRIDE_TEST_ROOT = [IO.Path]::GetFullPath('..\..\logs\pixstride-d3a1\samples')
+$env:PIXSTRIDE_TILE_CACHE = [IO.Path]::GetFullPath('..\..\logs\pixstride-d3a1\tile-cache')
+cargo test --release --locked release_view_transform_gpu_pixels -- --ignored --nocapture
+cargo test --release --locked release_view_transform_input_and_playback -- --ignored --nocapture
+cargo test --release --locked release_frame_admission_survives_stale_selection -- --ignored --nocapture
+cargo test --release --locked release_animation_prepare -- --ignored --nocapture
+cargo test --release --locked release_prepare_gif_poster_samples -- --ignored --nocapture
+cargo test --release --locked release_prepare_gui_samples -- --ignored --nocapture
+```
+
+几何探针输出 `pixels_checked=7869`，输入探针核对 120 次变换未新增解码/上传。生成器会输出保留样本的目录。
+人工检查时打开 `animation-fixtures/partial.gif`、Poster 目录的 JPEG/PNG/BMP，以及大图样本输出目录内的 `wide.png`，
+用 Ctrl+O 在这些目录间切换。保留独立 Tile 缓存，不要将探针指向既有私人缓存。
+验收标准见 [D3-a1](stage-d3a1.md#待验收与限制)。
 
 ## 当前可执行的检查
 

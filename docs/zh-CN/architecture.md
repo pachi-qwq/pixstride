@@ -1,6 +1,6 @@
 [English](../en/architecture.md) | [简体中文](architecture.md)
 
-<!-- doc-id: architecture; revision: 12; status: animation-playback-review -->
+<!-- doc-id: architecture; revision: 13; status: view-transform-review -->
 
 # 架构与实现范围
 
@@ -97,7 +97,7 @@ Tile CPU/GPU 驻留预算分别为 64/128 MiB，独立于普通图片各 512 MiB
 
 ## D1-b2 播放边界
 
-D1-b1 已合并。本分支将 `ImageLoader` 的唯一惰性动画控制器移交 Render Thread；
+已合并的 D1-b2 将 `ImageLoader` 的唯一惰性动画控制器移交 Render Thread；
 WIC COM 与顺序合成仍由单个 MTA Worker 独占。Render Thread 管理播放时钟、一个未来 CPU 帧和一个复用的动画 Texture/SRV。
 两个输出 Credit 仍覆盖排队、消费端持有和生产中的帧，没有第二个上传队列。
 
@@ -110,14 +110,23 @@ Render Thread 等待工作、生产者输出、单次计时器或 DXGI 帧可用
 暂停、结束和静态空闲时，计时器移出等待集。UI 异步观察 Worker 完成，在 COM/数据清理后 join；
 WIC 阻塞仍沿用有限关闭宽限与安全分离边界。策略、测量、自动化证据及负责人报告通过的八项 Windows 人工验收见 [D1-b2](stage-d1b2.md)。
 
+## 本分支 D3-a1 视口几何
+
+`view_transform` 用 f64 将原图边界映射到客户区物理像素。普通图片和 Tile 选块共用 Fit/100%、
+鼠标锚点、Pan 及 Resize 中心保持公式。普通路径复用既有 Tile Quad Shader，增加一个 32 字节常量缓冲；
+Tile 的 LOD、边界像素、回退和预算仍由原模块管理。只改变视图不会改变 GPU 像素和动画截止时间。
+
+Render Thread 在既有共享状态锁内确认已接受的 Generation 和最终尺寸，只在接受新选择时重置额外 Zoom/Pan。
+GIF 换帧不确认新图片。输入仍在 UI 线程执行，不读取文件。坐标、资源边界及待人工验收见 [D3-a1](stage-d3a1.md)。
+
 ## 已完成阶段范围与延后工作
 
 | 阶段 | 已实现范围或规划候选项 | 预留或延后 |
 |---|---|---|
 | A | Win32 生命周期、单一渲染维护线程、最新快照、按需使用的简单快照序号和设备代际、内嵌测试纹理、QPC 事件、尺寸变化/关闭/恢复测试。 | 不加入文件导航、解码池、CPU/GPU 图片缓存、IPC、Job Object、Color Cache 或分块调度器。 |
-| B | 已合并 WIC JPEG/PNG/BMP 解码、检查过的像素布局、源身份、一个 WIC Worker 和一个源校验线程、CPU/GPU LRU 缓存、目录导航、相邻预加载和过期 Generation 丢弃；图形界面和快速导航复测已通过。 | 保持单个 WIC Worker、有界源校验和两个相邻预加载；通用优先级框架、普通图片平移和纹理池待测量后再评估。 |
+| B | 已合并 WIC JPEG/PNG/BMP 解码、检查过的像素布局、源身份、一个 WIC Worker 和一个源校验线程、CPU/GPU LRU 缓存、目录导航、相邻预加载和过期 Generation 丢弃；图形界面和快速导航复测已通过。 | 保持单个 WIC Worker、有界源校验和两个相邻预加载；通用优先级框架和纹理池待测量后再评估；本分支 D3-a1 增加普通图片平移。 |
 | C | 已合并超大 PNG 顺序流式处理、预览、磁盘 Tile Cache/Pyramid、可见区域渲染、缩放/平移和资源失败回归；负责人六项 GUI 验收通过。 | 渐进预览及全面 Device Lost、资源耗尽和稳定性验证仍未完成；工作进程 IPC 与 Job Object 隔离需有实测依据，暂不固定插件或 IPC ABI。 |
-| D（部分完成） | EXIF 5/7 修复、GIF 静态首帧和后台生产已合并；分支 D1-b2 播放通过自动化测试，负责人报告八项 Windows 人工验收全部通过。代码评审和 PR 合并仍待完成。 | 更多格式、基本 ICC、可配置输入及漫画阅读需单独批准；有可验证的颜色路径后再加派生颜色缓存，HDR 继续延后。 |
+| D（部分完成） | EXIF 5/7 修复、GIF 静态首帧和后台生产已合并；D1-b2 播放已合并，通过自动化测试，负责人报告八项 Windows 人工验收全部通过。本分支实现 D3-a1 统一几何，待负责人验收和审核。 | 更多格式、基本 ICC、可配置输入及漫画阅读需单独批准；有可验证的颜色路径后再加派生颜色缓存，HDR 继续延后。 |
 
 阶段 A–C 已完成，后续阶段 D 工作需单独批准。现有像素布局、取消、预算不足和解码能力边界不代表可以新增
 额外运行时服务或计数器。每种新增代际编号都必须有唯一维护模块和独立的失效原因。

@@ -11,6 +11,10 @@ mod gif_tests;
 #[path = "orientation_tests.rs"]
 mod orientation_tests;
 
+#[cfg(test)]
+#[path = "view_tests.rs"]
+mod view_tests;
+
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
@@ -20,8 +24,8 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use windows::{
     Win32::{
-        Foundation::WAIT_OBJECT_0,
         Foundation::{HANDLE, HWND},
+        Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
         Graphics::{
             Direct3D::{
                 D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL,
@@ -29,15 +33,16 @@ use windows::{
                 D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
             },
             Direct3D11::{
-                D3D11_BIND_SHADER_RESOURCE, D3D11_BLEND_DESC, D3D11_BLEND_INV_SRC_ALPHA,
-                D3D11_BLEND_ONE, D3D11_BLEND_OP_ADD, D3D11_COLOR_WRITE_ENABLE_ALL,
-                D3D11_COMPARISON_NEVER, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_RASTERIZER_DESC,
-                D3D11_RENDER_TARGET_BLEND_DESC, D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA,
-                D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE2D_DESC, D3D11_VIEWPORT,
-                D3D11CreateDevice, ID3D11BlendState, ID3D11Device, ID3D11DeviceContext,
-                ID3D11PixelShader, ID3D11RasterizerState, ID3D11RenderTargetView,
-                ID3D11SamplerState, ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
+                D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_SHADER_RESOURCE, D3D11_BLEND_DESC,
+                D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_ONE, D3D11_BLEND_OP_ADD, D3D11_BUFFER_DESC,
+                D3D11_COLOR_WRITE_ENABLE_ALL, D3D11_COMPARISON_NEVER,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+                D3D11_RASTERIZER_DESC, D3D11_RENDER_TARGET_BLEND_DESC, D3D11_SDK_VERSION,
+                D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE2D_DESC,
+                D3D11_VIEWPORT, D3D11CreateDevice, ID3D11BlendState, ID3D11Buffer, ID3D11Device,
+                ID3D11DeviceContext, ID3D11PixelShader, ID3D11RasterizerState,
+                ID3D11RenderTargetView, ID3D11SamplerState, ID3D11ShaderResourceView,
+                ID3D11Texture2D, ID3D11VertexShader,
             },
             Dxgi::{
                 Common::{
@@ -54,14 +59,17 @@ use windows::{
     core::{Error, Interface},
 };
 
+#[cfg(test)]
+use crate::app::ViewMode;
 use crate::{
-    app::{GpuProbeReply, RenderSnapshot, RequestOrigin, Shared, ViewMode},
+    app::{GpuProbeReply, RenderSnapshot, RequestOrigin, Shared},
     diagnostics::Metric,
     image::{DecodedImage, ImageBudget, PixelFormat, SourceIdentity},
+    view_transform::ViewTransform,
 };
 
 const TEST_TEXTURE_SIZE: u32 = 256;
-const VERTEX_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/test_vs.cso"));
+const VERTEX_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/tile_vs.cso"));
 const PIXEL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/test_ps.cso"));
 
 #[cfg(test)]
@@ -108,8 +116,12 @@ struct Renderer {
     context: ID3D11DeviceContext,
     swap_chain: IDXGISwapChain2,
     frame_latency_handle: HANDLE,
+    // 帧就绪通知已取走但尚未 Present。拒绝过期候选不能丢失这次准入，
+    // 否则最新图片可能等待一个必须由下一次 Present 才能再次产生的通知。
+    frame_available: bool,
     render_target: Option<ID3D11RenderTargetView>,
     vertex_shader: ID3D11VertexShader,
+    quad_constants: ID3D11Buffer,
     pixel_shader: ID3D11PixelShader,
     sampler: ID3D11SamplerState,
     blend: ID3D11BlendState,
@@ -192,6 +204,16 @@ impl Renderer {
         unsafe { device.CreateVertexShader(VERTEX_SHADER, None, Some(&mut vertex_shader)) }
             .context("创建 Vertex Shader 失败")?;
         let vertex_shader = vertex_shader.context("D3D11 未返回 Vertex Shader")?;
+        let mut quad_constants = None;
+        let quad_desc = D3D11_BUFFER_DESC {
+            ByteWidth: 32,
+            Usage: windows::Win32::Graphics::Direct3D11::D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+            ..Default::default()
+        };
+        // SAFETY: 固定 32 字节（16 字节倍数）的缓冲与现有 Quad Shader 契约一致，无初始裸指针。
+        unsafe { device.CreateBuffer(&quad_desc, None, Some(&mut quad_constants)) }?;
+        let quad_constants = quad_constants.context("未返回 Quad 常量缓冲")?;
         let mut pixel_shader = None;
         // SAFETY: 内嵌 DXBC 字节码和输出槽满足 CreatePixelShader 的指针及生命周期要求；生成的 COM 接口立即由 Renderer 持有。
         unsafe { device.CreatePixelShader(PIXEL_SHADER, None, Some(&mut pixel_shader)) }
@@ -222,8 +244,10 @@ impl Renderer {
             context,
             swap_chain,
             frame_latency_handle,
+            frame_available: false,
             render_target: None,
             vertex_shader,
+            quad_constants,
             pixel_shader,
             sampler,
             blend,
@@ -247,7 +271,9 @@ impl Renderer {
             tiles: None,
         };
 
-        let snapshot = shared.current_snapshot();
+        let snapshot = shared
+            .activate_view(0, (TEST_TEXTURE_SIZE, TEST_TEXTURE_SIZE))
+            .unwrap_or_else(|| shared.current_snapshot());
         if snapshot.width > 0 && snapshot.height > 0 {
             renderer.resize_resources(snapshot.width, snapshot.height, false, shared)?;
         }
@@ -262,7 +288,7 @@ impl Renderer {
             let wait_result = self.wait_for_work(shared, needs_render)?;
             shared.increment(crate::diagnostics::Counter::AnimationRenderWake);
             if wait_result == WaitResult::Work {
-                let work = shared.take_pending();
+                let mut work = shared.take_pending();
                 #[cfg(test)]
                 if work.image.is_some() && work.gpu_probe.is_some() {
                     if let Some((entered, release)) = self.batch_gate.take() {
@@ -335,6 +361,7 @@ impl Renderer {
                     }
                     self.selection_started = work.snapshot.requested_at;
                     self.poster_presented_at = None;
+                    let size = (image.width, image.height);
                     if let Err(error) = self.upload_image(image, true, shared) {
                         self.pending_selection_present = None;
                         // SAFETY: Device 仍归本 Render Thread；设备移除继续进入统一退出路径。
@@ -347,6 +374,9 @@ impl Renderer {
                         });
                     } else {
                         self.selection_generation = Some(generation);
+                        if let Some(view) = shared.activate_view(generation, size) {
+                            work.snapshot = view;
+                        }
                     }
                 }
                 for image in work.preloads {
@@ -386,6 +416,11 @@ impl Renderer {
                             shared.record(Metric::RequestToRender, delay);
                             shared.record(Metric::ImageRequestToRender, delay);
                             self.selection_generation = Some(selection.generation);
+                            if let Some(view) =
+                                shared.activate_view(selection.generation, dimensions)
+                            {
+                                snapshot = view;
+                            }
                             self.selection_started = selection.requested_at;
                             self.poster_presented_at = None;
                             snapshot.requested_at = selection.requested_at;
@@ -412,6 +447,7 @@ impl Renderer {
                         self.current_image = None;
                         self.selection_generation = Some(generation);
                         self.pending_selection_present = None;
+                        snapshot = shared.current_snapshot();
                         needs_render = true;
                     }
                 }
@@ -482,18 +518,31 @@ impl Renderer {
                 }
             }
         }
-        if needs_render && self.render_target.is_some() {
+        let acquired = needs_render && self.render_target.is_some() && self.frame_available;
+        if needs_render && self.render_target.is_some() && !acquired {
             handles.push(self.frame_latency_handle);
             targets.push(WaitResult::FrameReady);
         }
 
         // SAFETY: Shared 的工作事件、Player 保活的 Worker/Timer 和 DXGI 句柄均活到本次等待返回。
         // Render Thread 独占计时器和 Swap Chain，UI 在 Render join 后才释放工作事件。
-        let result = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
-        targets
+        // 已取得准入时只非阻塞检查更高优先级工作/动画通知；静态空闲仍无限等待。
+        // 这不是 GPU 完成 Fence，也不允许一次通知提交两帧。
+        let result =
+            unsafe { WaitForMultipleObjects(&handles, false, if acquired { 0 } else { INFINITE }) };
+        if acquired && result == WAIT_TIMEOUT {
+            return Ok(WaitResult::FrameReady);
+        }
+        let target = targets
             .get(result.0.wrapping_sub(WAIT_OBJECT_0.0) as usize)
             .copied()
-            .ok_or_else(|| anyhow!(Error::from_thread()).context("等待渲染事件、动画或帧就绪失败"))
+            .ok_or_else(|| {
+                anyhow!(Error::from_thread()).context("等待渲染事件、动画或帧就绪失败")
+            })?;
+        if target == WaitResult::FrameReady {
+            self.frame_available = true;
+        }
+        Ok(target)
     }
 
     fn resize_resources(
@@ -559,7 +608,9 @@ impl Renderer {
         Ok(())
     }
 
-    fn draw(&mut self, snapshot: &RenderSnapshot, shared: &Shared) -> Result<()> {
+    // 保留独立的绘制边界，专项可以在 Present 前回读真实 Render Target，
+    // 验证可见像素，而不把成功提交误当成几何正确性。
+    fn draw_content(&self, snapshot: &RenderSnapshot) -> Result<()> {
         if snapshot.width == 0 || snapshot.height == 0 {
             return Ok(());
         }
@@ -567,7 +618,6 @@ impl Renderer {
             bail!("渲染目标尚未创建");
         };
 
-        let started = Instant::now();
         let color = if snapshot.texture_index == 0 {
             [0.035, 0.045, 0.065, 1.0]
         } else {
@@ -592,18 +642,19 @@ impl Renderer {
                 TEST_TEXTURE_SIZE,
             )
         };
-        let (view_width, view_height) = fit_viewport(
-            image_width,
-            image_height,
-            snapshot.width,
-            snapshot.height,
+        let quad = ViewTransform::new(
+            (image_width, image_height),
+            (snapshot.width, snapshot.height),
             snapshot.view_mode,
-        );
+            snapshot.zoom,
+            snapshot.pan,
+        )
+        .and_then(|view| view.quad());
         let viewport = D3D11_VIEWPORT {
-            TopLeftX: (snapshot.width as f32 - view_width) * 0.5,
-            TopLeftY: (snapshot.height as f32 - view_height) * 0.5,
-            Width: view_width,
-            Height: view_height,
+            TopLeftX: 0.0,
+            TopLeftY: 0.0,
+            Width: snapshot.width as f32,
+            Height: snapshot.height as f32,
             MinDepth: 0.0,
             MaxDepth: 1.0,
         };
@@ -624,12 +675,35 @@ impl Renderer {
             self.context
                 .PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
             if !self.tiles.as_ref().is_some_and(|t| t.active()) {
-                self.context.Draw(3, 0);
+                if let Some(constants) = quad {
+                    // SAFETY: 两组四个 f32 恰为 32 字节，调用返回前复制；
+                    // 同一 Render Thread 更新并使用常量，不改变原图片/GIF 纹理和计时器。
+                    self.context.UpdateSubresource(
+                        &self.quad_constants,
+                        0,
+                        None,
+                        constants.as_ptr().cast(),
+                        0,
+                        0,
+                    );
+                    self.context
+                        .VSSetConstantBuffers(0, Some(&[Some(self.quad_constants.clone())]));
+                    self.context.Draw(6, 0);
+                }
             }
         }
         if let Some(tiles) = self.tiles.as_ref().filter(|t| t.active()) {
             tiles.draw(&self.context, snapshot);
         }
+        Ok(())
+    }
+
+    fn draw(&mut self, snapshot: &RenderSnapshot, shared: &Shared) -> Result<()> {
+        if snapshot.width == 0 || snapshot.height == 0 {
+            return Ok(());
+        }
+        let started = Instant::now();
+        self.draw_content(snapshot)?;
         shared.record(Metric::RenderCommands, started.elapsed());
 
         let present_started = Instant::now();
@@ -638,6 +712,7 @@ impl Renderer {
             self.swap_chain
                 .Present(1, windows::Win32::Graphics::Dxgi::DXGI_PRESENT(0))
         };
+        self.frame_available = false;
         if present_status.is_err() {
             let present_error = Error::from_hresult(present_status);
             // SAFETY: Present 返回失败后 Renderer 仍持有 Device，因此可查询设备移除原因；此调用不接收外部内存。
@@ -846,6 +921,7 @@ impl Renderer {
     }
 }
 
+#[cfg(test)]
 fn fit_viewport(
     image_width: u32,
     image_height: u32,
@@ -853,16 +929,22 @@ fn fit_viewport(
     window_height: u32,
     mode: ViewMode,
 ) -> (f32, f32) {
-    let width = image_width as f32;
-    let height = image_height as f32;
-    let scale = match mode {
-        ViewMode::Fit => (window_width as f32 / width).min(window_height as f32 / height),
-        ViewMode::NativePixels => 1.0,
-    };
-    (width * scale, height * scale)
+    let view = ViewTransform::new(
+        (image_width, image_height),
+        (window_width, window_height),
+        mode,
+        1.0,
+        (0.0, 0.0),
+    );
+    view.map_or((0.0, 0.0), |v| {
+        (
+            (f64::from(image_width) * v.scale) as f32,
+            (f64::from(image_height) * v.scale) as f32,
+        )
+    })
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WaitResult {
     Work,
     FrameReady,

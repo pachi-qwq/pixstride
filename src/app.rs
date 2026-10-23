@@ -6,6 +6,9 @@ mod gif_tests;
 #[cfg(test)]
 #[path = "app/playback_tests.rs"]
 mod playback_tests;
+#[cfg(test)]
+#[path = "app/view_tests.rs"]
+mod view_tests;
 
 use std::{
     collections::VecDeque,
@@ -56,15 +59,11 @@ pub(crate) struct RenderSnapshot {
     pub(crate) requested_at: Instant,
     pub(crate) request_origin: RequestOrigin,
     pub(crate) view_mode: ViewMode,
-    pub(crate) zoom: f32,
-    pub(crate) pan: (f32, f32),
+    pub(crate) zoom: f64,
+    pub(crate) pan: (f64, f64),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ViewMode {
-    Fit,
-    NativePixels,
-}
+pub(crate) use crate::view_transform::ViewMode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RequestOrigin {
@@ -80,6 +79,10 @@ pub(crate) enum RequestOrigin {
 struct PendingState {
     animation_control: AnimationControl,
     snapshot: RenderSnapshot,
+    // 只描述已接受图片的显示尺寸，不是目标选择；GIF 换帧不改变它。
+    view_image: Option<(u64, (u32, u32))>,
+    // 最小化的零客户区不能覆盖 Resize 保持观察位置所需的最后有效尺寸。
+    last_viewport: (u32, u32),
     image_generation: u64,
     // UI 设置同方向长按的首个选择代际；松键、反向、失焦或打开文件时清除。
     progress_floor: Option<u64>,
@@ -346,6 +349,30 @@ impl Shared {
         true
     }
 
+    /// Renderer 接受新图片后同步最终尺寸并重置额外视图；GPU 命中与解码共用此入口。
+    /// 返回同一锁下的最新几何，避免上传期间的输入或 Resize 被旧批次覆盖。
+    /// 仅真实图片选择改变时重置；动画输出从不调用此方法。
+    pub(crate) fn activate_view(
+        &self,
+        generation: u64,
+        size: (u32, u32),
+    ) -> Option<RenderSnapshot> {
+        let mut p = self.pending();
+        if size.0 == 0
+            || size.1 == 0
+            || !candidate_allowed(&p, generation)
+            || generation < p.accepted_image_generation
+        {
+            return None;
+        }
+        if p.view_image != Some((generation, size)) {
+            p.view_image = Some((generation, size));
+            p.snapshot.zoom = 1.0;
+            p.snapshot.pan = (0.0, 0.0);
+        }
+        Some(p.snapshot)
+    }
+
     /// 记录成功返回的图片 Present 所对应的选择，不代表该帧已经显示。
     pub(crate) fn record_presented_generation(&self, generation: u64) {
         let progress = self.pending().image_generation != generation;
@@ -379,38 +406,52 @@ impl Shared {
         self.pending().image_generation
     }
 
-    /// 发布当前源的大图请求，清除上一源的缩放偏移；不在 UI 线程读取 PNG 或缓存。
+    /// 发布当前源的大图请求；视图在实际接受预览时统一重置，不在 UI 线程读取 PNG 或缓存。
     pub(crate) fn request_large(&self, request: crate::large::worker::Request) {
         {
             let mut p = self.pending();
             if p.shutdown || p.image_generation != request.generation {
                 return;
             }
-            // 新源不能继承上一张图的任意平移位置；保留用户选择的 Fit/100% 模式。
-            p.snapshot.zoom = 1.0;
-            p.snapshot.pan = (0.0, 0.0);
             p.snapshot.sequence = p.snapshot.sequence.wrapping_add(1);
             p.large_request = Some(request);
         }
         self.wake_render_thread();
     }
 
-    /// 缩放以窗口中心为锚点；只更新快照，不在 UI 回调读取 Tile。
-    pub(crate) fn zoom_by(&self, factor: f32) {
-        if factor.is_finite() && factor > 0.0 {
-            self.publish(RequestOrigin::Paint, |p| {
-                let next = (p.snapshot.zoom * factor).clamp(0.01, 64.0);
-                let ratio = next / p.snapshot.zoom;
-                p.snapshot.pan.0 = (p.snapshot.pan.0 * ratio).clamp(-1e9, 1e9);
-                p.snapshot.pan.1 = (p.snapshot.pan.1 * ratio).clamp(-1e9, 1e9);
-                p.snapshot.zoom = next;
-            });
-        }
-    }
-    pub(crate) fn pan_by(&self, x: f32, y: f32) {
+    /// 锚点使用客户区物理像素；只做数学和状态发布，不读取文件或重新解码。
+    pub(crate) fn zoom_at(&self, factor: f64, point: (f64, f64)) {
         self.publish(RequestOrigin::Paint, |p| {
-            p.snapshot.pan.0 = (p.snapshot.pan.0 + x).clamp(-1e9, 1e9);
-            p.snapshot.pan.1 = (p.snapshot.pan.1 + y).clamp(-1e9, 1e9);
+            if let Some((_, size)) = p.view_image {
+                if let Some((zoom, pan)) = crate::view_transform::zoom_at(
+                    size,
+                    (p.snapshot.width, p.snapshot.height),
+                    p.snapshot.view_mode,
+                    p.snapshot.zoom,
+                    p.snapshot.pan,
+                    factor,
+                    point,
+                ) {
+                    p.snapshot.zoom = zoom;
+                    p.snapshot.pan = pan;
+                }
+            }
+        });
+    }
+    #[cfg(test)]
+    pub(crate) fn zoom_by(&self, factor: f64) {
+        let s = self.current_snapshot();
+        self.zoom_at(
+            factor,
+            (f64::from(s.width) * 0.5, f64::from(s.height) * 0.5),
+        );
+    }
+    /// Pan 的单位与鼠标拖动相同，始终是客户区物理像素。
+    pub(crate) fn pan_by(&self, x: f64, y: f64) {
+        self.publish(RequestOrigin::Paint, |p| {
+            if let Some(pan) = crate::view_transform::translated_pan(p.snapshot.pan, (x, y)) {
+                p.snapshot.pan = pan;
+            }
         });
     }
 
@@ -504,6 +545,21 @@ impl Shared {
             }
         };
         self.publish(origin, |pending| {
+            if width > 0 && height > 0 {
+                if let Some((_, size)) = pending.view_image {
+                    if let Some(pan) = crate::view_transform::resized_pan(
+                        size,
+                        pending.last_viewport,
+                        (width, height),
+                        pending.snapshot.view_mode,
+                        pending.snapshot.zoom,
+                        pending.snapshot.pan,
+                    ) {
+                        pending.snapshot.pan = pan;
+                    }
+                }
+                pending.last_viewport = (width, height);
+            }
             pending.snapshot.width = width;
             pending.snapshot.height = height;
         });
@@ -835,6 +891,8 @@ pub(crate) fn run() -> Result<()> {
         pending: Mutex::new(PendingState {
             animation_control: AnimationControl::default(),
             snapshot: initial_snapshot,
+            view_image: None,
+            last_viewport: (0, 0),
             image_generation: 0,
             progress_floor: None,
             accepted_image_generation: 0,
@@ -1126,6 +1184,7 @@ fn request_open(
         bail!("只支持 JPEG、PNG 和 BMP 图片：{}", path.display());
     }
     let path = absolute_path(&path)?;
+    window::cancel_drag(context);
     stop_navigation(context, loader);
     context.navigation.generation = context.navigation.generation.wrapping_add(1).max(1);
     if context.navigation.fallback.is_none() {
@@ -1161,6 +1220,7 @@ fn process_window_action(
     match action {
         WindowAction::ToggleAnimation => context.shared.toggle_animation_pause(),
         WindowAction::Open => {
+            window::cancel_drag(context);
             stop_navigation(context, loader);
             context.shared.animation_dialog(true);
             let chosen = choose_image(hwnd);
@@ -1177,8 +1237,14 @@ fn process_window_action(
         }
         WindowAction::Previous => navigate(context, loader, -1),
         WindowAction::Next => navigate(context, loader, 1),
-        WindowAction::Fit => context.shared.set_view_mode(ViewMode::Fit),
-        WindowAction::NativePixels => context.shared.set_view_mode(ViewMode::NativePixels),
+        WindowAction::Fit => {
+            window::cancel_drag(context);
+            context.shared.set_view_mode(ViewMode::Fit);
+        }
+        WindowAction::NativePixels => {
+            window::cancel_drag(context);
+            context.shared.set_view_mode(ViewMode::NativePixels);
+        }
         WindowAction::NavigationReleased { direction, at } => {
             if context.navigation.direction == Some(direction) {
                 stop_navigation(context, loader);
@@ -1223,6 +1289,7 @@ fn stop_navigation(context: &mut WindowContext, loader: &ImageLoader) {
 }
 
 fn schedule_selection(context: &mut WindowContext, loader: &ImageLoader, path: PathBuf) {
+    window::cancel_drag(context);
     if context.navigation.current_path.as_ref() != Some(&path) {
         context.shared.increment(Counter::NavigationTargetChanged);
     }
@@ -1565,6 +1632,8 @@ pub(crate) mod tests {
                     zoom: 1.0,
                     pan: (0.0, 0.0),
                 },
+                view_image: None,
+                last_viewport: (0, 0),
                 image_generation: 0,
                 progress_floor: None,
                 accepted_image_generation: 0,
@@ -1592,6 +1661,8 @@ pub(crate) mod tests {
     #[test]
     fn large_source_reset_and_center_zoom_do_not_reuse_an_old_pan() -> Result<()> {
         let (shared, _event) = test_shared()?;
+        shared.resize(1000, 600);
+        shared.activate_view(0, (400, 200));
         shared.set_image_generation(4);
         shared.pan_by(10.0, 20.0);
         shared.zoom_by(2.0);
@@ -1607,6 +1678,9 @@ pub(crate) mod tests {
             path: "new.png".into(),
             started: Instant::now(),
         });
+        // 请求尚未就绪时保留旧画面；接受新预览的同一入口才重置普通图/Tile 的视图。
+        assert_eq!(shared.current_snapshot().pan, (20.0, 40.0));
+        shared.activate_view(4, (20000, 65));
         assert_eq!(shared.current_snapshot().pan, (0.0, 0.0));
         assert_eq!(shared.current_snapshot().zoom, 1.0);
         shared.set_image_generation(5);

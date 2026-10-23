@@ -1,12 +1,13 @@
 [English](../en/stage-d1b2.md) | [简体中文](stage-d1b2.md)
 
-<!-- doc-id: animation-playback; revision: 2; status: animation-playback-review -->
+<!-- doc-id: animation-playback; revision: 3; status: implemented -->
 
 # D1-b2：在 D3D11 渲染线程播放 GIF
 
-本地分支将已合并的 [D1-b1 生产者](stage-d1b1.md)接入 Viewer。多帧 GIF 先显示静态 Poster，再播放动画；
+本实现已通过 [PR #9](https://github.com/pachi-qwq/pixstride/pull/9) 合并，提交为
+`751023f06d255427614db837fb68f227e80676a4`，将 [D1-b1 生产者](stage-d1b1.md)接入 Viewer。多帧 GIF 先显示静态 Poster，再播放动画；
 单帧 GIF 保持 Poster 路径。Windows 自动化检查通过，负责人报告 Windows 人工验收 8/8 项通过。
-代码评审和 PR 合并尚未完成。
+代码评审和 PR 合并已完成。
 项目没有公开 Release，本轮没有新增依赖。
 
 ## 所有权与交接

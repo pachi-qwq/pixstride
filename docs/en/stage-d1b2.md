@@ -1,13 +1,14 @@
 [English](stage-d1b2.md) | [简体中文](../zh-CN/stage-d1b2.md)
 
-<!-- doc-id: animation-playback; revision: 2; status: animation-playback-review -->
+<!-- doc-id: animation-playback; revision: 3; status: implemented -->
 
 # D1-b2: GIF playback on the D3D11 render thread
 
-This local branch connects the merged [D1-b1 producer](stage-d1b1.md) to the Viewer. Multi-frame GIFs
+[PR #9](https://github.com/pachi-qwq/pixstride/pull/9) merged this implementation at
+`751023f06d255427614db837fb68f227e80676a4`, connecting the [D1-b1 producer](stage-d1b1.md) to the Viewer. Multi-frame GIFs
 play after the static poster; single-frame GIFs keep the poster path. Windows automated checks pass.
 The project owner reports all 8/8 Windows manual acceptance scenarios passed. Code review and PR
-merge remain pending. There is no public Release or new dependency.
+merge are complete. There is no public Release or new dependency.
 
 ## Ownership and handoff
 
