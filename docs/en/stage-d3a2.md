@@ -1,6 +1,6 @@
 [English](stage-d3a2.md) | [简体中文](../zh-CN/stage-d3a2.md)
 
-<!-- doc-id: borderless-fullscreen; revision: 3; status: fullscreen-review -->
+<!-- doc-id: borderless-fullscreen; revision: 4; status: fullscreen-review -->
 
 # D3-a2: borderless fullscreen and window restoration
 
@@ -141,7 +141,10 @@ the original 0.394–0.905 ms static GPU-hit P95 difference and DXGI admission f
 
 ## Windows manual acceptance: pending
 
-The project owner must run the following desktop checklist. Automated self-owned-window tests do not
+The project owner reports that the other exercised manual cases work normally, but a first large-PNG
+cache build gives no useful progress feedback. This statement does not establish coverage of every
+physical display/DPI combination. The checklist below retains those scenarios for explicit confirmation.
+Automated self-owned-window tests do not
 establish visual flicker, taskbar/Alt+Tab behavior, or coverage of every physical display combination.
 
 1. F11 enters/exits borderless fullscreen; holding F11 does not oscillate.
@@ -157,7 +160,15 @@ establish visual flicker, taskbar/Alt+Tab behavior, or coverage of every physica
 11. Where equipment permits, check 100%/150%/200%, mixed DPI, different resolutions, negative coordinates and monitor removal.
 12. Closing fullscreen leaves no orphan process or apparent resource growth.
 
-Every item remains pending owner confirmation. WIC non-preemption/internal allocations, full Device
+The progress follow-up adds [phase and row/Tile counts](stage-c.md#first-build-feedback-on-the-d3-a2-branch)
+to the title and console, and clears the stale building title after preview acceptance. Four new default
+tests cover real phase transitions/cache hits, cancellation cleanup, deterministic notification
+throttling, and a native HWND title with stale-Generation rejection. The full default suite passes
+112 tests, with the existing 40 explicit diagnostics ignored by default. The fullscreen Viewer Release
+probe also checks title restoration after a cold build and a warm reopen of a generated PNG.
+The new progress feedback still requires owner confirmation; no additional private-image build was run.
+
+WIC non-preemption/internal allocations, full Device
 Lost recovery, real exhaustion and long-term stability remain existing limitations. Stage C first-build
 speed/no progressive preview and historical viewport tails remain separate work. Reproduction commands
 and retained generated samples are in [development](development.md#d3-a2-fullscreen-regression).

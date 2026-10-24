@@ -210,7 +210,7 @@
       "id": "stage-c",
       "en": "docs/en/stage-c.md",
       "zh-CN": "docs/zh-CN/stage-c.md",
-      "revision": 8,
+      "revision": 9,
       "shared_literals": [
         "png 0.18.1",
         "64 MiB",
@@ -306,7 +306,7 @@
       "id": "borderless-fullscreen",
       "en": "docs/en/stage-d3a2.md",
       "zh-CN": "docs/zh-CN/stage-d3a2.md",
-      "revision": 3,
+      "revision": 4,
       "shared_literals": [
         "F11",
         "Esc",

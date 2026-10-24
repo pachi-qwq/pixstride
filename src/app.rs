@@ -1,6 +1,10 @@
 //! 创建应用状态、启动渲染线程并运行 Win32 消息循环。
 
 #[cfg(test)]
+#[path = "app/cache_progress_tests.rs"]
+mod cache_progress_tests;
+
+#[cfg(test)]
 #[path = "app/fullscreen_tests.rs"]
 mod fullscreen_tests;
 #[cfg(test)]
@@ -137,6 +141,8 @@ pub(crate) struct Shared {
     metrics: Mutex<Metrics>,
     fatal_error: Mutex<Option<String>>,
     gpu_probe_reply: Mutex<Option<GpuProbeReply>>,
+    // 构建进度独立使用单槽，不能覆盖缓存命中/错误答复；后台只唤醒 UI，不触发绘制。
+    large_progress: Mutex<Option<(u64, crate::large::progress::Stage, Duration)>>,
     ui_ready_event: Mutex<isize>,
     animation_completion: Mutex<Option<crate::image::animation::Completion>>,
     retired_animation_worker: Mutex<Option<crate::image::animation::AnimationWorker>>,
@@ -160,6 +166,34 @@ pub(crate) enum GpuProbeReply {
 }
 
 impl Shared {
+    /// 不传 HWND；UI 消费最新阶段，切图和关闭后拒收旧构建通知。
+    pub(crate) fn publish_large_progress(
+        &self,
+        generation: u64,
+        stage: crate::large::progress::Stage,
+        elapsed: Duration,
+    ) {
+        {
+            let pending = self.pending();
+            if pending.shutdown || pending.image_generation != generation {
+                return;
+            }
+            *self
+                .large_progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((generation, stage, elapsed));
+        }
+        let event = *self
+            .ui_ready_event
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if event != 0 {
+            // SAFETY: UI 的 ready event 在渲染线程结束前存活；Tile Worker 停止锁禁止退出后发布通知。
+            let _ = unsafe { SetEvent(HANDLE(event as _)) };
+        }
+    }
+
     /// 观察者保活完成事件，UI 等待期间 Render Thread 可以先退出并释放控制器。
     pub(crate) fn set_animation_completion(&self, completion: crate::image::animation::Completion) {
         *self
@@ -919,6 +953,7 @@ pub(crate) fn run() -> Result<()> {
         metrics: Mutex::new(Metrics::default()),
         fatal_error: Mutex::new(None),
         gpu_probe_reply: Mutex::new(None),
+        large_progress: Mutex::new(None),
         ui_ready_event: Mutex::new(0),
         animation_completion: Mutex::new(None),
         retired_animation_worker: Mutex::new(None),
@@ -1325,11 +1360,40 @@ fn schedule_selection(context: &mut WindowContext, loader: &ImageLoader, path: P
     );
 }
 
+fn process_large_progress(context: &mut WindowContext, hwnd: windows::Win32::Foundation::HWND) {
+    let progress = context
+        .shared
+        .large_progress
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some((generation, stage, elapsed)) = progress {
+        if !context.close_started && context.shared.is_image_generation_current(generation) {
+            if let Some(path) = context.navigation.current_path.as_ref() {
+                if stage == crate::large::progress::Stage::Ready {
+                    set_window_title(hwnd, &path.display().to_string());
+                } else {
+                    set_window_title(
+                        hwnd,
+                        &format!(
+                            "{} | 大图缓存：{}；已用 {:.1}s；可切换图片或关闭窗口",
+                            path.file_name().unwrap_or_default().to_string_lossy(),
+                            stage.description(),
+                            elapsed.as_secs_f64(),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn process_gpu_probe_reply(
     context: &mut WindowContext,
     loader: &ImageLoader,
     hwnd: windows::Win32::Foundation::HWND,
 ) {
+    process_large_progress(context, hwnd);
     let Some(reply) = context.shared.take_gpu_probe_reply() else {
         return;
     };
@@ -1473,7 +1537,7 @@ fn process_loader_messages(
             } => {
                 if context.shared.is_image_generation_current(generation) {
                     context.navigation.fallback = None;
-                    set_window_title(hwnd, "正在构建大图缓存；可切换图片或关闭窗口");
+                    set_window_title(hwnd, "正在检查大图缓存；可切换图片或关闭窗口");
                     context.shared.request_large(crate::large::worker::Request {
                         generation,
                         path,
@@ -1672,6 +1736,7 @@ pub(crate) mod tests {
             metrics: Mutex::new(Metrics::default()),
             fatal_error: Mutex::new(None),
             gpu_probe_reply: Mutex::new(None),
+            large_progress: Mutex::new(None),
             ui_ready_event: Mutex::new(0),
             animation_completion: Mutex::new(None),
             retired_animation_worker: Mutex::new(None),

@@ -1,6 +1,6 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 8; status: merged -->
+<!-- doc-id: stage-c; revision: 9; status: merged -->
 
 # Stage C: large PNG path
 
@@ -11,6 +11,26 @@ Stages A–C are merged. [Stage C PR #4](https://github.com/pachi-qwq/pixstride/
 The private 48000 × 32000 PNG passed full cache construction and programmatic D3D11 viewport tests. The owner also
 confirmed normal cache-hit operation on the Windows desktop and subsequently reported all six final
 manual acceptance scenarios passed. Remaining performance and stress limits are recorded below.
+
+## First-build feedback on the D3-a2 branch
+
+The D3-a2 feature branch adds progress to the window title and launch console. It reports source/cache
+checks, disk reservation, scanned rows and pyramid generation, Tile checksums, disk synchronization,
+index publication, and preview preparation. Row and Tile percentages describe their own phase;
+100% of rows does not mean that the cache is ready. Elapsed time is a snapshot at each update, not an
+ETA. A blocked system I/O call can leave the last phase unchanged.
+
+Updates use one latest-value slot separate from cache-probe/error replies. Within a phase, notifications
+are limited to one per second; phase changes and phase completion notify immediately. Only the current
+file Generation can update the title. The Renderer restores the file title after accepting the uploaded
+preview, fixing a stale “building” title after completion. Errors keep the existing non-modal handling.
+There is no periodic idle timer or redraw from progress. In fullscreen, use F11 to see the title or
+Alt+Tab to the launch console; this change does not add an in-image overlay.
+
+This follow-up does not change the cache format, budgets, build algorithm, or progressive-preview
+status. Tests use generated small PNGs to cover phase order, throttling, cache-hit scan avoidance,
+cancellation cleanup, and stale notifications. Private images and existing private caches are untouched.
+Owner acceptance of this new feedback remains pending; the earlier Stage C evidence below is unchanged.
 
 ## C1 row prototype
 

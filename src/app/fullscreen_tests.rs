@@ -191,12 +191,24 @@ fn release_fullscreen_viewer() -> Result<()> {
         assert_eq!(n(Metric::Present), stable);
         assert_eq!(count(Counter::AnimationStarted), sessions);
         key(hwnd, &mut context, &loader, VK_F11.0);
-        for name in ["b.png", "large.png", "c.bmp", "a.jpg"] {
+        for name in ["b.png", "large.png", "large.png", "c.bmp", "a.jpg"] {
             schedule_selection(&mut context, &loader, dir.0.join(name));
             let generation = shared.image_generation();
             tests::pump(&mut context, &loader, hwnd, || {
                 shared.metrics.lock().unwrap().presented_generation() == generation
             })?;
+            if name == "large.png" {
+                process_large_progress(&mut context, hwnd);
+                let mut title = [0u16; 1024];
+                // SAFETY: 测试仍拥有正式 HWND，title 数组在同步调用期间可写。
+                let length = unsafe { GetWindowTextW(hwnd, &mut title) };
+                let title = String::from_utf16_lossy(&title[..length as usize]);
+                assert!(title.contains("large.png"));
+                assert!(
+                    !title.contains("大图缓存"),
+                    "预览已接受后仍显示构建进度：{title}"
+                );
+            }
             assert!(context.fullscreen.is_fullscreen());
         }
         assert!(count(Counter::GpuCurrentHit) > 0);
