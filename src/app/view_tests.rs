@@ -119,6 +119,7 @@ fn release_view_transform_input_and_playback() -> Result<()> {
         shared: Arc::clone(&shared),
         close_started: false,
         drag_position: None,
+        fullscreen: Default::default(),
         action: None,
         navigation: UiNavigation::default(),
     });

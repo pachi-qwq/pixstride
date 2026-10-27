@@ -1,6 +1,6 @@
 [English](../en/maintenance.md) | [简体中文](maintenance.md)
 
-<!-- doc-id: maintenance; revision: 9; status: view-transform-review -->
+<!-- doc-id: maintenance; revision: 11; status: fullscreen-review -->
 
 # 仓库维护与发布
 
@@ -152,6 +152,8 @@ Apache [官方完整文本](https://www.apache.org/licenses/LICENSE-2.0)保持�
 本轮不实现应用发布流水线。
 
 仓库初始化、保护配置及阶段 A–C 合并均已完成。阶段 D 已合并 EXIF 修正、GIF 首帧、后台 Worker 及 D1-b2 播放，
-负责人报告 D1-b2 八项 Windows 人工验收全部通过，也确认本分支 D3-a1 十项 Windows 人工验收全部通过；PR 审核和合并待完成。
-验收记录见 [D3-a1](stage-d3a1.md)，保留未单独记录的显示器/DPI 组合限制，并区分 GPU 回读与桌面操作结果。Release 和签名策略需要另行批准。
+负责人报告 D1-b2 八项 Windows 人工验收全部通过；D3-a1 已通过 PR #10 合并，负责人报告十项人工验收全部通过。
+D3-a2 功能分支的全屏和构建进度已通过自动化验证；负责人反馈已执行全屏场景正常，五项进度检查通过。
+未覆盖的显示器/DPI 场景仍未验证，PR 审核/合并待完成。详见 [D3-a2](stage-d3a2.md) 及此前的 [D3-a1](stage-d3a1.md) 验收记录，
+保留未单独记录的显示器/DPI 组合限制，并区分 GPU 回读与桌面操作结果。Release 和签名策略需要另行批准。
 项目尚未发布公开 Release。

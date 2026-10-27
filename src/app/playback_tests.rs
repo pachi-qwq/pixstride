@@ -80,6 +80,7 @@ fn release_gif_playback_viewer() -> Result<()> {
         shared: Arc::clone(&shared),
         close_started: false,
         drag_position: None,
+        fullscreen: Default::default(),
         action: None,
         navigation: UiNavigation::default(),
     });
@@ -266,6 +267,7 @@ fn release_animation_stale_underflow() -> Result<()> {
         shared: Arc::clone(&shared),
         close_started: false,
         drag_position: None,
+        fullscreen: Default::default(),
         action: None,
         navigation: UiNavigation::default(),
     });
@@ -350,6 +352,7 @@ fn release_gif_playback_profile() -> Result<()> {
         shared: Arc::clone(&shared),
         close_started: false,
         drag_position: None,
+        fullscreen: Default::default(),
         action: None,
         navigation: UiNavigation::default(),
     });

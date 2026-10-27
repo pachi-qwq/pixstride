@@ -347,3 +347,140 @@ fn release_view_transform_gpu_pixels() -> Result<()> {
     drop(r);
     Ok(())
 }
+
+#[test]
+#[ignore = "Windows Release：自有 HWND 全屏/恢复后的真实 Swap Chain 和独立像素参考"]
+fn release_fullscreen_gpu_pixels() -> Result<()> {
+    use windows::Win32::{
+        Foundation::{LPARAM, WPARAM},
+        UI::{Input::KeyboardAndMouse::VK_F11, WindowsAndMessaging::*},
+    };
+    let _dpi = crate::window::fullscreen::tests::Dpi::new();
+    let dir = Directory::new()?;
+    let path = dir.0.join("fullscreen-pixels.bmp");
+    std::fs::write(&path, b"owned-pixel-reference")?;
+    let pixels = vec![0, 0, 128, 128, 0, 255, 0, 255, 255, 0, 0, 255, 0, 0, 0, 0];
+    let image = Arc::new(DecodedImage {
+        source: SourceIdentity::read(&path)?,
+        width: 2,
+        height: 2,
+        stride: 8,
+        format: PixelFormat::Bgra8Premultiplied,
+        pixels,
+        gif_poster: None,
+        _charge: None,
+    });
+    let (shared, _wake) = crate::app::tests::test_shared()?;
+    let mut context = crate::app::tests::window_context(Arc::clone(&shared));
+    let hwnd = crate::window::create_main_window(&mut context)?;
+    let window = Window(hwnd);
+    // SAFETY: 本线程的自有 HWND；不激活，窗口尺寸变化由正式窗口过程发布。
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            100,
+            100,
+            480,
+            320,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+    }?;
+    let mut r = Renderer::new(hwnd, &shared, Instant::now())?;
+    // 首次获取真实 Back Buffer 后，后续 ResizeBuffers 才明确指定客户区。
+    r.resize_resources(1, 1, false, &shared)?;
+    shared.set_image_generation(1);
+    r.upload_image(Arc::clone(&image), true, &shared)?;
+    r.selection_generation = Some(1);
+    shared.activate_view(1, (2, 2));
+    let device = r.device.as_raw();
+    let chain = r.swap_chain.as_raw();
+    let srv = r.image_cache[&image.source].0.as_raw();
+    fn is_exclusive(r: &Renderer) -> Result<bool> {
+        let mut exclusive = windows::core::BOOL::default();
+        // SAFETY: Swap Chain 仍由本线程独占，BOOL 输出在本次同步查询期间可写；无需输出显示器接口。
+        unsafe { r.swap_chain.GetFullscreenState(Some(&mut exclusive), None) }?;
+        Ok(exclusive.as_bool())
+    }
+    assert!(!is_exclusive(&r)?);
+    // SAFETY: 只向自有 HWND 注入系统 Alt+Enter；Factory 已禁止 DXGI 自动模式切换，不修改显示配置。
+    unsafe {
+        SendMessageW(
+            hwnd,
+            WM_SYSKEYDOWN,
+            Some(WPARAM(0x0d)),
+            Some(LPARAM(1 | (1 << 29))),
+        )
+    };
+    let mut message = MSG::default();
+    // SAFETY: 分发本测试线程的消息以检验实际关联，不依赖 Sleep 或只检查调用返回值。
+    unsafe {
+        while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+            DispatchMessageW(&message);
+        }
+    }
+    assert!(!context.fullscreen.is_fullscreen());
+    assert!(!is_exclusive(&r)?);
+    let mut checked = 0u64;
+    for mode in [ViewMode::Fit, ViewMode::NativePixels] {
+        shared.set_view_mode(mode);
+        shared.zoom_at(
+            if mode == ViewMode::Fit { 1.2 } else { 16.0 },
+            (180.0, 130.0),
+        );
+        shared.pan_by(13.0, -7.0);
+        for _ in 0..4 {
+            let s = shared.current_snapshot();
+            let size = (s.width, s.height);
+            r.resize_resources(size.0, size.1, true, &shared)?;
+            r.draw_content(&s)?;
+            // 独立原图中心/整数边界公式，不调用待测 ViewTransform。
+            let base = if mode == ViewMode::Fit {
+                (size.0 as f64 / 2.0).min(size.1 as f64 / 2.0)
+            } else {
+                1.0
+            };
+            let scale = base * s.zoom;
+            let center = if mode == ViewMode::Fit {
+                (size.0 as f64 / 2.0, size.1 as f64 / 2.0)
+            } else {
+                (
+                    ((size.0 as f64 - 2.0) / 2.0).floor() + 1.0,
+                    ((size.1 as f64 - 2.0) / 2.0).floor() + 1.0,
+                )
+            };
+            compare(
+                &target_pixels(&r)?,
+                &image.pixels,
+                (2, 2),
+                size,
+                scale,
+                (center.0 - scale + s.pan.0, center.1 - scale + s.pan.1),
+            );
+            checked += u64::from(size.0) * u64::from(size.1);
+            r.draw(&s, &shared)?;
+            assert_eq!(r.device.as_raw(), device);
+            assert_eq!(r.swap_chain.as_raw(), chain);
+            assert!(!is_exclusive(&r)?);
+            assert_eq!(r.image_cache[&image.source].0.as_raw(), srv);
+            assert_eq!(r.gpu_cache_bytes, 16);
+            assert_eq!(shared.image_generation(), 1);
+            // SAFETY: 本线程同步切换自有 HWND；无跨线程 COM 或额外纹理。
+            unsafe {
+                SendMessageW(
+                    hwnd,
+                    WM_KEYDOWN,
+                    Some(WPARAM(VK_F11.0 as usize)),
+                    Some(LPARAM(1)),
+                )
+            };
+        }
+        assert!(!context.fullscreen.is_fullscreen());
+    }
+    println!(
+        "FULLSCREEN GPU pixels_checked={checked} cases=8 tolerance=2 device_swap_chain_srv_reused=true dxgi_exclusive=false alt_enter_ignored=true static_payload=16 bytes"
+    );
+    drop(r);
+    drop(window);
+    Ok(())
+}

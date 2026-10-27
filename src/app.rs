@@ -1,6 +1,13 @@
 //! 创建应用状态、启动渲染线程并运行 Win32 消息循环。
 
 #[cfg(test)]
+#[path = "app/cache_progress_tests.rs"]
+mod cache_progress_tests;
+
+#[cfg(test)]
+#[path = "app/fullscreen_tests.rs"]
+mod fullscreen_tests;
+#[cfg(test)]
 #[path = "app/gif_tests.rs"]
 mod gif_tests;
 #[cfg(test)]
@@ -134,6 +141,8 @@ pub(crate) struct Shared {
     metrics: Mutex<Metrics>,
     fatal_error: Mutex<Option<String>>,
     gpu_probe_reply: Mutex<Option<GpuProbeReply>>,
+    // 构建进度独立使用单槽，不能覆盖缓存命中/错误答复；后台只唤醒 UI，不触发绘制。
+    large_progress: Mutex<Option<(u64, crate::large::progress::Stage, Duration)>>,
     ui_ready_event: Mutex<isize>,
     animation_completion: Mutex<Option<crate::image::animation::Completion>>,
     retired_animation_worker: Mutex<Option<crate::image::animation::AnimationWorker>>,
@@ -157,6 +166,34 @@ pub(crate) enum GpuProbeReply {
 }
 
 impl Shared {
+    /// 不传 HWND；UI 消费最新阶段，切图和关闭后拒收旧构建通知。
+    pub(crate) fn publish_large_progress(
+        &self,
+        generation: u64,
+        stage: crate::large::progress::Stage,
+        elapsed: Duration,
+    ) {
+        {
+            let pending = self.pending();
+            if pending.shutdown || pending.image_generation != generation {
+                return;
+            }
+            *self
+                .large_progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((generation, stage, elapsed));
+        }
+        let event = *self
+            .ui_ready_event
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if event != 0 {
+            // SAFETY: UI 的 ready event 在渲染线程结束前存活；Tile Worker 停止锁禁止退出后发布通知。
+            let _ = unsafe { SetEvent(HANDLE(event as _)) };
+        }
+    }
+
     /// 观察者保活完成事件，UI 等待期间 Render Thread 可以先退出并释放控制器。
     pub(crate) fn set_animation_completion(&self, completion: crate::image::animation::Completion) {
         *self
@@ -532,6 +569,10 @@ impl Shared {
     pub(crate) fn resize(&self, width: u32, height: u32) {
         let origin = {
             let pending = self.pending();
+            // 样式刷新可能重复报告相同客户区；不制造无意义的唤醒或 GIF 几何更新。
+            if (pending.snapshot.width, pending.snapshot.height) == (width, height) {
+                return;
+            }
             if width == 0 || height == 0 {
                 RequestOrigin::Minimize
             } else if pending.snapshot.width == 0 || pending.snapshot.height == 0 {
@@ -752,6 +793,7 @@ fn candidate_allowed(pending: &PendingState, generation: u64) -> bool {
 
 pub(crate) struct WindowContext {
     pub(crate) shared: Arc<Shared>,
+    pub(crate) fullscreen: window::fullscreen::State,
     pub(crate) close_started: bool,
     pub(crate) drag_position: Option<(i32, i32)>,
     pub(crate) action: Option<WindowAction>,
@@ -911,6 +953,7 @@ pub(crate) fn run() -> Result<()> {
         metrics: Mutex::new(Metrics::default()),
         fatal_error: Mutex::new(None),
         gpu_probe_reply: Mutex::new(None),
+        large_progress: Mutex::new(None),
         ui_ready_event: Mutex::new(0),
         animation_completion: Mutex::new(None),
         retired_animation_worker: Mutex::new(None),
@@ -922,6 +965,7 @@ pub(crate) fn run() -> Result<()> {
         shared: Arc::clone(&shared),
         close_started: false,
         drag_position: None,
+        fullscreen: Default::default(),
         action: None,
         navigation: UiNavigation::default(),
     });
@@ -1316,11 +1360,40 @@ fn schedule_selection(context: &mut WindowContext, loader: &ImageLoader, path: P
     );
 }
 
+fn process_large_progress(context: &mut WindowContext, hwnd: windows::Win32::Foundation::HWND) {
+    let progress = context
+        .shared
+        .large_progress
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some((generation, stage, elapsed)) = progress {
+        if !context.close_started && context.shared.is_image_generation_current(generation) {
+            if let Some(path) = context.navigation.current_path.as_ref() {
+                if stage == crate::large::progress::Stage::Ready {
+                    set_window_title(hwnd, &path.display().to_string());
+                } else {
+                    set_window_title(
+                        hwnd,
+                        &format!(
+                            "{} | 大图缓存：{}；已用 {:.1}s；可切换图片或关闭窗口",
+                            path.file_name().unwrap_or_default().to_string_lossy(),
+                            stage.description(),
+                            elapsed.as_secs_f64(),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn process_gpu_probe_reply(
     context: &mut WindowContext,
     loader: &ImageLoader,
     hwnd: windows::Win32::Foundation::HWND,
 ) {
+    process_large_progress(context, hwnd);
     let Some(reply) = context.shared.take_gpu_probe_reply() else {
         return;
     };
@@ -1464,7 +1537,7 @@ fn process_loader_messages(
             } => {
                 if context.shared.is_image_generation_current(generation) {
                     context.navigation.fallback = None;
-                    set_window_title(hwnd, "正在构建大图缓存；可切换图片或关闭窗口");
+                    set_window_title(hwnd, "正在检查大图缓存；可切换图片或关闭窗口");
                     context.shared.request_large(crate::large::worker::Request {
                         generation,
                         path,
@@ -1615,6 +1688,18 @@ pub(crate) mod tests {
         System::Threading::{CreateEventW, GetCurrentThreadId, WaitForSingleObject},
     };
 
+    /// 专项窗口仍使用正式 WindowContext；调用方必须在 Box 释放前销毁 HWND。
+    pub(crate) fn window_context(shared: Arc<Shared>) -> Box<super::WindowContext> {
+        Box::new(super::WindowContext {
+            shared,
+            fullscreen: Default::default(),
+            close_started: false,
+            drag_position: None,
+            action: None,
+            navigation: Default::default(),
+        })
+    }
+
     pub(crate) fn test_shared() -> Result<(Arc<Shared>, WakeEvent)> {
         // SAFETY: 测试独占此无名称 auto-reset event，并在同步状态断言结束后关闭；没有工作线程等待它。
         let event = WakeEvent(unsafe { CreateEventW(None, false, false, None)? });
@@ -1651,6 +1736,7 @@ pub(crate) mod tests {
             metrics: Mutex::new(Metrics::default()),
             fatal_error: Mutex::new(None),
             gpu_probe_reply: Mutex::new(None),
+            large_progress: Mutex::new(None),
             ui_ready_event: Mutex::new(0),
             animation_completion: Mutex::new(None),
             retired_animation_worker: Mutex::new(None),
@@ -1861,6 +1947,7 @@ pub(crate) mod tests {
             shared: Arc::clone(&shared),
             close_started: false,
             drag_position: None,
+            fullscreen: Default::default(),
             action: None,
             navigation: super::UiNavigation {
                 generation: 10,
@@ -2063,16 +2150,28 @@ pub(crate) mod tests {
     #[test]
     #[ignore = "需要 HWND 和 D3D11，显式运行 Release 长按诊断"]
     fn release_hold_navigation_probe() -> Result<()> {
-        hold_navigation_probe(false)
+        hold_navigation_probe(false, false)
     }
 
     #[test]
     #[ignore = "Release GIF 长按进度、反向与松键诊断，需要 HWND 和 D3D11"]
     fn release_gif_hold_navigation_probe() -> Result<()> {
-        hold_navigation_probe(true)
+        hold_navigation_probe(true, false)
     }
 
-    fn hold_navigation_probe(gif: bool) -> Result<()> {
+    #[test]
+    #[ignore = "Windows Release：全屏普通图长按、反向、KeyUp 与关闭"]
+    fn release_fullscreen_hold_navigation() -> Result<()> {
+        hold_navigation_probe(false, true)
+    }
+
+    #[test]
+    #[ignore = "Windows Release：全屏 GIF 长按、反向、KeyUp 与关闭"]
+    fn release_fullscreen_gif_hold_navigation() -> Result<()> {
+        hold_navigation_probe(true, true)
+    }
+
+    fn hold_navigation_probe(gif: bool, fullscreen: bool) -> Result<()> {
         use crate::{
             diagnostics::Counter,
             image::{ImageBudget, worker::ImageLoader},
@@ -2114,11 +2213,24 @@ pub(crate) mod tests {
             shared: Arc::clone(&shared),
             close_started: false,
             drag_position: None,
+            fullscreen: Default::default(),
             action: None,
             navigation: super::UiNavigation::default(),
         });
         let hwnd = window::create_main_window(&mut context)?;
         window::show_main_window(hwnd);
+        if fullscreen {
+            // SAFETY: 当前 UI 线程自有 HWND；仅在专项中复用正式 F11 消息路径。
+            unsafe {
+                windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                    hwnd,
+                    windows::Win32::UI::WindowsAndMessaging::WM_KEYDOWN,
+                    Some(windows::Win32::Foundation::WPARAM(0x7a)),
+                    Some(windows::Win32::Foundation::LPARAM(1)),
+                );
+            }
+            assert!(context.fullscreen.is_fullscreen());
+        }
         let render_shared = Arc::clone(&shared);
         let raw_hwnd = hwnd.0 as isize;
         let animation = if gif { loader.take_animation() } else { None };
@@ -2256,6 +2368,7 @@ pub(crate) mod tests {
             shared: Arc::clone(&shared),
             close_started: false,
             drag_position: None,
+            fullscreen: Default::default(),
             action: None,
             navigation: super::UiNavigation::default(),
         });
@@ -2507,6 +2620,7 @@ pub(crate) mod tests {
             shared: Arc::clone(&shared),
             close_started: false,
             drag_position: None,
+            fullscreen: Default::default(),
             action: None,
             navigation: super::UiNavigation::default(),
         });
@@ -2637,6 +2751,7 @@ pub(crate) mod tests {
             shared: Arc::clone(&shared),
             close_started: false,
             drag_position: None,
+            fullscreen: Default::default(),
             action: None,
             navigation: super::UiNavigation::default(),
         });
@@ -2726,6 +2841,7 @@ pub(crate) mod tests {
             shared: Arc::clone(&shared),
             close_started: false,
             drag_position: None,
+            fullscreen: Default::default(),
             action: None,
             navigation: super::UiNavigation::default(),
         });

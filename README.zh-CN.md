@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 15; status: view-transform-review -->
+<!-- doc-id: readme; revision: 17; status: fullscreen-review -->
 
 # Pixstride
 
@@ -8,7 +8,7 @@ Pixstride 是一个 Windows 原生图片查看器项目，目标是快速启动�
 
 项目受 MassiGra 轻量化界面和快速交互体验启发，阶段 A–C 均已完成并合并。
 [阶段 C PR #4](https://github.com/pachi-qwq/pixstride/pull/4) 记录了负责人提供的六项 Windows 人工验收，结果全部通过。
-项目尚无公开发行版。阶段 D 已开始技术验证，GIF 首帧支持已合并，其余范围仍需负责人批准。
+项目尚无公开发行版。阶段 D 已合并 EXIF 修正、GIF 播放及统一视口几何，后续范围仍需负责人批准。
 
 ## 当前基础
 
@@ -26,8 +26,10 @@ Pixstride 是一个 Windows 原生图片查看器项目，目标是快速启动�
 [D1-b2 D3D11 GIF 播放](docs/zh-CN/stage-d1b2.md)通过 PR #9 合并，包括有界帧交接、Delay/Loop 调度及 Space 暂停/恢复。
 负责人报告 D1-b2 八项 Windows 人工验收全部通过。
 
-本分支增加 [D3-a1 统一视口几何](docs/zh-CN/stage-d3a1.md)：鼠标锚点滚轮缩放、左键拖动，以及普通图、GIF 帧和 Tile 一致的
-Fit/100% 行为。负责人报告 D3-a1 Windows 人工验收 10/10 项通过，PR 审核和合并待完成。
+[D3-a1 统一视口几何](docs/zh-CN/stage-d3a1.md) 已通过 PR #10 合并：鼠标锚点滚轮缩放、左键拖动，以及普通图、GIF 帧和 Tile 一致的
+Fit/100% 行为。负责人报告 D3-a1 Windows 人工验收 10/10 项通过。
+本地分支增加 [D3-a2 无边框全屏](docs/zh-CN/stage-d3a2.md)，支持 F11/Esc、原生窗口恢复及大图构建进度。
+自动化验证通过；负责人反馈已执行的全屏场景正常，五项进度检查通过。未覆盖的显示器/DPI 场景仍未验证，PR 审核及合并待完成。
 
 目前由独立渲染线程管理 GPU 资源，通过有界后台任务解码图片，并为超大图片设置独立路径。
 线程方案、缓存预算和分块尺寸仍需实验验证；测试计划中列出的格式不代表已经支持。

@@ -164,6 +164,11 @@ impl Tiles {
                         trace: ViewTrace::default(),
                     });
                     shared.claim_image_generation(generation);
+                    shared.publish_large_progress(
+                        generation,
+                        crate::large::progress::Stage::Ready,
+                        started.elapsed(),
+                    );
                     changed = Some(generation);
                 }
                 Reply::Tile {

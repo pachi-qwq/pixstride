@@ -513,15 +513,28 @@ fn clean_for_build(root: &Path, needed: u64, cap: u64) -> Result<()> {
 }
 
 /// 一次源扫描建立所有层，最后复核源修订、同步文件并原子改名；失败仅清理本次临时目录。
+#[cfg(test)]
 pub(crate) fn build_or_open(
     source: &Path,
     root: &Path,
     budget: CacheBudget,
     valid: impl Fn() -> bool,
 ) -> Result<(DiskCache, CacheReport)> {
-    build_with_space(source, root, budget, valid, free_bytes)
+    build_or_open_with_progress(source, root, budget, valid, |_| {})
 }
 
+/// 通知只描述已经到达的阶段；不改变缓存格式、文件发布顺序及取消点。
+pub(crate) fn build_or_open_with_progress(
+    source: &Path,
+    root: &Path,
+    budget: CacheBudget,
+    valid: impl Fn() -> bool,
+    progress: impl FnMut(super::progress::Stage),
+) -> Result<(DiskCache, CacheReport)> {
+    build_reporting(source, root, budget, valid, free_bytes, progress)
+}
+
+#[cfg(test)]
 fn build_with_space(
     source: &Path,
     root: &Path,
@@ -529,8 +542,22 @@ fn build_with_space(
     valid: impl Fn() -> bool,
     available: impl Fn(&Path) -> Result<u64>,
 ) -> Result<(DiskCache, CacheReport)> {
+    build_reporting(source, root, budget, valid, available, |_| {})
+}
+
+fn build_reporting(
+    source: &Path,
+    root: &Path,
+    budget: CacheBudget,
+    valid: impl Fn() -> bool,
+    available: impl Fn(&Path) -> Result<u64>,
+    progress: impl FnMut(super::progress::Stage),
+) -> Result<(DiskCache, CacheReport)> {
+    use super::progress::{Reporter, Stage};
+    let mut progress = Reporter::new(progress);
     let started = Instant::now();
     ensure!(valid(), "大图任务已取消");
+    progress.report(Stage::Checking);
     let stamp = Stamp::read(source)?;
     let size = stream::inspect(source)?;
     let mut plan = Plan::new(size, budget.tile_edge)?;
@@ -636,6 +663,7 @@ fn build_with_space(
         .open(temporary.join("pixels.bin"))?;
     let mut phases = BuildProfile::default();
     let at = Instant::now();
+    progress.report(Stage::Reserving);
     data.set_len(plan.bytes)?;
     phases.reserve = at.elapsed();
     let mut previous: Vec<Option<Vec<u8>>> = vec![None; plan.levels.len()];
@@ -643,26 +671,43 @@ fn build_with_space(
         output: &mut data,
         profile: WriteProfile::default(),
     };
+    progress.report(Stage::Scanning {
+        rows: 0,
+        total: size.height,
+    });
     let report = stream::scan(source, StreamBudget::default(), &valid, |y, row, _| {
-        push_row(&plan, &mut writer, &mut previous, 0, y, row, &valid)
+        push_row(&plan, &mut writer, &mut previous, 0, y, row, &valid)?;
+        progress.report(Stage::Scanning {
+            rows: y + 1,
+            total: size.height,
+        });
+        Ok(())
     })?;
     phases.writes = writer.profile;
     let at = Instant::now();
-    for t in &mut plan.tiles {
+    let total = plan.tiles.len();
+    progress.report(Stage::Checksumming { tiles: 0, total });
+    for (i, t) in plan.tiles.iter_mut().enumerate() {
         ensure!(valid(), "大图任务已取消");
         let mut bytes = stream::allocated(t.length as usize)?;
         data.seek(SeekFrom::Start(t.offset))?;
         data.read_exact(&mut bytes)?;
         t.crc = crc32fast::hash(&bytes);
+        progress.report(Stage::Checksumming {
+            tiles: i + 1,
+            total,
+        });
     }
     phases.checksum = at.elapsed();
     ensure!(Stamp::read(source)? == stamp, "原图在缓存构建期间发生变化");
     ensure!(valid(), "大图任务已取消");
     let at = Instant::now();
+    progress.report(Stage::Syncing);
     data.sync_all()?;
     phases.data_sync = at.elapsed();
     drop(data);
     let at = Instant::now();
+    progress.report(Stage::Publishing);
     let mut index = File::create(temporary.join("index.bin"))?;
     index.write_all(&encode(&stamp, &plan)?)?;
     index.sync_all()?;
@@ -780,6 +825,97 @@ fn write_tile_row(
 mod tests {
     use super::super::stream::tests::{generate, root};
     use super::*;
+
+    #[test]
+    fn build_progress_reports_real_phases_and_cache_hits_skip_scanning() -> Result<()> {
+        use super::super::progress::Stage;
+        let root = root("progress");
+        let image = root.join("own.png");
+        let cache_root = root.join("tiles");
+        generate(&image, 67, 35)?;
+        let mut stages = Vec::new();
+        let (cache, report) = build_or_open_with_progress(
+            &image,
+            &cache_root,
+            CacheBudget::default(),
+            || true,
+            |s| stages.push(s),
+        )?;
+        assert!(!report.cache_hit);
+        assert_eq!(stages.first(), Some(&Stage::Checking));
+        assert!(stages.contains(&Stage::Reserving));
+        assert!(stages.contains(&Stage::Scanning { rows: 0, total: 35 }));
+        assert!(stages.contains(&Stage::Scanning {
+            rows: 35,
+            total: 35
+        }));
+        assert!(stages.contains(&Stage::Checksumming {
+            tiles: cache.plan.tiles.len(),
+            total: cache.plan.tiles.len()
+        }));
+        assert_eq!(
+            &stages[stages.len() - 2..],
+            &[Stage::Syncing, Stage::Publishing]
+        );
+        // Builder 完成不代表 GPU 预览已接受，不得提前报告 Ready。
+        assert!(!stages.contains(&Stage::Ready));
+        drop(cache);
+        stages.clear();
+        let (cache, report) = build_or_open_with_progress(
+            &image,
+            &cache_root,
+            CacheBudget::default(),
+            || true,
+            |s| stages.push(s),
+        )?;
+        assert!(report.cache_hit);
+        assert_eq!(stages, [Stage::Checking]);
+        drop(cache);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn cancelling_from_progress_cleans_partial_cache_without_publishing() -> Result<()> {
+        use super::super::progress::Stage;
+        let root = root("progress-cancel");
+        let image = root.join("own.png");
+        let cache_root = root.join("tiles");
+        generate(&image, 67, 35)?;
+        let active = std::cell::Cell::new(true);
+        let mut stages = Vec::new();
+        let result = build_or_open_with_progress(
+            &image,
+            &cache_root,
+            CacheBudget::default(),
+            || active.get(),
+            |s| {
+                stages.push(s);
+                if matches!(s, Stage::Scanning { .. }) {
+                    active.set(false);
+                }
+            },
+        );
+        assert!(
+            result
+                .err()
+                .context("应取消扫描")?
+                .to_string()
+                .contains("取消")
+        );
+        assert!(
+            !stages
+                .iter()
+                .any(|s| matches!(s, Stage::Syncing | Stage::Publishing | Stage::Ready))
+        );
+        assert!(
+            !fs::read_dir(&cache_root)?
+                .filter_map(|e| e.ok())
+                .any(|e| e.path().is_dir())
+        );
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
 
     #[test]
     fn free_space_refusal_preserves_existing_cache_and_unknown_directories() -> Result<()> {

@@ -49,7 +49,8 @@ use windows::{
                     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN,
                     DXGI_SAMPLE_DESC,
                 },
-                DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
+                DXGI_MWA_NO_ALT_ENTER, DXGI_MWA_NO_WINDOW_CHANGES, DXGI_SCALING_STRETCH,
+                DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 IDXGIAdapter, IDXGIFactory2, IDXGISwapChain2,
             },
@@ -187,6 +188,12 @@ impl Renderer {
             // SAFETY: UI 线程在渲染线程发送完成通知前保持 HWND 有效；两个单采样缓冲区满足 Flip Model 要求。
             unsafe { factory.CreateSwapChainForHwnd(&device, hwnd, &swap_chain_desc, None, None) }
                 .context("创建 DXGI Flip Model Swap Chain 失败")?;
+        // SAFETY: factory 正是创建该 Swap Chain 的对象；UI 在 Render Thread 完成前保活 HWND。
+        // 全屏只由 UI 改窗口样式，禁止 DXGI 经 Alt+Enter 或自动模式处理进入独占全屏。
+        unsafe {
+            factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES)
+        }
+        .context("关闭 DXGI 自动全屏处理失败")?;
         let swap_chain: IDXGISwapChain2 = swap_chain1.cast()?;
         // SAFETY: `swap_chain` 是当前线程持有的有效 IDXGISwapChain2；渲染开始前设置帧延迟符合接口约束。
         unsafe { swap_chain.SetMaximumFrameLatency(1) }

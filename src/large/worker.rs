@@ -74,6 +74,23 @@ impl Control {
                 .upgrade()
                 .is_some_and(|s| s.is_image_generation_current(generation))
     }
+    fn progress(&self, generation: u64, stage: super::progress::Stage, elapsed: Duration) -> bool {
+        // 和结果发布一样跨越 UI 唤醒持有停止锁，避免分离的 I/O 线程访问已关闭事件。
+        let s = self.lock();
+        if s.stopping {
+            return false;
+        }
+        if let Some(shared) = self
+            .shared
+            .upgrade()
+            .filter(|s| s.is_image_generation_current(generation))
+        {
+            shared.publish_large_progress(generation, stage, elapsed);
+            true
+        } else {
+            false
+        }
+    }
     fn publish(&self, generation: u64, mut reply: Reply) {
         let at = Instant::now();
         let mut s = self.lock();
@@ -264,9 +281,21 @@ fn run(control: &Control) {
             cache_key.clear();
             let result = (|| -> Result<_> {
                 let (root, budget) = configuration()?;
-                let (cache, r) = cache::build_or_open(&job.path, &root, budget, || {
-                    control.valid(job.generation)
-                })?;
+                let (cache, r) = cache::build_or_open_with_progress(
+                    &job.path,
+                    &root,
+                    budget,
+                    || control.valid(job.generation),
+                    |stage| {
+                        if control.progress(job.generation, stage, job.started.elapsed()) {
+                            eprintln!(
+                                "大图缓存：{}；已用 {:.1}s",
+                                stage.description(),
+                                job.started.elapsed().as_secs_f64()
+                            );
+                        }
+                    },
+                )?;
                 if let Some(scan) = &r.scan {
                     println!(
                         "PNG scan: {}x{}, rows={}, owned_row_bytes={}",
@@ -280,6 +309,11 @@ fn run(control: &Control) {
                         r.phases
                     );
                 }
+                control.progress(
+                    job.generation,
+                    super::progress::Stage::Preview,
+                    job.started.elapsed(),
+                );
                 let preview = cache
                     .plan
                     .levels
@@ -438,6 +472,8 @@ mod tests {
             );
         }
         assert_eq!(control.lock().replies.len(), 2);
+        // 进度走 UI 的独立单槽；即使 Tile 答复占满，也不能在这里等待 Renderer。
+        assert!(control.progress(1, super::super::progress::Stage::Checking, Duration::ZERO));
         let c = Arc::clone(&control);
         let thread = thread::spawn(move || {
             c.publish(
@@ -457,6 +493,7 @@ mod tests {
             .join()
             .map_err(|_| anyhow::anyhow!("发布线程 panic"))?;
         assert_eq!(control.lock().replies.len(), 2);
+        assert!(!control.progress(1, super::super::progress::Stage::Syncing, Duration::ZERO));
         {
             let mut s = control.lock();
             s.stopping = false;
