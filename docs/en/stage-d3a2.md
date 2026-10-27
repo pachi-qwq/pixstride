@@ -1,11 +1,13 @@
 [English](stage-d3a2.md) | [简体中文](../zh-CN/stage-d3a2.md)
 
-<!-- doc-id: borderless-fullscreen; revision: 4; status: fullscreen-review -->
+<!-- doc-id: borderless-fullscreen; revision: 5; status: fullscreen-review -->
 
 # D3-a2: borderless fullscreen and window restoration
 
 This local branch adds F11 borderless fullscreen and Esc restoration to merged D3-a1 geometry.
-Automated verification is complete; owner Windows manual acceptance and PR review remain pending.
+Automated verification passed. The owner reported normal operation in the exercised fullscreen cases
+and passed all five build-progress checks. Uncovered display/DPI scenarios remain unverified;
+PR review and merge are still pending.
 The implementation reuses the existing HWND, Device, Immediate Context, Swap Chain and Render Thread.
 It changes neither display modes nor refresh rates and never calls `SetFullscreenState(TRUE)`.
 
@@ -139,11 +141,12 @@ All durations end at application-side events. Present return is not displayed-fr
 Input-to-Photon. There is no new attribution or optimization claim for [Issue #11](https://github.com/pachi-qwq/pixstride/issues/11);
 the original 0.394–0.905 ms static GPU-hit P95 difference and DXGI admission fix remain intact.
 
-## Windows manual acceptance: pending
+## Windows manual acceptance and remaining coverage
 
-The project owner reports that the other exercised manual cases work normally, but a first large-PNG
-cache build gives no useful progress feedback. This statement does not establish coverage of every
-physical display/DPI combination. The checklist below retains those scenarios for explicit confirmation.
+The project owner previously reported that the other exercised fullscreen cases worked normally,
+while first-build progress was unclear. The progress fix has now passed the five manual checks below.
+The earlier general feedback is retained without converting it into a per-item or all-hardware pass.
+The original fullscreen checklist remains available for explicit coverage confirmation.
 Automated self-owned-window tests do not
 establish visual flicker, taskbar/Alt+Tab behavior, or coverage of every physical display combination.
 
@@ -166,7 +169,27 @@ tests cover real phase transitions/cache hits, cancellation cleanup, determinist
 throttling, and a native HWND title with stale-Generation rejection. The full default suite passes
 112 tests, with the existing 40 explicit diagnostics ignored by default. The fullscreen Viewer Release
 probe also checks title restoration after a cold build and a warm reopen of a generated PNG.
-The new progress feedback still requires owner confirmation; no additional private-image build was run.
+The Agent did not run an additional private-image build.
+
+### Owner-reported build-progress acceptance: 5/5 passed
+
+On 2026-10-27, the project owner confirmed these results through actual Windows desktop operation
+at Head `acea8e8ed37e3b26ee6aa99409537645ccc00919`. They are manual acceptance evidence, separate
+from automated tests, not new precise timing measurements or pixel-level proof.
+
+| Check | Owner-reported result |
+|---|---|
+| Cold first build | Passed: phase, row or Tile progress, and elapsed time display correctly. |
+| Build completion | Passed: the title no longer retains a building message. |
+| Warm reopen | Passed: existing cache is reused without showing a full build sequence. |
+| Switch, cancel, or close during a build | Passed: stale progress does not overwrite the new image title; no hang. |
+| Borderless fullscreen | Passed: the hidden title is an accepted design limitation; its state is correct after F11 exits fullscreen. |
+
+Multiple monitors, mixed DPI, negative-coordinate monitors, hot-plug changes, and other unexercised
+physical display/DPI combinations remain unverified. Simulated fallback and DPI messages in automated
+tests do not complete that coverage. The PR includes fullscreen/restoration/DXGI protection and
+large-PNG build progress as separate review topics; no technical blocker requiring a history split
+was found. The four implementation/evidence commits are retained, followed by acceptance documentation.
 
 WIC non-preemption/internal allocations, full Device
 Lost recovery, real exhaustion and long-term stability remain existing limitations. Stage C first-build

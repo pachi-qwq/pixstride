@@ -1,6 +1,6 @@
 [English](architecture.md) | [简体中文](../zh-CN/architecture.md)
 
-<!-- doc-id: architecture; revision: 16; status: fullscreen-review -->
+<!-- doc-id: architecture; revision: 17; status: fullscreen-review -->
 
 # Architecture and implementation scope
 
@@ -169,7 +169,7 @@ failure semantics, measured evidence and pending desktop acceptance.
 | A | Win32 lifecycle, one render owner, latest snapshot, simple sequence/Device Epoch if needed, embedded test texture, QPC events, resize/shutdown/recovery tests. | No file navigation, decoder pool, CPU/GPU image cache, IPC, Job Object, Color Cache, or Tile scheduler. |
 | B | Merged WIC JPEG/PNG/BMP decoding, checked pixel layout, source identity, one WIC worker plus one source-validation thread, CPU/GPU LRU caches, directory navigation, adjacent preloads, and stale-generation rejection. GUI acceptance and rapid-navigation retesting passed. | Keep one WIC worker, bounded source validation, and a two-image preload window; defer a general priority framework and pooled Texture allocator until measured. Merged D3-a1 adds ordinary-image pan. |
 | C | Merged sequential large-PNG streaming, preview, disk Tile Cache/Pyramid, visible-region rendering, zoom/pan, and resource-failure regressions; six owner-run GUI scenarios passed. | Progressive preview and comprehensive Device Lost/resource-exhaustion/stability validation remain open; worker IPC and Job Object isolation require evidence, with no stable plugin or IPC ABI. |
-| D (partial) | Merged EXIF 5/7 correction, static GIF posters and background production; merged D1-b2 playback passed automated tests and all eight owner-reported Windows manual scenarios. D3-a1 shared view geometry is merged through PR #10; all ten owner-reported Windows manual checks passed. Local D3-a2 adds borderless fullscreen, with automated verification complete and owner desktop acceptance pending. | Further formats, basic ICC, configurable input and comic reading require separate approval. Add derived color caches only with a tested color path; HDR remains deferred. |
+| D (partial) | Merged EXIF 5/7 correction, static GIF posters and background production; merged D1-b2 playback passed automated tests and all eight owner-reported Windows manual scenarios. D3-a1 shared view geometry is merged through PR #10; all ten owner-reported Windows manual checks passed. The D3-a2 feature branch adds borderless fullscreen and build progress, with automated verification passed; the owner reports normal exercised fullscreen cases and five progress checks passed. Uncovered monitor/DPI scenarios remain unverified; PR review/merge are pending. | Further formats, basic ICC, configurable input and comic reading require separate approval. Add derived color caches only with a tested color path; HDR remains deferred. |
 
 Stages A–C are complete; further Stage D work requires separate approval. Existing
 pixel-layout, cancellation, budget-failure, and decoder-capability boundaries do not authorize extra runtime

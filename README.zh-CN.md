@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 16; status: fullscreen-review -->
+<!-- doc-id: readme; revision: 17; status: fullscreen-review -->
 
 # Pixstride
 
@@ -28,8 +28,8 @@ Pixstride 是一个 Windows 原生图片查看器项目，目标是快速启动�
 
 [D3-a1 统一视口几何](docs/zh-CN/stage-d3a1.md) 已通过 PR #10 合并：鼠标锚点滚轮缩放、左键拖动，以及普通图、GIF 帧和 Tile 一致的
 Fit/100% 行为。负责人报告 D3-a1 Windows 人工验收 10/10 项通过。
-本地分支增加 [D3-a2 无边框全屏](docs/zh-CN/stage-d3a2.md)，支持 F11/Esc 和原生窗口恢复。
-自动化验证通过，负责人桌面验收、PR 审核及合并待完成。
+本地分支增加 [D3-a2 无边框全屏](docs/zh-CN/stage-d3a2.md)，支持 F11/Esc、原生窗口恢复及大图构建进度。
+自动化验证通过；负责人反馈已执行的全屏场景正常，五项进度检查通过。未覆盖的显示器/DPI 场景仍未验证，PR 审核及合并待完成。
 
 目前由独立渲染线程管理 GPU 资源，通过有界后台任务解码图片，并为超大图片设置独立路径。
 线程方案、缓存预算和分块尺寸仍需实验验证；测试计划中列出的格式不代表已经支持。

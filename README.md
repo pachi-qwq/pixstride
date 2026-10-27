@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-<!-- doc-id: readme; revision: 16; status: fullscreen-review -->
+<!-- doc-id: readme; revision: 17; status: fullscreen-review -->
 
 # Pixstride
 
@@ -34,7 +34,9 @@ acceptance scenarios passed for D1-b2.
 left-drag pan, and consistent Fit/100% for ordinary images, GIF frames and Tiles.
 The project owner reports all 10/10 D3-a1 Windows manual checks passed.
 This local branch adds [D3-a2 borderless fullscreen](docs/en/stage-d3a2.md), using F11/Esc and native
-window restoration. Automated verification passes; owner desktop acceptance, PR review and merge remain pending.
+window restoration and large-image build progress. Automated verification passes; the owner reports
+normal operation in exercised fullscreen cases and all five progress checks passed. Uncovered
+monitor/DPI scenarios remain unverified; PR review and merge are pending.
 
 The architecture keeps GPU resource ownership on a render thread and decodes images in
 bounded background work. Large images have a separate path. Threading, cache budgets, and Tile sizes

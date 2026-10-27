@@ -1,6 +1,6 @@
 [English](development.md) | [简体中文](../zh-CN/development.md)
 
-<!-- doc-id: development; revision: 19; status: fullscreen-review -->
+<!-- doc-id: development; revision: 20; status: fullscreen-review -->
 
 # Development status and checks
 
@@ -84,7 +84,9 @@ cargo build --release --locked
 
 The generator retains JPEG/PNG/BMP, finite/infinite GIF and a synthetic 20000×65 Tile PNG in
 `fullscreen-gui`. Use Ctrl+O to select those files. Keep the generated cache separate from private data.
-Owner visual acceptance remains pending; use the [D3-a2 checklist](stage-d3a2.md#windows-manual-acceptance-pending).
+The owner reports normal operation in the exercised fullscreen cases and passed all five progress
+checks. Uncovered monitor/DPI scenarios remain unverified; see the
+[D3-a2 acceptance record](stage-d3a2.md#windows-manual-acceptance-and-remaining-coverage).
 
 ## Run the current checks
 

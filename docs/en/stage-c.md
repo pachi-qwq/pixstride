@@ -1,6 +1,6 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 9; status: merged -->
+<!-- doc-id: stage-c; revision: 10; status: merged -->
 
 # Stage C: large PNG path
 
@@ -30,7 +30,28 @@ Alt+Tab to the launch console; this change does not add an in-image overlay.
 This follow-up does not change the cache format, budgets, build algorithm, or progressive-preview
 status. Tests use generated small PNGs to cover phase order, throttling, cache-hit scan avoidance,
 cancellation cleanup, and stale notifications. Private images and existing private caches are untouched.
-Owner acceptance of this new feedback remains pending; the earlier Stage C evidence below is unchanged.
+The earlier Stage C evidence below is unchanged.
+
+### Owner-reported Windows acceptance of build progress
+
+On 2026-10-27, the project owner confirmed that all five checks below passed on a real Windows desktop
+using verified Head `acea8e8ed37e3b26ee6aa99409537645ccc00919`. These are owner-provided manual results,
+separate from automated tests; they do not add precise performance measurements or pixel-level proof.
+
+| Check | Owner-reported result |
+|---|---|
+| Cold first build | Passed: phase, row or Tile progress, and elapsed time display correctly. |
+| Build completion | Passed: the title no longer retains a building message. |
+| Warm reopen | Passed: existing cache is reused without showing a full build sequence. |
+| Switch, cancel, or close during a build | Passed: stale progress does not overwrite the new image title; no hang. |
+| Borderless fullscreen | Passed: the hidden title is an accepted design limitation; its state is correct after F11 exits fullscreen. |
+
+This acceptance does not establish coverage of multiple monitors, mixed DPI, negative-coordinate
+monitors, or hot-plug changes; those physical scenarios remain unverified. First-build cost, lack of
+progressive preview, blocking system I/O, historical viewport tails, [Issue #11](https://github.com/pachi-qwq/pixstride/issues/11),
+Device Lost recovery, exhaustion/stability gaps, and the existing display-timing limits remain open.
+Present return is not actual displayed-frame completion. The feature branch still awaits PR review
+and merge; this acceptance does not change the original Stage C performance evidence.
 
 ## C1 row prototype
 

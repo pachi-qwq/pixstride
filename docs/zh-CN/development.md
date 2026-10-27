@@ -1,6 +1,6 @@
 [English](../en/development.md) | [简体中文](development.md)
 
-<!-- doc-id: development; revision: 19; status: fullscreen-review -->
+<!-- doc-id: development; revision: 20; status: fullscreen-review -->
 
 # 开发状态与检查
 
@@ -73,7 +73,8 @@ cargo build --release --locked
 ```
 
 生成器在 `fullscreen-gui` 中保留 JPEG/PNG/BMP、有限/无限循环 GIF 和合成的 20000×65 Tile PNG。
-用 Ctrl+O 选择这些文件，缓存与私人数据分开。负责人目视验收待完成，清单见 [D3-a2](stage-d3a2.md#windows-人工验收待完成)。
+用 Ctrl+O 选择这些文件，缓存与私人数据分开。负责人反馈已执行的全屏场景正常，构建进度五项检查通过；
+未覆盖的显示器/DPI 场景仍未验证，详见 [D3-a2 验收记录](stage-d3a2.md#windows-人工验收与未覆盖场景)。
 
 ## 当前可执行的检查
 
