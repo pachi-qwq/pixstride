@@ -440,6 +440,33 @@ pub(crate) fn free_bytes(path: &Path) -> Result<u64> {
 }
 
 struct PartialBuild(PathBuf);
+impl PartialBuild {
+    /// 初始化期间以本次原子创建的句柄证明归属；短 owner 尚不能交给后续扫描回收。
+    fn create(path: &Path, write_owner: impl FnOnce(&mut File) -> io::Result<()>) -> Result<Self> {
+        fs::create_dir(path)?;
+        let directory = pin_directory(path, true)?;
+        let result = (|| -> Result<Self> {
+            let mut owner = OpenOptions::new()
+                .write(true)
+                .access_mode(GENERIC_WRITE_ACCESS | DELETE_ACCESS)
+                .create_new(true)
+                .share_mode(0)
+                .custom_flags(OPEN_REPARSE_POINT)
+                .open(path.join("owner"))?;
+            if let Err(error) = write_owner(&mut owner) {
+                // create_new 与存活的排他句柄证明该文件由本次创建，不依赖尚未写完整的标记。
+                let _ = delete_handle(owner);
+                return Err(error.into());
+            }
+            Ok(Self(path.to_owned()))
+        })();
+        if result.is_err() {
+            // 只尝试删除同一句柄指向的空目录；外来成员或清理被拒绝时保留，原始错误继续返回。
+            let _ = delete_handle(directory);
+        }
+        result
+    }
+}
 impl Drop for PartialBuild {
     fn drop(&mut self) {
         // 只回收有 owner 的平面半成品；失败留待下一次 miss，不递归删除外来内容。
@@ -452,6 +479,7 @@ const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const DELETE_ACCESS: u32 = 0x0001_0000;
 const GENERIC_READ_ACCESS: u32 = 0x8000_0000;
+const GENERIC_WRITE_ACCESS: u32 = 0x4000_0000;
 
 /// 句柄拒绝共享删除，固定检查中的目录名称；不跟随最后一段的 junction/symlink。
 fn pin_directory(path: &Path, delete: bool) -> io::Result<File> {
@@ -885,9 +913,7 @@ fn build_reporting(
             .duration_since(UNIX_EPOCH)?
             .as_nanos()
     ));
-    fs::create_dir(&temporary)?;
-    let guard = PartialBuild(temporary.clone());
-    fs::write(temporary.join("owner"), MAGIC)?;
+    let guard = PartialBuild::create(&temporary, |owner| owner.write_all(MAGIC))?;
     // 原图只读，在整个扫描期间拒绝写入/删除，避免构建中途被替换；作用域结束释放共享限制。
     let _source_guard = OpenOptions::new().read(true).share_mode(1).open(source)?;
     let mut data = OpenOptions::new()

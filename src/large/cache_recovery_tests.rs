@@ -25,6 +25,40 @@ fn check_tiles(cache: &DiskCache) -> Result<()> {
 }
 
 #[test]
+fn a1_owner_initialization_failure_rolls_back_only_new_partial() -> Result<()> {
+    let test = root("a1-owner-write");
+    for written in [0, 4] {
+        let partial = test.join(format!(".build-short-{written}"));
+        let error = PartialBuild::create(&partial, |owner| {
+            owner.write_all(&MAGIC[..written])?;
+            Err(io::Error::from_raw_os_error(112))
+        })
+        .err()
+        .context("owner 初始化失败应保留原始 I/O 错误")?;
+        assert_eq!(
+            error
+                .downcast_ref::<io::Error>()
+                .and_then(|e| e.raw_os_error()),
+            Some(112)
+        );
+        assert!(!partial.exists(), "零字节或短 owner 不能留下永久孤儿");
+    }
+    let extra = test.join(".build-unknown-member");
+    assert!(
+        PartialBuild::create(&extra, |owner| {
+            owner.write_all(&MAGIC[..4])?;
+            fs::write(extra.join("keep"), b"preserve")?;
+            Err(io::Error::from_raw_os_error(112))
+        })
+        .is_err()
+    );
+    assert_eq!(fs::read(extra.join("keep"))?, b"preserve");
+    assert!(!extra.join("owner").exists(), "只删除本次新建的 owner 句柄");
+    fs::remove_dir_all(test)?;
+    Ok(())
+}
+
+#[test]
 fn a1_missing_pixels_recovers_owned_entry_and_preserves_unowned_orphan() -> Result<()> {
     let test = root("a1-missing");
     let image = test.join("own.png");
