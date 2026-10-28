@@ -1,6 +1,6 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 10; status: merged -->
+<!-- doc-id: stage-c; revision: 11; status: merged -->
 
 # Stage C: large PNG path
 
@@ -111,6 +111,44 @@ first/middle/last 64 KiB. A read guard denies source writes/deletes during const
 is rechecked before publication. Changes outside the sampled bytes with preserved metadata can evade
 this check; CRC32 is not a cryptographic content identity. Cache-version, sampled-content-change,
 active-cache pinning, corruption, overflow, and interrupted-build tests passed.
+
+### A1 cache recovery hardening
+
+The local A1 branch repairs two recovery failures: a missing `pixels.bin` could abort cleanup for the
+whole root, and a damaged index header could exclude an owned payload from accounting. A1 has not yet
+completed owner review or merged. The existing Stage C measurements and acceptance records remain
+historical evidence; they do not certify this new recovery behavior.
+
+On a cache miss, cleanup recognizes only direct `cache-*`/`.build-*` directories with an exact,
+non-reparse `owner` marker. It charges the actual lengths of `index.bin` and `pixels.bin` regardless of
+index validity. Missing files contribute zero; other length-query errors stop admission. The invalid
+current target and incomplete owned entries are reclaimed before oldest-first capacity eviction.
+Unknown or mismatched owners and unrelated directories are preserved and outside this managed-payload
+budget. An unowned invalid current target is rejected rather than replaced. If the current target
+cannot be replaced, cleanup stops before evicting other entries.
+
+Cleanup pins directories against rename/delete, opens members without following reparse points, and
+acquires all exclusive file handles before deleting anything. It deletes only the three known flat
+members, by handle, then the empty directory. Unknown members prevent deletion; there is no recursive
+cleanup of their contents. Active readers and deletion denials retain their charge. Lengths are read
+again after cleanup, so partial or failed deletion cannot be credited as complete success. Unexpected
+I/O errors propagate; an owned non-file/reparse payload causes conservative refusal because its size
+cannot be accounted reliably. The root lease, format/version, 2 GiB default and 1–10 GiB configuration
+range are unchanged. Warm hits still return before root enumeration; the quota is not a whole-volume
+limit or authentication against another process deliberately forging owner markers.
+
+Deterministic tests use fresh synthetic roots for missing files, bad headers, unknown owners/members,
+active readers, read-only files, injected metadata errors, cancellation, lease conflicts and actual
+Windows junctions. Reparse creation failures fail the test rather than silently count as coverage.
+Run `cargo test --locked a1_ -- --nocapture`; the optional `release_a1_recovery_probe` records small-image
+cold construction, 30 warm opens and recovery under a test-only quota. It is not cross-version A/B or
+display-latency evidence. Real ACL denial, disk exhaustion and hostile filesystem mutation are not
+fully verified.
+
+Owner GUI acceptance is pending: with newly generated PNGs and a dedicated process-local
+`PIXSTRIDE_TILE_CACHE`, check cold construction, warm reopen, an owned missing-file entry followed by
+another valid image, normal JPEG/PNG/BMP/GIF navigation, and the retained/reclaimed files and actual
+payload lengths. Use only that disposable test root; do not alter existing private caches.
 
 At the C2 checkpoint, the private source had only had its file attributes checked. The owner approved a separate 10 GiB
 cache experiment after C3 passes; its estimated 1024 pyramid is 8,224,561,220 bytes. No source pixels

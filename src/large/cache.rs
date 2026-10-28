@@ -4,10 +4,11 @@ use super::stream::{self, PngSize, StreamBudget};
 use anyhow::{Context, Result, ensure};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     os::windows::{
         ffi::OsStrExt,
         fs::{MetadataExt, OpenOptionsExt},
+        io::AsRawHandle,
     },
     path::{Path, PathBuf},
     sync::Mutex,
@@ -441,73 +442,308 @@ pub(crate) fn free_bytes(path: &Path) -> Result<u64> {
 struct PartialBuild(PathBuf);
 impl Drop for PartialBuild {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        // 只回收有 owner 的平面半成品；失败留待下一次 miss，不递归删除外来内容。
+        let _ = remove_inactive(&self.0);
     }
 }
 
-fn remove_inactive(path: &Path) -> Result<()> {
-    ensure!(
-        fs::symlink_metadata(path)?.file_attributes() & 0x400 == 0,
-        "拒绝清理重解析目录"
-    );
-    // 调用者持有整个缓存根的独占 lease，其他实例不能在检查后打开新缓存。
-    // 活动读者的只读句柄拒绝写共享，只有没有读者时才能先独占检查，再释放并删除。
-    let exclusive = OpenOptions::new()
+const REPARSE_POINT: u32 = 0x400;
+const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+const DELETE_ACCESS: u32 = 0x0001_0000;
+const GENERIC_READ_ACCESS: u32 = 0x8000_0000;
+
+/// 句柄拒绝共享删除，固定检查中的目录名称；不跟随最后一段的 junction/symlink。
+fn pin_directory(path: &Path, delete: bool) -> io::Result<File> {
+    let file = OpenOptions::new()
         .read(true)
-        .write(true)
-        .share_mode(0)
-        .open(path.join("pixels.bin"))?;
-    drop(exclusive);
-    fs::remove_dir_all(path)?;
+        .access_mode(GENERIC_READ_ACCESS | if delete { DELETE_ACCESS } else { 0 })
+        .share_mode(3)
+        .custom_flags(OPEN_REPARSE_POINT | BACKUP_SEMANTICS)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "拒绝操作重解析或非目录缓存",
+        ));
+    }
+    Ok(file)
+}
+
+fn optional_file(result: io::Result<File>) -> io::Result<Option<File>> {
+    match result {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_owner(file: &mut File) -> io::Result<bool> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_attributes() & REPARSE_POINT != 0 || metadata.len() != 8
+    {
+        return Ok(false);
+    }
+    let mut bytes = [0; 8];
+    file.read_exact(&mut bytes)?;
+    Ok(&bytes == MAGIC)
+}
+
+/// 仅给已验证的同一个句柄设置删除状态；调用返回后由 File 的析构关闭句柄。
+fn delete_handle(file: File) -> Result<()> {
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{
+            FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle,
+        },
+    };
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: File 独占拥有有效的 DELETE 句柄，直到同步调用完成后才关闭；
+    // disposition 的类型、大小与 FileDispositionInfo 匹配，不通过路径重新解析对象。
+    unsafe {
+        SetFileInformationByHandle(
+            HANDLE(file.as_raw_handle()),
+            FileDispositionInfo,
+            (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    }?;
     Ok(())
 }
 
-fn clean_for_build(root: &Path, needed: u64, cap: u64) -> Result<()> {
+fn known_children(path: &Path) -> Result<()> {
+    for (count, entry) in fs::read_dir(path)?.enumerate() {
+        let entry = entry?;
+        if count >= 3
+            || !["owner", "index.bin", "pixels.bin"]
+                .iter()
+                .any(|n| entry.file_name() == *n)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "缓存含未知成员，保留目录",
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn remove_inactive(path: &Path) -> Result<()> {
+    remove_inactive_with(path, delete_handle)
+}
+
+// delete 取得 File 所有权；失败时仍由 RAII 关闭，测试可精确注入部分删除失败。
+fn remove_inactive_with(path: &Path, delete: impl Fn(File) -> Result<()>) -> Result<()> {
+    // 根 lease 串行化合作实例；目录固定到删除结束。所有文件先取得排他句柄，
+    // 活动 Reader 导致共享冲突时还未删除任何成员，索引和 owner 均保持完整。
+    let directory = pin_directory(path, true)?;
+    let mut owner = OpenOptions::new()
+        .read(true)
+        .access_mode(GENERIC_READ_ACCESS | DELETE_ACCESS)
+        .share_mode(0)
+        .custom_flags(OPEN_REPARSE_POINT)
+        .open(path.join("owner"))?;
+    if !is_owner(&mut owner)? || owner.metadata()?.permissions().readonly() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "不能证明缓存归属或 owner 不可删除",
+        )
+        .into());
+    }
+    known_children(path)?;
+    let mut files = Vec::with_capacity(2);
+    for name in ["index.bin", "pixels.bin"] {
+        if let Some(file) = optional_file(
+            OpenOptions::new()
+                .read(true)
+                .access_mode(GENERIC_READ_ACCESS | DELETE_ACCESS)
+                .share_mode(0)
+                .custom_flags(OPEN_REPARSE_POINT | BACKUP_SEMANTICS)
+                .open(path.join(name)),
+        )? {
+            let metadata = file.metadata()?;
+            if !metadata.is_file()
+                || metadata.file_attributes() & REPARSE_POINT != 0
+                || metadata.permissions().readonly()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "缓存成员不可安全删除",
+                )
+                .into());
+            }
+            files.push(file);
+        }
+    }
+    for file in files {
+        delete(file)?;
+    }
+    // 即使删除发生部分失败，也尽量保留 owner，后续扫描仍能计费残留载荷。
+    known_children(path)?;
+    delete(owner)?;
+    delete(directory)?;
+    Ok(())
+}
+
+struct ManagedEntry {
+    path: PathBuf,
+    bytes: u64,
+    modified: std::time::SystemTime,
+    incomplete: bool,
+}
+
+/// 只统计可证明归属的直接子目录；未知目录不受该载荷预算管理，也不得自动删除。
+fn managed_entries(root: &Path, valid: &impl Fn() -> bool) -> Result<Vec<ManagedEntry>> {
+    managed_entries_with(root, valid, payload_length)
+}
+
+fn payload_length(path: &Path) -> Result<Option<u64>> {
+    let Some(file) = optional_file(
+        OpenOptions::new()
+            .read(true)
+            .access_mode(0x80)
+            .custom_flags(OPEN_REPARSE_POINT | BACKUP_SEMANTICS)
+            .open(path),
+    )?
+    else {
+        return Ok(None);
+    };
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file() && metadata.file_attributes() & REPARSE_POINT == 0,
+        "自有缓存成员不是普通文件，无法可靠计费"
+    );
+    Ok(Some(metadata.len()))
+}
+
+// 长度查询独立于索引解析；测试可在此注入 I/O 错误，不允许用零长度吞掉错误。
+fn managed_entries_with(
+    root: &Path,
+    valid: &impl Fn() -> bool,
+    length: impl Fn(&Path) -> Result<Option<u64>>,
+) -> Result<Vec<ManagedEntry>> {
     let mut entries = Vec::new();
-    let mut used = 0u64;
     for (scanned, entry) in fs::read_dir(root)?.enumerate() {
         ensure!(scanned < 4096, "专用缓存根目录条目超过清理上限");
+        ensure!(valid(), "大图任务已取消");
         let entry = entry?;
-        if !entry.file_type()?.is_dir() || entry.metadata()?.file_attributes() & 0x400 != 0 {
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT != 0 {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with(".build-")
-            && fs::read(entry.path().join("owner")).ok().as_deref() == Some(MAGIC)
-        {
-            fs::remove_dir_all(entry.path())?;
+        if !name.starts_with("cache-") && !name.starts_with(".build-") {
             continue;
         }
-        if name.starts_with("cache-") && entry.path().join("index.bin").is_file() {
-            let mut header = [0u8; 8];
-            if File::open(entry.path().join("index.bin"))?
-                .read_exact(&mut header)
-                .is_err()
-                || &header != MAGIC
-            {
-                continue;
+        let directory = pin_directory(&entry.path(), false)?;
+        let Some(mut owner) = optional_file(
+            OpenOptions::new()
+                .read(true)
+                .share_mode(1)
+                .custom_flags(OPEN_REPARSE_POINT | BACKUP_SEMANTICS)
+                .open(entry.path().join("owner")),
+        )?
+        else {
+            continue;
+        };
+        if !is_owner(&mut owner)? {
+            continue;
+        }
+        let mut bytes = 0u64;
+        let mut incomplete = name.starts_with(".build-");
+        for name in ["index.bin", "pixels.bin"] {
+            // 属性句柄不请求像素读写，不与活动 Reader 冲突；不跟随成员链接。
+            if let Some(n) = length(&entry.path().join(name))? {
+                bytes = bytes.checked_add(n).context("缓存用量溢出")?;
+            } else {
+                incomplete = true;
             }
-            let n = fs::metadata(entry.path().join("pixels.bin"))?
-                .len()
-                .checked_add(fs::metadata(entry.path().join("index.bin"))?.len())
-                .context("缓存用量溢出")?;
-            used = used.checked_add(n).context("缓存用量溢出")?;
-            entries.push((entry.metadata()?.modified()?, entry.path(), n));
         }
+        entries.push(ManagedEntry {
+            path: entry.path(),
+            bytes,
+            modified: directory.metadata()?.modified()?,
+            incomplete,
+        });
     }
-    entries.sort_by_key(|e| e.0);
-    for (_, path, n) in entries {
-        if used.checked_add(needed).is_some_and(|v| v <= cap) {
-            break;
-        }
-        // 活动缓存的像素文件拒绝删除；清理失败时保留它并继续尝试其他旧条目。
-        if remove_inactive(&path).is_ok() {
-            used -= n;
+    Ok(entries)
+}
+
+fn managed_bytes(entries: &[ManagedEntry]) -> Result<u64> {
+    entries
+        .iter()
+        .try_fold(0u64, |n, e| n.checked_add(e.bytes).context("缓存用量溢出"))
+}
+
+fn clean_for_build(
+    root: &Path,
+    target: &Path,
+    needed: u64,
+    cap: u64,
+    valid: &impl Fn() -> bool,
+) -> Result<()> {
+    let mut entries = managed_entries(root, valid)?;
+    let mut used = managed_bytes(&entries)?;
+    let target_exists = fs::symlink_metadata(target).map_or_else(
+        |e| {
+            if e.kind() == io::ErrorKind::NotFound {
+                Ok(false)
+            } else {
+                Err(e)
+            }
+        },
+        |_| Ok(true),
+    )?;
+    ensure!(
+        !target_exists || entries.iter().any(|e| e.path == target),
+        "无效目标缓存无法安全替换：不能证明归属或目录类型不安全"
+    );
+    // 先恢复当前无效目标，再清理半成品；有效旧缓存仍按目录时间淘汰。
+    entries.sort_by_key(|e| (e.path != target, !e.incomplete, e.modified));
+    for entry in entries {
+        ensure!(valid(), "大图任务已取消");
+        if entry.incomplete
+            || entry.path == target
+            || used.checked_add(needed).is_none_or(|v| v > cap)
+        {
+            match remove_inactive(&entry.path) {
+                Ok(()) => used = used.checked_sub(entry.bytes).context("缓存用量下溢")?,
+                Err(error) => {
+                    if entry.path == target {
+                        return Err(error.context("无效目标缓存无法安全替换"));
+                    }
+                    let retained = error.downcast_ref::<io::Error>().is_some_and(|e| {
+                        e.kind() == io::ErrorKind::PermissionDenied
+                            || matches!(e.raw_os_error(), Some(32 | 33))
+                    }) || error.downcast_ref::<windows::core::Error>().is_some_and(
+                        |e| matches!(e.code().0 as u32, 0x80070005 | 0x80070020 | 0x80070021),
+                    );
+                    if !retained {
+                        return Err(error.context("缓存清理 I/O 失败"));
+                    }
+                    eprintln!("Tile 缓存保留未能安全清理的条目：{error:#}");
+                }
+            }
         }
     }
     ensure!(
+        !fs::symlink_metadata(target).map_or_else(
+            |e| if e.kind() == io::ErrorKind::NotFound {
+                Ok(false)
+            } else {
+                Err(e)
+            },
+            |_| Ok(true)
+        )?,
+        "无效目标缓存无法安全替换：归属不明、正在使用或不可删除"
+    );
+    // 删除可能只完成一部分。重新读取实际长度后再准入，不把失败当作已释放预算。
+    let used = managed_bytes(&managed_entries(root, valid)?)?;
+    ensure!(
         used.checked_add(needed).is_some_and(|v| v <= cap),
-        "磁盘缓存容量不足，活动缓存无法淘汰"
+        "磁盘缓存容量不足，保留的自有缓存无法淘汰"
     );
     Ok(())
 }
@@ -563,6 +799,7 @@ fn build_reporting(
     let mut plan = Plan::new(size, budget.tile_edge)?;
     fs::create_dir_all(root)?;
     let root = fs::canonicalize(root)?;
+    let _root_pin = pin_directory(&root, false)?;
     ensure!(
         !fs::canonicalize(source)?.starts_with(&root),
         "原图不能存放在专用缓存目录中"
@@ -633,7 +870,7 @@ fn build_reporting(
             .is_some_and(|n| n <= budget.builder_bytes),
         "Builder 内存预算不足"
     );
-    clean_for_build(&root, needed, budget.disk_bytes)?;
+    clean_for_build(&root, &target, needed, budget.disk_bytes, &valid)?;
     ensure!(
         available(&root)?
             > needed
@@ -641,9 +878,6 @@ fn build_reporting(
                 .context("空间计算溢出")?,
         "缓存卷可用空间不足，需另保留 1 GiB 余量"
     );
-    if target.exists() {
-        remove_inactive(&target).context("无效缓存正在使用，不能替换")?;
-    }
     let temporary = root.join(format!(
         ".build-{}-{}",
         std::process::id(),
@@ -822,6 +1056,10 @@ fn write_tile_row(
 }
 
 #[cfg(test)]
+#[path = "cache_recovery_tests.rs"]
+mod recovery_tests;
+
+#[cfg(test)]
 mod tests {
     use super::super::stream::tests::{generate, root};
     use super::*;
@@ -963,6 +1201,7 @@ mod tests {
         let root = root("write-failure");
         let temporary = root.join(".build-test");
         fs::create_dir(&temporary)?;
+        fs::write(temporary.join("owner"), MAGIC)?;
         let plan = Plan::new(
             PngSize {
                 width: 3,
