@@ -1,6 +1,6 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 12; status: merged -->
+<!-- doc-id: stage-c; revision: 13; status: merged -->
 
 # Stage C: large PNG path
 
@@ -127,8 +127,9 @@ Unknown or mismatched owners and unrelated directories are preserved and outside
 budget. An unowned invalid current target is rejected rather than replaced. If the current target
 cannot be replaced, cleanup stops before evicting other entries.
 
-Cleanup pins directories against rename/delete, opens members without following reparse points, and
-acquires all exclusive file handles before deleting anything. It deletes only the three known flat
+The cache root is pinned against rename/delete throughout each open/build call, including warm opens,
+not only during cleanup. Cleanup pins entry directories, opens members without following reparse points,
+and acquires all exclusive file handles before deleting anything. It deletes only the three known flat
 members, by handle, then the empty directory. Unknown members prevent deletion; there is no recursive
 cleanup of their contents. Active readers and deletion denials retain their charge. Lengths are read
 again after cleanup, so partial or failed deletion cannot be credited as complete success. Unexpected
@@ -136,6 +137,13 @@ I/O errors propagate; an owned non-file/reparse payload causes conservative refu
 cannot be accounted reliably. The root lease, format/version, 2 GiB default and 1–10 GiB configuration
 range are unchanged. Warm hits still return before root enumeration; the quota is not a whole-volume
 limit or authentication against another process deliberately forging owner markers.
+
+Before a new partial's marker is complete, initialization proves ownership through `create_new` and the
+live exclusive DELETE-capable marker handle. A failed zero/short marker write attempts rollback through
+that handle, then deletion of the pinned empty new directory; the original I/O error is returned.
+Initialization is refused if those access rights cannot be obtained. Rollback is best-effort: unknown
+members and deletion denials are preserved, never recursively removed or treated as successful cleanup.
+Existing unowned entries do not acquire a new empty-directory deletion exception.
 
 Deterministic tests use fresh synthetic roots for missing files, bad headers, unknown owners/members,
 active readers, read-only files, injected metadata errors, cancellation, lease conflicts and actual
