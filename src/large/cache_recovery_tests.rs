@@ -332,7 +332,8 @@ fn a1_partial_cleanup_lease_and_post_failure_reopen() -> Result<()> {
 
 #[test]
 fn a1_junctions_and_pinned_directory_replacement_are_rejected() -> Result<()> {
-    let test = root("a1-reparse");
+    // mklink 会把未规范化路径中的 / 当作开关；只规范化本测试新建的目录。
+    let test = fs::canonicalize(root("a1-reparse"))?;
     let image = test.join("own.png");
     let cache_root = test.join("tiles");
     let outside = test.join("outside");
