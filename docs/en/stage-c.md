@@ -1,6 +1,6 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 11; status: merged -->
+<!-- doc-id: stage-c; revision: 12; status: merged -->
 
 # Stage C: large PNG path
 
@@ -149,6 +149,18 @@ Owner GUI acceptance is pending: with newly generated PNGs and a dedicated proce
 `PIXSTRIDE_TILE_CACHE`, check cold construction, warm reopen, an owned missing-file entry followed by
 another valid image, normal JPEG/PNG/BMP/GIF navigation, and the retained/reclaimed files and actual
 payload lengths. Use only that disposable test root; do not alter existing private caches.
+
+For a guided owner run, set `PIXSTRIDE_TEST_ROOT` to an existing directory outside Git, then run
+`pwsh -NoProfile -File scripts/accept_a1_cache_recovery.ps1` from the repository root. The script creates
+a unique run directory, builds outside Git, generates its own large PNG and JPEG/PNG/BMP/GIF fixtures,
+and runs the bad-header and partial-delete capacity regressions under a small test-only quota. Each
+Viewer inherits a dedicated process-local cache and the 2 GiB default budget. Close each Viewer before
+continuing; the script checks cold/warm logs and asks for explicit `PASS` after each visual check. It
+injects missing pixels and a bad index only into the checked cache created by that run. Unknown owners,
+extra members, and reparse paths are preserved with an error. Process environment overrides are restored
+on exit; samples, logs and cache are retained. `-PrepareOnly` verifies preparation and automated capacity
+checks without opening the Viewer or marking manual acceptance passed. `acceptance.json` separates the
+automated result from `ManualGUIAcceptance`, which stays `Pending` until the owner confirms every step.
 
 At the C2 checkpoint, the private source had only had its file attributes checked. The owner approved a separate 10 GiB
 cache experiment after C3 passes; its estimated 1024 pyramid is 8,224,561,220 bytes. No source pixels

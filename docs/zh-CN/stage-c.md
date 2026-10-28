@@ -1,6 +1,6 @@
 [English](../en/stage-c.md) | [简体中文](stage-c.md)
 
-<!-- doc-id: stage-c; revision: 11; status: merged -->
+<!-- doc-id: stage-c; revision: 12; status: merged -->
 
 # Stage C：超大 PNG 路径
 
@@ -114,6 +114,15 @@ A1 尚未完成负责人审查或合并。原有 Stage C 性能和验收记录�
 负责人 GUI 验收待执行：使用新生成的 PNG 和仅对测试进程设置的独立 `PIXSTRIDE_TILE_CACHE`，
 检查冷构建、暖打开、已归属缺文件条目之后打开另一张有效图片、普通 JPEG/PNG/BMP/GIF 导航，以及最终保留或回收的文件和实际载荷长度。
 只操作该可丢弃测试根，不改动既有私人缓存。
+
+需要引导式验收时，将 `PIXSTRIDE_TEST_ROOT` 设为 Git 外的既有目录，在仓库根目录运行
+`pwsh -NoProfile -File scripts/accept_a1_cache_recovery.ps1`。脚本新建唯一运行目录，在 Git 外构建，
+自行生成大 PNG 和 JPEG/PNG/BMP/GIF 样本，并在小型测试专用配额下执行坏索引头、部分删除失败的容量回归。
+每个 Viewer 仅继承测试进程级的独立缓存路径和默认 2 GiB 预算。逐次正常关闭 Viewer 后，脚本检查冷暖命中日志，
+要求负责人目视检查后明确输入 `PASS`。缺失像素和坏索引只注入本次创建并核对过的缓存；
+遇到未知 owner、额外成员或重解析路径时保留并报错。退出时恢复进程环境变量，保留样本、日志和缓存。
+`-PrepareOnly` 仅验证准备流程和自动化容量检查，不打开 Viewer，也不记为人工验收通过。
+`acceptance.json` 分开记录自动化结果与 `ManualGUIAcceptance`；负责人确认全部步骤前，后者保持 `Pending`。
 
 在 C2 检查点，私人原图只查过文件属性。负责人已批准 C3 通过后进行独立 10 GiB 缓存实验，1024 金字塔预计 8,224,561,220 字节。
 在此检查点尚未读取原图像素。
