@@ -24,6 +24,44 @@ fn check_tiles(cache: &DiskCache) -> Result<()> {
     Ok(())
 }
 
+fn cached_payload(directory: &Path) -> Result<u64> {
+    Ok(fs::metadata(directory.join("index.bin"))?.len()
+        + fs::metadata(directory.join("pixels.bin"))?.len())
+}
+
+/// 逐项读回磁盘上的 index+pixels，不依赖归属判断，供精确计费断言使用。
+fn actual_cache_payload(root: &Path) -> Result<u64> {
+    let mut total = 0u64;
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("cache-") {
+            total = total
+                .checked_add(cached_payload(&entry.path())?)
+                .context("测试载荷统计溢出")?;
+        }
+    }
+    Ok(total)
+}
+
+/// 目录不能用 File::open 打开；只请求 FILE_WRITE_ATTRIBUTES 并带 BACKUP_SEMANTICS。
+fn set_directory_modified(directory: &Path, modified: std::time::SystemTime) -> Result<()> {
+    let handle = OpenOptions::new()
+        .access_mode(0x100)
+        .custom_flags(BACKUP_SEMANTICS)
+        .open(directory)?;
+    handle.set_modified(modified)?;
+    assert_eq!(
+        fs::metadata(directory)?.modified()?,
+        modified,
+        "目录 mtime 必须真实写回，不能依赖枚举或 sleep 的偶然顺序"
+    );
+    Ok(())
+}
+
 #[test]
 fn a1_owner_initialization_failure_rolls_back_only_new_partial() -> Result<()> {
     let test = root("a1-owner-write");
@@ -110,8 +148,9 @@ fn a1_bad_header_payload_is_charged_and_evicted_under_test_cap() -> Result<()> {
         + fs::metadata(cache.directory.join("index.bin"))?.len();
     assert!(actual <= budget.disk_bytes);
     assert_eq!(
+        managed_bytes(&managed_entries(&cache_root, &|| true)?)?,
         actual,
-        cache.plan.bytes + fs::metadata(cache.directory.join("index.bin"))?.len()
+        "受管理载荷必须与磁盘实际 index+pixels 一致，不能自相抵消"
     );
     assert_eq!(fs::read(unrelated.join("keep"))?, b"user data");
     check_tiles(&cache)?;
@@ -193,7 +232,22 @@ fn a1_active_reader_and_delete_denial_remain_charged() -> Result<()> {
         disk_bytes: old_bytes,
         ..Default::default()
     };
-    assert!(build_or_open(&other, &cache_root, tight, || true).is_err());
+    let other_size = stream::inspect(&other)?;
+    let other_plan = Plan::new(other_size, tight.tile_edge)?;
+    let other_stamp = Stamp::read(&other)?;
+    let other_needed = other_plan
+        .bytes
+        .checked_add(encode(&other_stamp, &other_plan)?.len() as u64)
+        .context("other 缓存需求溢出")?;
+    assert!(
+        other_needed <= tight.disk_bytes,
+        "tight 预算必须足以单独容纳 other 的新缓存，拒绝原因才只能是保留旧缓存后的容量不足"
+    );
+    let error = build_or_open(&other, &cache_root, tight, || true).unwrap_err();
+    assert!(
+        error.to_string().contains("容量不足"),
+        "活动 Reader 保留旧缓存后必须因容量不足拒绝：{error:#}"
+    );
     assert_eq!(
         managed_bytes(&managed_entries(&cache_root, &|| true)?)?,
         old_bytes
@@ -428,6 +482,84 @@ fn a1_junctions_and_pinned_directory_replacement_are_rejected() -> Result<()> {
     assert_eq!(fs::metadata(outside.join("pixels.bin"))?.len(), 24);
     fs::remove_dir_all(test)?;
     println!("A1 junction creation and no-follow protection exercised (not skipped)");
+    Ok(())
+}
+
+/// 两条真实有效缓存按显式目录 mtime 区分；配额恰好保留较新缓存与本次新构建。
+#[test]
+fn a1_oldest_cache_is_evicted_when_exact_cap_keeps_newer_and_new() -> Result<()> {
+    let test = root("a1-oldest-first");
+    let old_image = test.join("old.png");
+    let new_image = test.join("new.png");
+    let third_image = test.join("third.png");
+    let cache_root = test.join("tiles");
+    fs::create_dir(&cache_root)?;
+    generate(&old_image, 33, 17)?;
+    generate(&new_image, 33, 17)?;
+    generate(&third_image, 31, 19)?;
+
+    let (cache, _) = build_or_open(&old_image, &cache_root, CacheBudget::default(), || true)?;
+    let old_directory = cache.directory.clone();
+    drop(cache);
+    let (cache, _) = build_or_open(&new_image, &cache_root, CacheBudget::default(), || true)?;
+    let new_directory = cache.directory.clone();
+    drop(cache);
+    assert_ne!(old_directory, new_directory);
+    let old_payload = cached_payload(&old_directory)?;
+    let new_payload = cached_payload(&new_directory)?;
+    assert_eq!(
+        old_payload, new_payload,
+        "同几何与同长度源文件名应使两条缓存载荷等大"
+    );
+
+    let base = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    set_directory_modified(&old_directory, base)?;
+    set_directory_modified(&new_directory, base + std::time::Duration::from_secs(3_600))?;
+
+    let third_size = stream::inspect(&third_image)?;
+    let third_plan = Plan::new(third_size, CacheBudget::default().tile_edge)?;
+    let third_stamp = Stamp::read(&third_image)?;
+    let needed = third_plan
+        .bytes
+        .checked_add(encode(&third_stamp, &third_plan)?.len() as u64)
+        .context("第三张缓存需求溢出")?;
+    let cap = new_payload.checked_add(needed).context("测试配额溢出")?;
+    let budget = CacheBudget {
+        disk_bytes: cap,
+        ..Default::default()
+    };
+    let (cache, report) = build_or_open(&third_image, &cache_root, budget, || true)?;
+    assert!(!report.cache_hit);
+    check_tiles(&cache)?;
+    let third_directory = cache.directory.clone();
+    let third_payload = cached_payload(&third_directory)?;
+    assert_eq!(third_payload, needed, "新缓存落盘载荷应恰好等于准入需求");
+    drop(cache);
+
+    assert!(!old_directory.exists(), "最旧缓存必须先被淘汰");
+    assert!(new_directory.exists(), "较新缓存必须保留");
+    assert_eq!(cached_payload(&new_directory)?, new_payload);
+    assert_eq!(new_payload + third_payload, cap);
+
+    let (cache, report) = build_or_open(&third_image, &cache_root, budget, || true)?;
+    assert!(report.cache_hit);
+    assert!(report.scan.is_none());
+    check_tiles(&cache)?;
+    drop(cache);
+    let (cache, report) = build_or_open(&new_image, &cache_root, CacheBudget::default(), || true)?;
+    assert!(report.cache_hit, "保留的较新缓存仍需暖打开命中");
+    assert!(report.scan.is_none(), "暖打开不应重新扫描源图");
+    check_tiles(&cache)?;
+    drop(cache);
+
+    let managed = managed_bytes(&managed_entries(&cache_root, &|| true)?)?;
+    assert_eq!(
+        managed,
+        actual_cache_payload(&cache_root)?,
+        "受管理字节必须与磁盘实际 index+pixels 完全一致"
+    );
+    assert_eq!(managed, cap, "精确配额下受管理字节必须恰好等于 cap");
+    fs::remove_dir_all(test)?;
     Ok(())
 }
 
