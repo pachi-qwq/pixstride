@@ -1,6 +1,6 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 10; status: merged -->
+<!-- doc-id: stage-c; revision: 14; status: merged -->
 
 # Stage C: large PNG path
 
@@ -111,6 +111,67 @@ first/middle/last 64 KiB. A read guard denies source writes/deletes during const
 is rechecked before publication. Changes outside the sampled bytes with preserved metadata can evade
 this check; CRC32 is not a cryptographic content identity. Cache-version, sampled-content-change,
 active-cache pinning, corruption, overflow, and interrupted-build tests passed.
+
+### A1 cache recovery hardening
+
+The local A1 branch repairs two recovery failures: a missing `pixels.bin` could abort cleanup for the
+whole root, and a damaged index header could exclude an owned payload from accounting. A1 has not yet
+completed owner review or merged. The existing Stage C measurements and acceptance records remain
+historical evidence; they do not certify this new recovery behavior.
+
+On a cache miss, cleanup recognizes only direct `cache-*`/`.build-*` directories with an exact,
+non-reparse `owner` marker. It charges the actual lengths of `index.bin` and `pixels.bin` regardless of
+index validity. Missing files contribute zero; other length-query errors stop admission. The invalid
+current target and incomplete owned entries are reclaimed before oldest-first capacity eviction.
+Unknown or mismatched owners and unrelated directories are preserved and outside this managed-payload
+budget. An unowned invalid current target is rejected rather than replaced. If the current target
+cannot be replaced, cleanup stops before evicting other entries.
+
+The cache root is pinned against rename/delete throughout each open/build call, including warm opens,
+not only during cleanup. This pins the opened root directory, not its ancestors. Cleanup pins entry
+directories, opens members without following reparse points, and acquires all exclusive file handles
+before deleting anything. It deletes only the three known flat members, by handle, then the empty
+directory. Unknown members prevent deletion; there is no recursive cleanup of their contents. Active
+readers and deletion denials retain their charge. Lengths are read again after cleanup, so partial or
+failed deletion cannot be credited as complete success. Unexpected I/O errors propagate; an owned
+non-file/reparse payload causes conservative refusal because its size cannot be accounted reliably.
+The root lease, format/version, 2 GiB default and 1–10 GiB configuration range are unchanged. Warm hits
+still return before root enumeration; the quota is not a whole-volume limit or authentication against
+another process deliberately forging owner markers.
+
+Before a new partial's marker is complete, initialization proves ownership through `create_new` and the
+live exclusive DELETE-capable marker handle. A failed zero/short marker write attempts rollback through
+that handle, then deletion of the pinned empty new directory; the original I/O error is returned.
+Initialization is refused if those access rights cannot be obtained. Rollback is best-effort: unknown
+members and deletion denials are preserved, never recursively removed or treated as successful cleanup.
+If pinning the newly created directory itself fails, an unowned residue may remain. It is preserved,
+not deleted through a newly resolved path. Existing unowned entries do not acquire a new empty-directory
+deletion exception.
+
+Deterministic tests use fresh synthetic roots for missing files, bad headers, unknown owners/members,
+active readers, read-only files, injected metadata errors, cancellation, lease conflicts and actual
+Windows junctions. Reparse creation failures fail the test rather than silently count as coverage.
+Run `cargo test --locked a1_ -- --nocapture`; the optional `release_a1_recovery_probe` records small-image
+cold construction, 30 warm opens and recovery under a test-only quota. It is not cross-version A/B or
+display-latency evidence. Real ACL denial, disk exhaustion and hostile filesystem mutation are not
+fully verified.
+
+Owner GUI acceptance is pending: with newly generated PNGs and a dedicated process-local
+`PIXSTRIDE_TILE_CACHE`, check cold construction, warm reopen, an owned missing-file entry followed by
+another valid image, normal JPEG/PNG/BMP/GIF navigation, and the retained/reclaimed files and actual
+payload lengths. Use only that disposable test root; do not alter existing private caches.
+
+For a guided owner run, set `PIXSTRIDE_TEST_ROOT` to an existing directory outside Git, then run
+`pwsh -NoProfile -File scripts/accept_a1_cache_recovery.ps1` from the repository root. The script creates
+a unique run directory, builds outside Git, generates its own large PNG and JPEG/PNG/BMP/GIF fixtures,
+and runs the bad-header and partial-delete capacity regressions under a small test-only quota. Each
+Viewer inherits a dedicated process-local cache and the 2 GiB default budget. Close each Viewer before
+continuing; the script checks cold/warm logs and asks for explicit `PASS` after each visual check. It
+injects missing pixels and a bad index only into the checked cache created by that run. Unknown owners,
+extra members, and reparse paths are preserved with an error. Process environment overrides are restored
+on exit; samples, logs and cache are retained. `-PrepareOnly` verifies preparation and automated capacity
+checks without opening the Viewer or marking manual acceptance passed. `acceptance.json` separates the
+automated result from `ManualGUIAcceptance`, which stays `Pending` until the owner confirms every step.
 
 At the C2 checkpoint, the private source had only had its file attributes checked. The owner approved a separate 10 GiB
 cache experiment after C3 passes; its estimated 1024 pyramid is 8,224,561,220 bytes. No source pixels
