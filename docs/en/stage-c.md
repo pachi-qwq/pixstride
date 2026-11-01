@@ -1,6 +1,6 @@
 [English](stage-c.md) | [简体中文](../zh-CN/stage-c.md)
 
-<!-- doc-id: stage-c; revision: 14; status: merged -->
+<!-- doc-id: stage-c; revision: 15; status: merged -->
 
 # Stage C: large PNG path
 
@@ -172,6 +172,9 @@ extra members, and reparse paths are preserved with an error. Process environmen
 on exit; samples, logs and cache are retained. `-PrepareOnly` verifies preparation and automated capacity
 checks without opening the Viewer or marking manual acceptance passed. `acceptance.json` separates the
 automated result from `ManualGUIAcceptance`, which stays `Pending` until the owner confirms every step.
+
+The [A1 manual acceptance guide](a1-manual-acceptance.md) lists each window's fixture appearance,
+actions, pass criteria and failure logs, and distinguishes automated results from owner confirmation.
 
 At the C2 checkpoint, the private source had only had its file attributes checked. The owner approved a separate 10 GiB
 cache experiment after C3 passes; its estimated 1024 pyramid is 8,224,561,220 bytes. No source pixels

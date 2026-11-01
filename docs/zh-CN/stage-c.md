@@ -1,6 +1,6 @@
 [English](../en/stage-c.md) | [简体中文](stage-c.md)
 
-<!-- doc-id: stage-c; revision: 14; status: merged -->
+<!-- doc-id: stage-c; revision: 15; status: merged -->
 
 # Stage C：超大 PNG 路径
 
@@ -131,6 +131,9 @@ A1 尚未完成负责人审查或合并。原有 Stage C 性能和验收记录�
 遇到未知 owner、额外成员或重解析路径时保留并报错。退出时恢复进程环境变量，保留样本、日志和缓存。
 `-PrepareOnly` 仅验证准备流程和自动化容量检查，不打开 Viewer，也不记为人工验收通过。
 `acceptance.json` 分开记录自动化结果与 `ManualGUIAcceptance`；负责人确认全部步骤前，后者保持 `Pending`。
+
+[A1 人工验收指南](a1-manual-acceptance.md)按窗口列出样本外观、操作、通过条件与失败日志，
+并说明如何区分自动化结果和负责人目视确认。
 
 在 C2 检查点，私人原图只查过文件属性。负责人已批准 C3 通过后进行独立 10 GiB 缓存实验，1024 金字塔预计 8,224,561,220 字节。
 在此检查点尚未读取原图像素。
