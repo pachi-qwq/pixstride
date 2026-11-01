@@ -210,13 +210,32 @@
       "id": "stage-c",
       "en": "docs/en/stage-c.md",
       "zh-CN": "docs/zh-CN/stage-c.md",
-      "revision": 10,
+      "revision": 15,
       "shared_literals": [
         "png 0.18.1",
         "64 MiB",
         "4 MiB",
         "10,022,912",
         "2 GiB"
+      ]
+    },
+    {
+      "id": "cache-recovery-acceptance",
+      "en": "docs/en/a1-manual-acceptance.md",
+      "zh-CN": "docs/zh-CN/a1-manual-acceptance.md",
+      "revision": 1,
+      "shared_literals": [
+        "20000",
+        "8 × 6",
+        "4 × 3",
+        "2 GiB",
+        "PASS",
+        "ManualGUIAcceptance",
+        "AutomatedCapacity",
+        "PassedSteps",
+        "ManagedPayloadBytes",
+        "large-copy.png",
+        "07-infinite.gif"
       ]
     },
     {
